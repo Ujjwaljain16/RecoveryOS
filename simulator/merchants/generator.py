@@ -1,5 +1,5 @@
 """
-Merchants subsystem.
+Merchant generator module.
 """
 
 from simulator.merchants.models import MerchantGenerator, SimulatedMerchant
