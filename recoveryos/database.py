@@ -92,3 +92,15 @@ async def get_diagnoser_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency — yields a diagnoser_role session (read-only, no ground_truth)."""
     async with get_diagnoser_session_factory()() as session:
         yield session
+
+
+_sync_engine = None
+
+
+def get_sync_engine():
+    """Returns a synchronous engine for CLI utilities, data migrations, and batch loaders."""
+    global _sync_engine
+    if _sync_engine is None:
+        _sync_engine = _build_sync_engine(get_settings().database_url_sync)
+    return _sync_engine
+
