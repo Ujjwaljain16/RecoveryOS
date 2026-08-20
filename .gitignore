@@ -1,0 +1,54 @@
+# RecoveryOS — .gitignore
+# ─── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ─── Secrets — never commit ────────────────────────────────────────────────────
+.env
+*.pem
+*.key
+secrets/
+
+# ─── Node / Next.js ────────────────────────────────────────────────────────────
+node_modules/
+.next/
+apps/dashboard/.next/
+apps/dashboard/node_modules/
+
+# ─── Docker ────────────────────────────────────────────────────────────────────
+.docker/
+
+# ─── Alembic ───────────────────────────────────────────────────────────────────
+# Keep migrations/versions/ — never gitignore those
+migrations/__pycache__/
+
+# ─── Models / data ─────────────────────────────────────────────────────────────
+models/**/*.pkl
+models/**/*.joblib
+models/**/*.bin
+*.csv
+*.parquet
+
+# ─── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
