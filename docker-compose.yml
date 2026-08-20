@@ -1,0 +1,157 @@
+# RecoveryOS — Docker Compose
+# All 6 services: postgres, redis, api, worker, prometheus, grafana
+# Run with: docker compose up --build
+#
+# Env is loaded from .env (copy .env.example → .env and fill secrets)
+
+services:
+
+  # ─── Postgres ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: recoveryos_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: recoveryos
+      POSTGRES_PASSWORD: recoveryos
+      POSTGRES_DB: recoveryos
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recoveryos -d recoveryos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: recoveryos_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Alembic migrate (runs once, exits) ────────────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: recoveryos_migrate
+    env_file: .env
+    environment:
+      DATABASE_URL_SYNC: postgresql://recoveryos:recoveryos@postgres:5432/recoveryos
+    command: >
+      sh -c "alembic upgrade head"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── API (FastAPI / uvicorn) ────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: recoveryos_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recoveryos:recoveryos@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:recoveryos@postgres:5432/recoveryos
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ENV: demo
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Celery Worker ─────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: recoveryos_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recoveryos:recoveryos@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:recoveryos@postgres:5432/recoveryos
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ENV: demo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A workers.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: recoveryos_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - api
+
+  # ─── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: recoveryos_grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: recoveryos
+      GF_SECURITY_ADMIN_USER: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

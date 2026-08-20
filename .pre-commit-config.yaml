@@ -1,0 +1,45 @@
+repos:
+  # ─── Python ──────────────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
+        types_or: [python, pyi]
+      - id: ruff-format
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3.11
+
+  # ─── General ─────────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+
+  # ─── Security gate: no SELECT * in inference paths ───────────────────────
+  - repo: local
+    hooks:
+      - id: no-select-star-in-inference
+        name: "No SELECT * in inference-reachable code (gaps.md §B.1)"
+        language: system
+        entry: bash -c 'result=$(grep -rn "SELECT \*" services/recovery_engine/ models/ services/diagnosis_engine/ 2>/dev/null); if [ -n "$result" ]; then echo "ERROR: $result"; exit 1; fi'
+        pass_filenames: false
+        always_run: true
+
+      - id: no-io-in-policy-rules
+        name: "No I/O imports in policy_engine/rules.py (gaps.md §B.3)"
+        language: system
+        entry: bash -c 'f=services/policy_engine/rules.py; if [ -f "$f" ]; then result=$(grep -n "import db\|import sqlalchemy\|import redis\|import requests\|import httpx" "$f"); if [ -n "$result" ]; then echo "POLICY ENGINE PURITY VIOLATION: $result"; exit 1; fi; fi'
+        pass_filenames: false
+        always_run: true
