@@ -27,6 +27,8 @@ RUN pip install --no-cache-dir \
 COPY recoveryos/    ./recoveryos/
 COPY workers/       ./workers/
 COPY services/      ./services/
+COPY models/        ./models/
+COPY simulator/     ./simulator/
 COPY integrations/  ./integrations/
 COPY migrations/    ./migrations/
 COPY alembic.ini    ./

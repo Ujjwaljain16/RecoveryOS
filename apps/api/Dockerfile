@@ -36,13 +36,15 @@ FROM base AS runtime
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-COPY recoveryos/ ./recoveryos/
-COPY apps/       ./apps/
-COPY workers/    ./workers/
-COPY services/   ./services/
+COPY recoveryos/   ./recoveryos/
+COPY apps/         ./apps/
+COPY workers/      ./workers/
+COPY services/     ./services/
+COPY models/       ./models/
+COPY simulator/    ./simulator/
 COPY integrations/ ./integrations/
-COPY migrations/ ./migrations/
-COPY alembic.ini ./
+COPY migrations/   ./migrations/
+COPY alembic.ini   ./
 
 RUN useradd -m -u 1001 recoveryos && chown -R recoveryos:recoveryos /app
 USER recoveryos
