@@ -1,0 +1,140 @@
+name: RecoveryOS CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main", "develop"]
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lint deps
+        run: pip install ruff black
+
+      - name: ruff check
+        run: ruff check recoveryos/ apps/ services/ workers/ tests/ --output-format=github
+
+      - name: black check
+        run: black --check recoveryos/ apps/ services/ workers/ tests/
+
+  # ─── Security Gate — no SELECT * in inference paths ───────────────────────
+  security-grep:
+    name: CI Security Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Gate: no SELECT * in inference/training code (gaps.md §B.1)"
+        run: |
+          echo "Checking for SELECT * in inference-reachable code..."
+          found=$(grep -rn "SELECT \*" services/recovery_engine/ models/ services/diagnosis_engine/ 2>/dev/null || true)
+          if [ -n "$found" ]; then
+            echo "ERROR: SELECT * found in inference-reachable code:"
+            echo "$found"
+            exit 1
+          fi
+          echo "OK — no SELECT * violations found."
+
+      - name: "Gate: no forbidden imports in policy_engine/rules.py (gaps.md §B.3)"
+        run: |
+          rules_file="services/policy_engine/rules.py"
+          if [ -f "$rules_file" ]; then
+            forbidden=$(grep -n "import db\|import sqlalchemy\|import redis\|import requests\|import httpx" "$rules_file" || true)
+            if [ -n "$forbidden" ]; then
+              echo "ERROR: Forbidden I/O imports found in policy engine rules:"
+              echo "$forbidden"
+              exit 1
+            fi
+            echo "OK — policy engine rules.py has no forbidden imports."
+          else
+            echo "rules.py not yet created — skipping gate (will enforce in Phase 5)."
+          fi
+
+  # ─── Unit Tests (no DB needed) ────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install \
+            pytest pytest-asyncio pytest-cov \
+            pydantic pydantic-settings \
+            sqlalchemy asyncpg psycopg2-binary \
+            alembic fastapi uvicorn httpx \
+            celery redis structlog prometheus-client
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --tb=short --co -q
+        env:
+          ENV: test
+          DATABASE_URL: postgresql+asyncpg://x:x@localhost:5432/x
+          DATABASE_URL_SYNC: postgresql://x:x@localhost:5432/x
+          REDIS_URL: redis://localhost:6379/0
+
+  # ─── Integration Tests (real Postgres via testcontainers) ─────────────────
+  integration-tests:
+    name: Integration Tests (Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (including testcontainers)
+        run: |
+          pip install \
+            pytest pytest-asyncio pytest-cov \
+            pydantic pydantic-settings \
+            sqlalchemy asyncpg psycopg2-binary \
+            alembic fastapi uvicorn httpx \
+            celery redis structlog prometheus-client \
+            "testcontainers[postgresql]"
+
+      - name: Run integration tests
+        run: pytest tests/integration/ -v --tb=short
+        env:
+          ENV: test
+
+  # ─── Adversarial Tests ────────────────────────────────────────────────────
+  adversarial-tests:
+    name: Adversarial Suite
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install pytest pytest-asyncio pydantic pydantic-settings sqlalchemy psycopg2-binary
+
+      - name: Run adversarial tests
+        run: pytest tests/adversarial/ -v --tb=short -q
+        env:
+          ENV: test
+          DATABASE_URL_SYNC: postgresql://x:x@localhost:5432/x
