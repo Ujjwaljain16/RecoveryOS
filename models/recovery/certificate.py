@@ -30,6 +30,9 @@ def generate_certificate():
     with open(artifacts_dir / "eval_test_temporal.json", "r") as f:
         test_temporal = json.load(f)
         
+    with open(artifacts_dir / "eval_test_scenario.json", "r") as f:
+        test_scenario = json.load(f)
+        
     # Calculate a naive baseline for Economics: "Retry Every Failed Payment" on test_temporal
     import pandas as pd
     import numpy as np
@@ -65,7 +68,7 @@ def generate_certificate():
             "primary": train_results["best_model"],
             "val_auc": val_random["propensity_metrics"]["lgbm_auc_roc"],
             "temporal_auc": test_temporal["propensity_metrics"]["lgbm_auc_roc"],
-            "scenario_holdout_auc": test_temporal["propensity_metrics"]["lgbm_auc_roc"] # Proxying temporal as holdout
+            "scenario_holdout_auc": test_scenario["propensity_metrics"]["lgbm_auc_roc"]
         },
         "economics": {
             "baseline_net_value_rupees": baseline_econ["net_recovery_value_rupees"],

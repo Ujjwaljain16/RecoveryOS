@@ -1,0 +1,193 @@
+# RecoveryOS Simulator — Calibration Parameters
+# ================================================
+# Every parameter MUST have all required metadata fields.
+# Sources must cite the specific metric, population, time period, and unit.
+# DO NOT add a parameter without a verifiable source and explicit transformation note.
+#
+# Schema version: 1.0
+# Last updated: 2026-08-21
+
+schema_version: "1.0"
+
+parameters:
+
+  # ── Payment Method Distribution ─────────────────────────────────────────────
+
+  - name: upi_transaction_share
+    value: 0.572
+    source: "NPCI Monthly Dashboard — UPI Product Statistics"
+    source_url: "https://www.npci.org.in/what-we-do/upi/upi-ecosystem-statistics"
+    source_period: "FY2024-25 H1 average (Apr–Sep 2024)"
+    metric_definition: >
+      Share of total retail digital payment TRANSACTION COUNT processed via UPI
+      as a proportion of all NPCI-regulated instrument types.
+    population: "India national retail digital payments (all regulated instruments)"
+    unit: "fraction [0, 1]"
+    transformation: >
+      Applied directly as sampling probability in PaymentDistributionSampler.sample_method().
+      Remaining share distributed proportionally across Card, Netbanking, Wallet.
+    confidence: "high — official regulatory NPCI reporting"
+    applies_to: "simulator/payments/distributions.py :: METHOD_WEIGHTS['upi']"
+
+  - name: card_transaction_share
+    value: 0.215
+    source: "RBI Payment System Indicators, August 2024"
+    source_url: "https://www.rbi.org.in/Scripts/AnnualReportPublications.aspx"
+    source_period: "FY2024-25 H1 average"
+    metric_definition: >
+      Share of credit card + debit card transaction COUNT among retail digital payments.
+      Debit ≈ 13%, Credit ≈ 8.5%; combined for simulator simplicity.
+    population: "India national retail digital payments"
+    unit: "fraction [0, 1]"
+    transformation: "Merged debit + credit for method categorization in simulator."
+    confidence: "medium — derived from RBI table combining two instrument categories"
+    applies_to: "simulator/payments/distributions.py :: METHOD_WEIGHTS['card']"
+
+  - name: netbanking_transaction_share
+    value: 0.148
+    source: "NPCI NACH + IMPS statistics combined; RBI PSI table 6"
+    source_url: "https://www.rbi.org.in/Scripts/AnnualReportPublications.aspx"
+    source_period: "FY2024-25 H1"
+    metric_definition: >
+      Approximate share of bank-to-bank net banking transactions as proportion
+      of total digital payments. Note: IMPS and NACH are partially overlapping;
+      this figure is an approximation for simulator use.
+    population: "India national retail digital payments"
+    unit: "fraction [0, 1]"
+    transformation: "Approximation — used as baseline for netbanking sampling weight."
+    confidence: "medium — approximated from multiple NPCI/RBI tables"
+    applies_to: "simulator/payments/distributions.py :: METHOD_WEIGHTS['netbanking']"
+
+  - name: wallet_transaction_share
+    value: 0.065
+    source: "RBI Payment System Indicators; PhonePe Pulse open data"
+    source_url: "https://github.com/PhonePe/pulse"
+    source_period: "FY2024-25 H1"
+    metric_definition: >
+      Share of prepaid payment instrument (PPI/wallet) transactions.
+      Declining trend YoY as UPI absorbs wallet use cases.
+    population: "India national retail digital payments"
+    unit: "fraction [0, 1]"
+    transformation: "Applied as residual weight after UPI + Card + Netbanking."
+    confidence: "medium — wallets declining; figure is H1 2024-25 approximation"
+    applies_to: "simulator/payments/distributions.py :: METHOD_WEIGHTS['wallet']"
+
+  # ── Payment Amount Distribution ──────────────────────────────────────────────
+
+  - name: upi_amount_median_paise
+    value: 58000
+    source: "PhonePe Pulse — Digital Payments India Report 2024"
+    source_url: "https://github.com/PhonePe/pulse"
+    source_period: "CY2024"
+    metric_definition: >
+      Median UPI transaction value in Indian Rupees, converted to paise.
+      ₹580 median per PhonePe Pulse report. Includes P2P and P2M.
+    population: "UPI transactions on PhonePe platform (representative of UPI ecosystem)"
+    unit: "integer paise"
+    transformation: >
+      Used as lognormal distribution median (mu = log(58000)).
+      Sigma set empirically to produce realistic P5/P95 spread.
+    confidence: "medium-high — PhonePe has ~50% UPI market share; platform bias possible"
+    applies_to: "simulator/payments/distributions.py :: AMOUNT_LOGNORMAL_MU_PAISE"
+
+  - name: amount_lognormal_sigma
+    value: 1.35
+    source: "Empirical calibration against PhonePe Pulse P10/P90 distribution"
+    source_url: "https://github.com/PhonePe/pulse"
+    source_period: "CY2024"
+    metric_definition: >
+      Log-normal sigma parameter producing P10≈₹80, P90≈₹8,000 spread.
+      Calibrated to match reported percentile ranges in PhonePe Pulse.
+    population: "UPI transactions"
+    unit: "dimensionless (log-space standard deviation)"
+    transformation: "Direct parameter to numpy random lognormal."
+    confidence: "medium — sigma is fitted, not directly measured"
+    applies_to: "simulator/payments/distributions.py :: AMOUNT_LOGNORMAL_SIGMA"
+
+  # ── Baseline Failure Rate ────────────────────────────────────────────────────
+
+  - name: baseline_failure_rate
+    value: 0.028
+    source: >
+      NPCI UPI Ecosystem Statistics — Technical Decline Rate.
+      RBI Annual Report 2023-24, Payment System Chapter.
+    source_url: "https://www.npci.org.in/what-we-do/upi/upi-ecosystem-statistics"
+    source_period: "FY2023-24 annual average"
+    metric_definition: >
+      Technical decline rate for UPI transactions. Excludes business declines
+      (insufficient funds, frozen accounts) — only infrastructure/bank failures.
+      Reported as approximately 2.5–3.5% across the ecosystem.
+    population: "All UPI transactions, India"
+    unit: "fraction [0, 1]"
+    transformation: >
+      Applied as NormalFailureScenario baseline_failure_rate. Does NOT include
+      business declines (handled separately by PermanentFailureScenario).
+    confidence: "high — NPCI official reporting; range used as 2.8% midpoint"
+    applies_to: "simulator/failures/scenarios.py :: NormalFailureScenario.baseline_failure_rate"
+
+  # ── Retry Economics ──────────────────────────────────────────────────────────
+
+  - name: fixed_retry_cost_paise
+    value: 100
+    source: "Internal engineering estimate — not from public dataset"
+    source_url: null
+    source_period: "2026 design"
+    metric_definition: >
+      Fixed cost per retry attempt in paise. Covers: API call overhead (~₹0.30),
+      timeout/latency cost (~₹0.40), customer friction cost proxy (~₹0.30).
+      Total: ₹1 = 100 paise.
+    population: "RecoveryOS simulator synthetic economy"
+    unit: "integer paise"
+    transformation: "Direct constant in episodes/models.py :: FIXED_RETRY_COST_PAISE"
+    confidence: "low — synthetic estimate; sensitivity analysis recommended"
+    applies_to: "simulator/episodes/models.py :: FIXED_RETRY_COST_PAISE"
+
+  - name: variable_retry_cost_rate
+    value: 0.001
+    source: "Internal engineering estimate — not from public dataset"
+    source_url: null
+    source_period: "2026 design"
+    metric_definition: >
+      Proportional retry cost as fraction of transaction amount.
+      0.10% = 0.001. Represents marginal processing cost scaling with amount.
+    population: "RecoveryOS simulator synthetic economy"
+    unit: "fraction [0, 1]"
+    transformation: "Direct constant in episodes/models.py :: VARIABLE_RETRY_COST_RATE"
+    confidence: "low — synthetic estimate; sensitivity analysis recommended"
+    applies_to: "simulator/episodes/models.py :: VARIABLE_RETRY_COST_RATE"
+
+  - name: recovery_margin
+    value: 0.15
+    source: "Payment platform economics benchmark — not from public dataset"
+    source_url: null
+    source_period: "2026 design"
+    metric_definition: >
+      Platform margin on successfully recovered transaction value.
+      15% represents typical merchant discount rate + processing margin.
+      Used in E[retry] = P(recovery) × amount × margin − cost.
+    population: "RecoveryOS simulator synthetic economy"
+    unit: "fraction [0, 1]"
+    transformation: "Direct constant in episodes/models.py :: RECOVERY_MARGIN"
+    confidence: "low — synthetic; actual MDR varies 0.5–3.5% for UPI (regulated)"
+    applies_to: "simulator/episodes/models.py :: RECOVERY_MARGIN"
+
+  # ── Time-of-Day Failure Multipliers ─────────────────────────────────────────
+
+  - name: peak_hour_failure_multiplier
+    value: 1.40
+    source: >
+      NPCI UPI Transaction Time Distribution (inferred from public failure
+      spike reports). RBI Payment System Report mentions peak-hour degradation.
+    source_url: "https://www.rbi.org.in/Scripts/AnnualReportPublications.aspx"
+    source_period: "FY2023-24"
+    metric_definition: >
+      Multiplier applied to baseline failure rate during peak hours:
+      08:00–10:00 and 17:00–20:00 IST. Represents bank infrastructure
+      congestion during high-traffic periods.
+    population: "UPI transactions during peak salary/commerce hours"
+    unit: "dimensionless multiplier"
+    transformation: >
+      Applied in SimClock.is_peak_hour() → scenarios modify failure_prob.
+      Not yet wired into scenarios; placeholder for future enhancement.
+    confidence: "low — inferred from qualitative reports; not directly measured"
+    applies_to: "simulator/core/clock.py (future: peak-hour scenario modifier)"

@@ -17,7 +17,7 @@
     "primary": "lightgbm",
     "val_auc": 0.8757,
     "temporal_auc": 0.8374,
-    "scenario_holdout_auc": 0.8374
+    "scenario_holdout_auc": 0.8332
   },
   "economics": {
     "baseline_net_value_rupees": 1314958.3,

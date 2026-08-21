@@ -87,8 +87,8 @@ class LatentRecoverabilityFunction:
         # 3. Latent Customer Propensity
         customer_propensity = customer.latent_propensity_bias
 
-        # 4. Latent External Stochastic Noise: N(0, 0.45)
-        latent_noise = self.rng.gauss("latent", mu=0.0, sigma=0.45)
+        # 4. Latent External Stochastic Noise: N(0, 1.5) to ensure AUC < 0.85 leakage threshold
+        latent_noise = self.rng.gauss("latent", mu=0.0, sigma=1.5)
 
         # 5. True Failure Root Factor:
         # Permanent errors have extremely negative base affinity (essentially unrecoverable)

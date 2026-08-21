@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "created_at": "2026-08-21T15:32:35.898515+00:00",
+  "train_seed": 42,
+  "test_seed": 999,
+  "feature_columns": [
+    "amount_paise",
+    "method",
+    "bank",
+    "is_returning_customer",
+    "customer_ltv_decile",
+    "initial_failure_code",
+    "initial_failure_class",
+    "hour_of_day",
+    "day_of_week",
+    "merchant_id"
+  ],
+  "label_columns": [
+    "episode_id",
+    "actual_recovered",
+    "optimal_recovery_action"
+  ],
+  "splits": [
+    {
+      "split_name": "train",
+      "seed": 42,
+      "n_episodes": 48601,
+      "n_recovered": 30833,
+      "n_retry_now_optimal": 44123,
+      "recovery_rate": 0.6344,
+      "retry_now_rate": 0.9079
+    },
+    {
+      "split_name": "val_temporal",
+      "seed": 42,
+      "n_episodes": 21399,
+      "n_recovered": 13529,
+      "n_retry_now_optimal": 19386,
+      "recovery_rate": 0.6322,
+      "retry_now_rate": 0.9059
+    },
+    {
+      "split_name": "val_random",
+      "seed": 42,
+      "n_episodes": 15000,
+      "n_recovered": 9510,
+      "n_retry_now_optimal": 13617,
+      "recovery_rate": 0.634,
+      "retry_now_rate": 0.9078
+    },
+    {
+      "split_name": "test_random",
+      "seed": 999,
+      "n_episodes": 8739,
+      "n_recovered": 5525,
+      "n_retry_now_optimal": 7962,
+      "recovery_rate": 0.6322,
+      "retry_now_rate": 0.9111
+    },
+    {
+      "split_name": "test_temporal",
+      "seed": 999,
+      "n_episodes": 6261,
+      "n_recovered": 3965,
+      "n_retry_now_optimal": 5676,
+      "recovery_rate": 0.6333,
+      "retry_now_rate": 0.9066
+    },
+    {
+      "split_name": "test_scenario",
+      "seed": 999,
+      "n_episodes": 15000,
+      "n_recovered": 9528,
+      "n_retry_now_optimal": 13675,
+      "recovery_rate": 0.6352,
+      "retry_now_rate": 0.9117
+    }
+  ]
+}

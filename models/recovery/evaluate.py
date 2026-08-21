@@ -246,8 +246,9 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument(
         "--split",
-        choices=["val_random", "val_temporal", "test_random", "test_temporal"],
-        default="val_random",
+        choices=["val_random", "val_temporal", "test_random", "test_temporal", "test_scenario"],
+        required=True,
+        help="Dataset split to evaluate on",
     )
     parser.add_argument("--artifacts-dir", type=Path, default=ARTIFACTS_DIR)
     args = parser.parse_args()

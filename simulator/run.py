@@ -42,6 +42,10 @@ from simulator.failures.scenarios import (
 from simulator.merchants.models import MerchantGenerator, SimulatedMerchant
 from simulator.outcomes.ground_truth import LatentRecoverabilityFunction
 from simulator.payments.generator import GeneratedBatchResult, PaymentGenerator
+from simulator.episodes.generator import EpisodeGenerator
+from simulator.episodes.models import EpisodeBatchResult
+from simulator.dataset.builder import DatasetBuilder
+from pathlib import Path
 
 GENERATOR_VERSION = "simulator-v2.0"
 
@@ -90,7 +94,7 @@ def build_simulator(
     ]
 
     # 3. Observation Noise & Latent Ground Truth
-    noise_pipeline = ObservationNoisePipeline(rng, ambiguity_rate=0.12)
+    noise_pipeline = ObservationNoisePipeline(rng, ambiguity_rate=0.30)
     latent_function = LatentRecoverabilityFunction(rng)
 
     manifest_data = SimulationManifestData(
@@ -241,10 +245,82 @@ def save_to_database(
         session.commit()
 
 
+def run_episode_mode(
+    seed: int,
+    n_train: int,
+    n_val: int,
+    n_test: int,
+    test_seed: int,
+    output_dir: Path,
+    scenario_config: dict,
+    customer_count: int,
+) -> None:
+    """
+    Generate recovery episodes and write train/val/test splits to Parquet.
+
+    Train + val: generated with seed=seed
+    Test:        generated with seed=test_seed (completely separate run)
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _gen_episodes(ep_seed: int, n: int, split_name: str, config_override=None) -> list:
+        cfg = config_override if config_override is not None else scenario_config
+        gen, merchants, customers, manifest = build_simulator(
+            seed=ep_seed, scenario_config=cfg, customer_count=customer_count
+        )
+        ep_gen = EpisodeGenerator(
+            payment_generator=gen,
+            id_gen=gen.id_gen,
+            rng=gen.rng,
+            clock=gen.clock,
+            merchants=merchants,
+            customers=customers,
+            scenarios=gen.scenarios,
+            noise_pipeline=gen.noise_pipeline,
+            latent_function=gen.latent_function,
+        )
+        print(f"[Episodes] Generating {n:,} {split_name} episodes (seed={ep_seed})...")
+        t0 = time.time()
+        result = ep_gen.generate_episodes(n, manifest.simulation_id, split_name=split_name)
+        print(f"[Episodes] {split_name}: {result.total_failed_payments:,} episodes | "
+              f"recovered={result.actual_recovered_count:,} | "
+              f"retry_now_optimal={result.retry_now_optimal_count:,} | "
+              f"time={time.time()-t0:.1f}s")
+        return result.episodes
+
+    train_eps = _gen_episodes(seed, n_train, "train")
+    val_eps = _gen_episodes(seed, n_val, "val_random")
+    test_eps = _gen_episodes(test_seed, n_test, "test_random")
+    test_scenario_eps = _gen_episodes(
+        test_seed,
+        n_test,
+        "test_scenario",
+        config_override={"outage_rate": 0.8, "degradation_rate": 0.6}
+    )
+
+    print(f"[Episodes] Writing Parquet splits to {output_dir}...")
+    builder = DatasetBuilder(output_dir=output_dir)
+    manifest = builder.build(
+        train_episodes=train_eps,
+        val_episodes=val_eps,
+        test_episodes=test_eps,
+        test_scenario_episodes=test_scenario_eps,
+        train_seed=seed,
+        test_seed=test_seed,
+    )
+    print(f"[Episodes] ✓ Dataset written. Splits: {[s.split_name for s in manifest.splits]}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RecoveryOS Payment Simulation CLI")
-    parser.add_argument("--n", type=int, default=10000, help="Number of payments to generate")
+    parser.add_argument("--n", type=int, default=10000, help="Number of payments/episodes to generate")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument(
+        "--mode",
+        choices=["payments", "episodes"],
+        default="payments",
+        help="payments: generate raw payment batch; episodes: generate labeled recovery episodes",
+    )
     parser.add_argument(
         "--scenario-weights",
         type=str,
@@ -255,10 +331,22 @@ def main() -> None:
         "--output",
         choices=["db", "dry-run"],
         default="db",
-        help="Output destination: db or dry-run",
+        help="Output destination (payments mode only): db or dry-run",
     )
     parser.add_argument(
         "--customers", type=int, default=2000, help="Number of customers to generate"
+    )
+    parser.add_argument(
+        "--n-val", type=int, default=5000, help="Validation episodes (episodes mode)"
+    )
+    parser.add_argument(
+        "--n-test", type=int, default=5000, help="Test episodes (episodes mode)"
+    )
+    parser.add_argument(
+        "--test-seed", type=int, default=999, help="Seed for hidden test set (episodes mode)"
+    )
+    parser.add_argument(
+        "--data-dir", type=str, default="data", help="Output directory for Parquet splits (episodes mode)"
     )
 
     args = parser.parse_args()
@@ -269,6 +357,20 @@ def main() -> None:
         print(f"Error parsing --scenario-weights: {e}", file=sys.stderr)
         sys.exit(1)
 
+    if args.mode == "episodes":
+        run_episode_mode(
+            seed=args.seed,
+            n_train=args.n,
+            n_val=args.n_val,
+            n_test=args.n_test,
+            test_seed=args.test_seed,
+            output_dir=Path(args.data_dir),
+            scenario_config=scenario_config,
+            customer_count=args.customers,
+        )
+        return
+
+    # ── payments mode (original) ──────────────────────────────────────────────
     print(f"[*] Starting RecoveryOS Simulation (n={args.n}, seed={args.seed}, output={args.output})...")
     start_time = time.time()
 
