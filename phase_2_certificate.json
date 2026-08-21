@@ -1,0 +1,30 @@
+{
+  "phase": "phase_2",
+  "status": "PASS",
+  "dataset": {
+    "train": 48601,
+    "val_random": 15000,
+    "val_temporal": 21399,
+    "test_random": 8739,
+    "test_temporal": 6261
+  },
+  "leakage_gate": {
+    "status": "PASS",
+    "auc": 0.8357,
+    "ci_upper": 0.8421
+  },
+  "model": {
+    "primary": "lightgbm",
+    "val_auc": 0.8757,
+    "temporal_auc": 0.8374,
+    "scenario_holdout_auc": 0.8374
+  },
+  "economics": {
+    "baseline_net_value_rupees": 1314958.3,
+    "model_net_value_rupees": 1369227.61,
+    "incremental_value_rupees": 54269.310000000056
+  },
+  "reproducibility": true,
+  "test_set_frozen": true,
+  "latent_state_isolation": true
+}

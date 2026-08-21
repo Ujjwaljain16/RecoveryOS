@@ -1,0 +1,63 @@
+{
+  "split": "test_temporal",
+  "n": 6261,
+  "propensity_metrics": {
+    "lgbm_auc_roc": 0.8374,
+    "lgbm_auc_roc_ci_95": [
+      0.8277,
+      0.8471
+    ],
+    "lgbm_auc_pr": 0.8898,
+    "lgbm_brier_score": 0.1476,
+    "lgbm_ece": 0.0269,
+    "lgbm_precision_at_20pct": 0.9513,
+    "lgbm_recall_at_20pct": 0.3004,
+    "lr_auc_roc": 0.8378
+  },
+  "decision_metrics": {
+    "optimal_action_accuracy": 0.9066,
+    "retry_now_precision": 0.9066,
+    "retry_now_recall": 1.0
+  },
+  "economic_metrics": {
+    "gross_recovered_rupees": 1390194.18,
+    "total_retry_cost_rupees": 20966.57,
+    "net_recovery_value_rupees": 1369227.61,
+    "recovery_roi": 65.3053,
+    "n_retry_predicted": 6261,
+    "n_true_positives": 3965,
+    "n_false_positives": 2296,
+    "false_positive_retry_rate": 1.0
+  },
+  "scenario_breakdown": {
+    "CUSTOMER_SPECIFIC": {
+      "n": 980,
+      "auc": 0.5365,
+      "precision_at_20pct": 0.6837,
+      "revenue_net_rupees": 193813.33,
+      "false_positive_retry_rate": 1.0
+    },
+    "PERMANENT": {
+      "n": 1228,
+      "auc": 0.5169,
+      "precision_at_20pct": 0.1469,
+      "revenue_net_rupees": 54269.3,
+      "false_positive_retry_rate": 1.0
+    },
+    "TEMPORARY": {
+      "n": 3168,
+      "auc": 0.7875,
+      "precision_at_20pct": 0.9573,
+      "revenue_net_rupees": 931242.84,
+      "false_positive_retry_rate": 1.0
+    },
+    "UNKNOWN": {
+      "n": 885,
+      "auc": 0.5046,
+      "precision_at_20pct": 0.5763,
+      "revenue_net_rupees": 189902.13,
+      "false_positive_retry_rate": 1.0
+    }
+  },
+  "evaluation_duration_sec": 1.9
+}

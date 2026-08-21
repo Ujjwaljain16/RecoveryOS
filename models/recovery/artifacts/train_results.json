@@ -1,0 +1,38 @@
+{
+  "leakage_gate": {
+    "lr_auc": 0.8357,
+    "ci_lo": 0.8291,
+    "ci_hi": 0.8421
+  },
+  "models": {
+    "logistic_regression": {
+      "auc_actual_recovered": 0.8356,
+      "auc_optimal_action": 0.7978
+    },
+    "lightgbm": {
+      "auc_actual_recovered": 0.8757,
+      "auc_optimal_action": 0.818,
+      "best_iteration": 499,
+      "feature_importances": {
+        "amount_paise": 20233,
+        "method": 1428,
+        "bank": 2417,
+        "is_returning_customer": 1187,
+        "customer_ltv_decile": 7701,
+        "initial_failure_code": 139885,
+        "initial_failure_class": 28185,
+        "hour_of_day": 11512,
+        "day_of_week": 6567,
+        "merchant_id": 2624
+      }
+    },
+    "mlp": {
+      "auc_actual_recovered": 0.8439,
+      "auc_optimal_action": 0.8048,
+      "n_iter": 23
+    }
+  },
+  "gate3_suspicion": false,
+  "duration_sec": 14.73,
+  "best_model": "lightgbm"
+}
