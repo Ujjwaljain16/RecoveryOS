@@ -25,18 +25,6 @@ import sys
 import pytest
 from sqlalchemy import create_engine
 
-# ─── Testcontainers ────────────────────────────────────────────────────────────
-# We use the PostgreSQL testcontainer — NOT docker-compose, not a shared instance.
-# Each CI run gets its own ephemeral container, so tests are fully isolated.
-try:
-    try:
-        from testcontainers.community.postgres import PostgresContainer
-    except ImportError:
-        from testcontainers.postgres import PostgresContainer
-except ImportError:
-    raise RuntimeError("testcontainers not installed. Run: pip install testcontainers")
-
-
 # ─── Session-scoped container ──────────────────────────────────────────────────
 
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -50,7 +38,22 @@ def postgres_container():
     """
     Start a real PostgreSQL 16 container for the entire test session.
     Yields the container object (with .get_connection_url() for the sync DSN).
+
+    testcontainers is imported HERE, not at module level: this file is
+    tests/conftest.py, a parent of both tests/unit/ and tests/integration/,
+    so pytest loads it for every collected test regardless of suite. CI's
+    unit-tests job deliberately doesn't install testcontainers (unit tests
+    need no DB) — a module-level import here made that job fail before a
+    single test even ran, for a dependency unit tests never needed.
     """
+    try:
+        try:
+            from testcontainers.community.postgres import PostgresContainer
+        except ImportError:
+            from testcontainers.postgres import PostgresContainer
+    except ImportError as exc:
+        raise RuntimeError("testcontainers not installed. Run: pip install testcontainers") from exc
+
     with PostgresContainer(
         image=POSTGRES_IMAGE,
         username=POSTGRES_USER,

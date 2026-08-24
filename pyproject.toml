@@ -41,11 +41,29 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
+# X/X_train/X_val is sklearn's own convention for feature matrices —
+# renaming to lowercase would fight the ecosystem's naming, not improve it.
+"tests/unit/test_episodes.py" = ["N806"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's own documented pattern is `param: T = Depends(...)` — a function
+# call in an argument default. B008 exists to catch mutable-default-style
+# footguns, not this; without this, every route/dependency in the codebase
+# trips it.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Path",
+]
 
 [tool.black]
 line-length = 100
@@ -61,3 +79,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+# `python -m pytest` adds cwd to sys.path automatically; bare `pytest`
+# (what CI actually runs) doesn't. Without this, apps/recoveryos/services
+# aren't importable in CI even though it works fine locally.
+pythonpath = ["."]
