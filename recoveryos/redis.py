@@ -7,6 +7,7 @@ Provides async Redis connection pool.
 from __future__ import annotations
 
 import redis.asyncio as redis
+
 from recoveryos.config import get_settings
 
 _redis_pool: redis.Redis | None = None

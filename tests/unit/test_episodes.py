@@ -25,11 +25,15 @@ Tests:
 
 from __future__ import annotations
 
-import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
+from simulator.dataset.schema import (
+    PROHIBITED_IN_FEATURES,
+    VISIBLE_FEATURE_COLUMNS,
+    assert_no_leakage,
+)
 from simulator.episodes.models import (
     FIXED_RETRY_COST_PAISE,
     RECOVERY_MARGIN,
@@ -38,14 +42,9 @@ from simulator.episodes.models import (
     compute_retry_cost,
     derive_optimal_action,
 )
-from simulator.dataset.schema import (
-    PROHIBITED_IN_FEATURES,
-    VISIBLE_FEATURE_COLUMNS,
-    assert_no_leakage,
-)
-
 
 # ─── E[retry] formula tests ───────────────────────────────────────────────────
+
 
 class TestEpisodeEconomics:
     def test_retry_cost_fixed_plus_variable(self):
@@ -54,7 +53,7 @@ class TestEpisodeEconomics:
         assert compute_retry_cost(amount) == expected_cost
 
     def test_retry_cost_scales_with_amount(self):
-        small = compute_retry_cost(10_000)    # ₹100
+        small = compute_retry_cost(10_000)  # ₹100
         large = compute_retry_cost(5_000_000)  # ₹50,000
         assert large > small
 
@@ -94,6 +93,7 @@ class TestEpisodeEconomics:
 
 # ─── Dataset schema leakage guard tests ──────────────────────────────────────
 
+
 class TestDatasetSchema:
     def test_assert_no_leakage_passes_on_clean_columns(self):
         clean = ["amount_paise", "method", "bank", "hour_of_day"]
@@ -132,28 +132,31 @@ class TestDatasetSchema:
 
 # ─── Feature transformer correctness ─────────────────────────────────────────
 
+
 class TestFeatureTransformer:
     def _make_dummy_df(self, n: int = 50):
         try:
-            import pandas as pd
             import numpy as np
+            import pandas as pd
         except ImportError:
             pytest.skip("pandas/numpy not installed")
 
         rng = np.random.default_rng(42)
-        return pd.DataFrame({
-            "episode_id": [f"ep_{i}" for i in range(n)],
-            "amount_paise": rng.integers(1000, 500_000, n),
-            "method": rng.choice(["upi", "card", "netbanking", "wallet"], n),
-            "bank": rng.choice(["HDFC", "ICICI", "SBI", "AXIS"], n),
-            "is_returning_customer": rng.integers(0, 2, n),
-            "customer_ltv_decile": rng.integers(1, 11, n),
-            "initial_failure_code": rng.choice(["TIMEOUT", "BANK_ERROR", "UNKNOWN"], n),
-            "initial_failure_class": rng.choice(["TRANSIENT", "BANK_ERROR", "UNKNOWN"], n),
-            "hour_of_day": rng.integers(0, 24, n),
-            "day_of_week": rng.integers(0, 7, n),
-            "merchant_id": rng.choice(["m1", "m2", "m3"], n),
-        })
+        return pd.DataFrame(
+            {
+                "episode_id": [f"ep_{i}" for i in range(n)],
+                "amount_paise": rng.integers(1000, 500_000, n),
+                "method": rng.choice(["upi", "card", "netbanking", "wallet"], n),
+                "bank": rng.choice(["HDFC", "ICICI", "SBI", "AXIS"], n),
+                "is_returning_customer": rng.integers(0, 2, n),
+                "customer_ltv_decile": rng.integers(1, 11, n),
+                "initial_failure_code": rng.choice(["TIMEOUT", "BANK_ERROR", "UNKNOWN"], n),
+                "initial_failure_class": rng.choice(["TRANSIENT", "BANK_ERROR", "UNKNOWN"], n),
+                "hour_of_day": rng.integers(0, 24, n),
+                "day_of_week": rng.integers(0, 7, n),
+                "merchant_id": rng.choice(["m1", "m2", "m3"], n),
+            }
+        )
 
     def test_transform_raises_before_fit(self):
         try:
@@ -168,7 +171,6 @@ class TestFeatureTransformer:
     def test_fit_transform_produces_correct_shape(self):
         try:
             from models.recovery.features import FeatureTransformer
-            import numpy as np
         except ImportError:
             pytest.skip("scikit-learn not installed")
         df = self._make_dummy_df(100)
@@ -181,7 +183,6 @@ class TestFeatureTransformer:
         """Val transform must use train-fitted categories — no re-fitting."""
         try:
             from models.recovery.features import FeatureTransformer
-            import numpy as np
         except ImportError:
             pytest.skip("scikit-learn not installed")
         train_df = self._make_dummy_df(80)
@@ -193,9 +194,9 @@ class TestFeatureTransformer:
         # Val transform should work — same number of columns as train
         X_train = ft.transform(train_df)
         X_val = ft.transform(val_df)
-        assert X_train.shape[1] == X_val.shape[1], (
-            "Train and val transformed feature counts must match (frozen transformer)"
-        )
+        assert (
+            X_train.shape[1] == X_val.shape[1]
+        ), "Train and val transformed feature counts must match (frozen transformer)"
 
     def test_feature_names_available_after_fit(self):
         try:
@@ -216,37 +217,44 @@ class TestFeatureTransformer:
 
 # ─── Calibration loader tests ─────────────────────────────────────────────────
 
+
 class TestCalibrationLoader:
     def test_loads_without_error(self):
         from simulator.calibration.loader import load_calibration
+
         params = load_calibration()
         assert params is not None
 
     def test_method_weights_sum_to_one(self):
         from simulator.calibration.loader import load_calibration
+
         params = load_calibration()
         total = sum(params.method_weights.values())
         assert abs(total - 1.0) < 0.01, f"Method weights sum to {total}, expected ~1.0"
 
     def test_baseline_failure_rate_is_reasonable(self):
         from simulator.calibration.loader import load_calibration
+
         params = load_calibration()
         assert 0.01 <= params.baseline_failure_rate <= 0.10
 
     def test_recovery_margin_matches_episodes_models(self):
         from simulator.calibration.loader import load_calibration
         from simulator.episodes.models import RECOVERY_MARGIN
+
         params = load_calibration()
         assert abs(params.recovery_margin - RECOVERY_MARGIN) < 1e-6
 
     def test_upi_share_from_npci_source(self):
         from simulator.calibration.loader import load_calibration
+
         params = load_calibration()
         # NPCI H1 FY24-25 UPI share ≈ 57%
         assert 0.50 <= params.upi_transaction_share <= 0.70
 
 
 # ─── Episode engine smoke test ────────────────────────────────────────────────
+
 
 class TestEpisodeEngineSmoke:
     """
@@ -255,34 +263,43 @@ class TestEpisodeEngineSmoke:
     """
 
     def _build_episode_gen(self):
+        from simulator.core.clock import SimClock
         from simulator.core.ids import DeterministicIdGenerator
         from simulator.core.rng import SimRng
-        from simulator.core.clock import SimClock
-        from simulator.merchants.models import MerchantGenerator
         from simulator.customers.generator import CustomerGenerator
-        from simulator.failures.scenarios import NormalFailureScenario, TemporaryTimeoutScenario
+        from simulator.episodes.generator import EpisodeGenerator
         from simulator.failures.observation_noise import ObservationNoisePipeline
+        from simulator.failures.scenarios import NormalFailureScenario, TemporaryTimeoutScenario
+        from simulator.merchants.models import MerchantGenerator
         from simulator.outcomes.ground_truth import LatentRecoverabilityFunction
         from simulator.payments.generator import PaymentGenerator
-        from simulator.episodes.generator import EpisodeGenerator
 
         seed = 77
         id_gen = DeterministicIdGenerator(seed)
         rng = SimRng(seed)
-        clock = SimClock(datetime(2026, 1, 1, 9, 0, 0, tzinfo=timezone.utc))
+        clock = SimClock(datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC))
 
         merchants = MerchantGenerator(id_gen, rng, clock.get_time()).generate_merchants()
-        customers = CustomerGenerator(id_gen, rng, clock.get_time()).generate_customers(100, merchants)
+        customers = CustomerGenerator(id_gen, rng, clock.get_time()).generate_customers(
+            100, merchants
+        )
         scenarios = [NormalFailureScenario(0.15), TemporaryTimeoutScenario(0.10)]
         noise = ObservationNoisePipeline(rng, ambiguity_rate=0.10)
         latent_fn = LatentRecoverabilityFunction(rng)
 
-        pay_gen = PaymentGenerator(id_gen, rng, clock, merchants, customers, scenarios, noise, latent_fn)
+        pay_gen = PaymentGenerator(
+            id_gen, rng, clock, merchants, customers, scenarios, noise, latent_fn
+        )
         ep_gen = EpisodeGenerator(
             payment_generator=pay_gen,
-            id_gen=id_gen, rng=rng, clock=clock,
-            merchants=merchants, customers=customers,
-            scenarios=scenarios, noise_pipeline=noise, latent_function=latent_fn,
+            id_gen=id_gen,
+            rng=rng,
+            clock=clock,
+            merchants=merchants,
+            customers=customers,
+            scenarios=scenarios,
+            noise_pipeline=noise,
+            latent_function=latent_fn,
         )
         return ep_gen, id_gen.simulation_id()
 
@@ -293,9 +310,9 @@ class TestEpisodeEngineSmoke:
         assert result.total_failed_payments == 50
         for ep in result.episodes:
             # actual_recovered must match actual_outcome
-            assert ep.actual_recovered == (ep.actual_outcome == "RECOVERED"), (
-                f"actual_recovered / actual_outcome mismatch for episode {ep.episode_id}"
-            )
+            assert ep.actual_recovered == (
+                ep.actual_outcome == "RECOVERED"
+            ), f"actual_recovered / actual_outcome mismatch for episode {ep.episode_id}"
             # optimal_recovery_action must be binary
             assert ep.optimal_recovery_action in ("RETRY_NOW", "DO_NOT_RETRY")
             # No WAIT allowed in Phase 2
@@ -307,33 +324,42 @@ class TestEpisodeEngineSmoke:
         result = ep_gen.generate_episodes(200, sim_id)
 
         recovered_but_shouldnt = [
-            e for e in result.episodes
+            e
+            for e in result.episodes
             if e.actual_recovered and e.optimal_recovery_action == "DO_NOT_RETRY"
         ]
         shouldnt_but_did = [
-            e for e in result.episodes
+            e
+            for e in result.episodes
             if not e.actual_recovered and e.optimal_recovery_action == "RETRY_NOW"
         ]
         # Both cases should appear — they're valid divergence
         # (We can't assert exact counts, but at least one type should exist with 200 episodes)
         total_divergent = len(recovered_but_shouldnt) + len(shouldnt_but_did)
-        assert total_divergent > 0, (
-            "Labels never diverged across 200 episodes — check E[retry] formula or latent function"
-        )
+        assert (
+            total_divergent > 0
+        ), "Labels never diverged across 200 episodes — check E[retry] formula or latent function"
 
     def test_no_latent_fields_accessible_from_visible(self):
         """Verify episode visible fields contain no latent attributes."""
         ep_gen, sim_id = self._build_episode_gen()
         result = ep_gen.generate_episodes(20, sim_id)
 
-        for ep in result.episodes:
+        for _ep in result.episodes:
             # These are the latent fields — must NOT be in any feature row
-            assert_no_leakage([
-                "amount_paise", "method", "bank",
-                "is_returning_customer", "customer_ltv_decile",
-                "initial_failure_code", "initial_failure_class",
-                "hour_of_day", "day_of_week"
-            ])
+            assert_no_leakage(
+                [
+                    "amount_paise",
+                    "method",
+                    "bank",
+                    "is_returning_customer",
+                    "customer_ltv_decile",
+                    "initial_failure_code",
+                    "initial_failure_class",
+                    "hour_of_day",
+                    "day_of_week",
+                ]
+            )
 
     def test_retry_chain_is_actually_simulated(self):
         """
@@ -345,7 +371,9 @@ class TestEpisodeEngineSmoke:
 
         # At least some episodes should have retries
         episodes_with_retries = [e for e in result.episodes if e.retry_count > 0]
-        assert len(episodes_with_retries) > 0, "No episodes had any retries — check episode generator"
+        assert (
+            len(episodes_with_retries) > 0
+        ), "No episodes had any retries — check episode generator"
 
         # Retries should have their own latent state (different patience per attempt)
         for ep in episodes_with_retries[:5]:

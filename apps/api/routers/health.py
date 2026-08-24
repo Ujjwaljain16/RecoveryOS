@@ -1,5 +1,7 @@
 """Health check router."""
+
 from fastapi import APIRouter
+
 from recoveryos.config import get_settings
 
 router = APIRouter()

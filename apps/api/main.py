@@ -19,7 +19,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from recoveryos.config import get_settings
 from recoveryos.database import get_app_engine
@@ -31,7 +30,6 @@ async def lifespan(app: FastAPI):
     Startup: verify DB connectivity.
     Shutdown: dispose async engine (closes connection pool).
     """
-    settings = get_settings()
     engine = get_app_engine()
     # Warm-up: execute a trivial query to surface misconfiguration early
     from sqlalchemy import text
@@ -42,8 +40,9 @@ async def lifespan(app: FastAPI):
     yield  # Application runs here
 
     await engine.dispose()
-    
+
     from recoveryos.redis import close_redis_pool
+
     await close_redis_pool()
 
 
@@ -82,7 +81,7 @@ def create_app() -> FastAPI:
         return response
 
     # ─── Routes ───────────────────────────────────────────────────────────────
-    from apps.api.routers import events, health, risk, payments, simulate, experiments, audit
+    from apps.api.routers import audit, events, experiments, health, payments, risk, simulate
 
     app.include_router(health.router, tags=["Health"])
     app.include_router(events.router, prefix="/v1/events", tags=["Events"])

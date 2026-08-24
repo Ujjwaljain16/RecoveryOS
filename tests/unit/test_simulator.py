@@ -2,8 +2,6 @@
 Unit and Non-Circularity Validation Tests for RecoveryOS Simulator (TRD §6, PRD §30-32).
 """
 
-import pytest
-
 from simulator.run import build_simulator
 from simulator.validation.distribution_tests import verify_scenario_distributions
 from simulator.validation.leakage_tests import run_leakage_model_ladder
@@ -17,7 +15,9 @@ class TestSimulatorReproducibility:
         transaction features, and ground-truth values.
         """
         report = verify_deterministic_reproducibility(seed=42, n=1000)
-        assert report["is_identical"] is True, f"Non-deterministic diffs found: {report['sample_diffs']}"
+        assert (
+            report["is_identical"] is True
+        ), f"Non-deterministic diffs found: {report['sample_diffs']}"
         assert report["diff_count"] == 0
 
 
@@ -29,11 +29,15 @@ class TestSimulatorDistributions:
         """
         report = verify_scenario_distributions(n=3000, seed=42)
         rate = report["observed_failure_rate"]
-        assert 0.05 <= rate <= 0.30, f"Observed failure rate {rate} out of expected range [0.05, 0.30]"
+        assert (
+            0.05 <= rate <= 0.30
+        ), f"Observed failure rate {rate} out of expected range [0.05, 0.30]"
 
         # Check method shares (UPI should be highest, ~45-65%)
         upi_share = report["method_shares"].get("upi", 0.0)
-        assert 0.40 <= upi_share <= 0.70, f"UPI share {upi_share} outside expected range [0.40, 0.70]"
+        assert (
+            0.40 <= upi_share <= 0.70
+        ), f"UPI share {upi_share} outside expected range [0.40, 0.70]"
 
     def test_all_six_scenarios_and_ambiguity_represented(self):
         """
@@ -62,7 +66,9 @@ class TestSimulatorGroundTruthNonCircularity:
             f"Full report: {report}"
         )
         # Verify non-triviality (better than pure random coin flip 0.5)
-        assert max_auc > 0.52, f"Model ladder should show correlation with visible features (got {max_auc:.4f})"
+        assert (
+            max_auc > 0.52
+        ), f"Model ladder should show correlation with visible features (got {max_auc:.4f})"
 
 
 class TestSimulatorMonetaryIntegrity:

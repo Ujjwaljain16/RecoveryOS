@@ -15,8 +15,7 @@ security guarantees are enforced at the Postgres level, not just in application 
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import inspect, text
-
+from sqlalchemy import text
 
 # ─── All tables mandated by TRD §2 ────────────────────────────────────────────
 REQUIRED_TABLES = [
@@ -64,8 +63,7 @@ class TestAllTablesExist:
 
         missing = set(REQUIRED_TABLES) - existing
         assert not missing, (
-            f"Missing tables in schema: {sorted(missing)}.\n"
-            f"Existing tables: {sorted(existing)}"
+            f"Missing tables in schema: {sorted(missing)}.\n" f"Existing tables: {sorted(existing)}"
         )
 
     def test_payments_has_ground_truth_column(self, sync_engine):
@@ -128,9 +126,10 @@ class TestAllTablesExist:
             )
             violations = result.fetchall()
 
-        assert not violations, (
-            f"Money columns must be BIGINT paise, never float/numeric:\n"
-            + "\n".join(f"  {t}.{c} is {d}" for t, c, d in violations)
+        assert (
+            not violations
+        ), "Money columns must be BIGINT paise, never float/numeric:\n" + "\n".join(
+            f"  {t}.{c} is {d}" for t, c, d in violations
         )
 
 
@@ -149,13 +148,7 @@ class TestAuditLogIsAppendOnly:
         This proves immutability is enforced at the DB level, not just by convention.
         """
         from sqlalchemy import create_engine
-        from sqlalchemy.exc import ProgrammingError
 
-        # Connect as the 'recoveryos' user (app_role member)
-        # The migrated_db URL is for the superuser; swap to the app user.
-        app_url = migrated_db.replace(
-            "recoveryos_test:recoveryos_test@", "recoveryos_test:recoveryos_test@"
-        )
         # For this test we stay as the test superuser but SET ROLE to app_role
         engine = create_engine(migrated_db)
         with engine.connect() as conn:
@@ -287,14 +280,11 @@ class TestDiagnoserRoleCannotReadGroundTruth:
 
             # This MUST raise a permission error
             with pytest.raises(Exception) as exc_info:
-                conn.execute(
-                    text("SELECT ground_truth_recoverable FROM payments LIMIT 1")
-                )
+                conn.execute(text("SELECT ground_truth_recoverable FROM payments LIMIT 1"))
 
             err = str(exc_info.value).lower()
             assert any(
-                phrase in err
-                for phrase in ["permission denied", "denied", "privilege", "column"]
+                phrase in err for phrase in ["permission denied", "denied", "privilege", "column"]
             ), (
                 f"Expected column-level permission denied for diagnoser_role "
                 f"on ground_truth_recoverable, got: {exc_info.value}"
@@ -314,9 +304,7 @@ class TestDiagnoserRoleCannotReadGroundTruth:
             conn.execute(text("SET ROLE diagnoser_role"))
             # These columns are in the GRANT list — should succeed
             result = conn.execute(
-                text(
-                    "SELECT payment_id, amount_paise, method, status FROM payments LIMIT 1"
-                )
+                text("SELECT payment_id, amount_paise, method, status FROM payments LIMIT 1")
             )
             result.fetchall()  # Should not raise
 

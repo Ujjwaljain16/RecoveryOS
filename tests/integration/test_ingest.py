@@ -18,6 +18,7 @@ Requirements:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from unittest.mock import patch
 
@@ -255,10 +256,8 @@ async def test_post_event_writes_to_db_and_publishes_to_stream(
         consumer_task = asyncio.create_task(run_consumer(redis_client))
         await asyncio.sleep(2)  # give consumer time to process
         consumer_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await consumer_task
-        except asyncio.CancelledError:
-            pass
 
     # Verify DB rows created
     db_url_async = _to_async_url(migrated_db)
@@ -314,10 +313,8 @@ async def test_duplicate_event_is_idempotent(async_client, redis_client, migrate
         task = asyncio.create_task(run_consumer(redis_client))
         await asyncio.sleep(2)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     db_url_async = _to_async_url(migrated_db)
     engine = create_async_engine(db_url_async)
@@ -389,7 +386,6 @@ async def test_consumer_restart_recovers_pending(redis_client, migrated_db):
     from services.event_processor.consumer import run_consumer
 
     processed_count = [0]
-    original_process = None
 
     async def counting_process(msg, session, redis):
         nonlocal processed_count
@@ -409,10 +405,8 @@ async def test_consumer_restart_recovers_pending(redis_client, migrated_db):
     async with asyncio.timeout(10):
         with patch("services.event_processor.consumer.process_event", side_effect=counting_process):
             task = asyncio.create_task(run_consumer(redis_client))
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
     # _reclaim_pending() only reclaims messages idle >= PENDING_RECLAIM_IDLE_MS
     # (5000ms, consumer.py) — messages 6-10 were fetched by XREADGROUP but never
@@ -428,10 +422,8 @@ async def test_consumer_restart_recovers_pending(redis_client, migrated_db):
         task = asyncio.create_task(run_consumer(redis_client))
         await asyncio.sleep(3)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     # All 10 payments should be in DB
     db_url_async = _to_async_url(migrated_db)
@@ -516,10 +508,8 @@ async def test_db_unavailable_leaves_message_pending(redis_client, migrated_db):
             task = asyncio.create_task(run_consumer(redis_client))
             await asyncio.sleep(2)
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
     # Nothing should have been persisted...
     db_url_async = _to_async_url(migrated_db)
@@ -548,10 +538,8 @@ async def test_db_unavailable_leaves_message_pending(redis_client, migrated_db):
         task = asyncio.create_task(run_consumer(redis_client))
         await asyncio.sleep(2)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     async with AsyncSession(engine) as session:
         from recoveryos.models import Event, Payment

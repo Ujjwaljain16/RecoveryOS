@@ -20,6 +20,7 @@ Consumer restart recovery:
   min-idle-time of 0 (reclaims any pending messages from the last consumer run).
   This handles the "crash after DB commit, before XACK" scenario.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +39,7 @@ STREAM_NAME = "stream:payment_failed"
 GROUP_NAME = "cg_event_processor"
 CONSUMER_NAME = f"{socket.gethostname()}-{os.getpid()}"
 BATCH_SIZE = 10
-BLOCK_MS = 1000          # block up to 1s waiting for new messages
+BLOCK_MS = 1000  # block up to 1s waiting for new messages
 PENDING_RECLAIM_IDLE_MS = 5000  # reclaim messages idle > 5s in PEL
 
 
@@ -60,6 +61,7 @@ async def _process_batch(
 ) -> None:
     """Process a batch of messages from XREADGROUP, XACK each successful one."""
     from sqlalchemy.ext.asyncio import AsyncSession
+
     engine = get_app_engine()
 
     for stream_msg_id, raw_msg in messages:

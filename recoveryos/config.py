@@ -9,14 +9,14 @@ Every service imports from here — never os.environ directly.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class AppEnvironment(str, Enum):
+class AppEnvironment(StrEnum):
     """
     DEMO:    SimulatorAdapter is default; /v1/simulate/degrade endpoint is ENABLED.
     STAGING: RazorpayTestAdapter is default; /v1/simulate/degrade is DISABLED.

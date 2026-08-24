@@ -11,6 +11,7 @@ Architecture note: Redis Streams = at-least-once delivery.
   If publish fails, the consumer does NOT XACK — the message stays pending
   and will be retried, keeping the system consistent.
 """
+
 from __future__ import annotations
 
 import logging

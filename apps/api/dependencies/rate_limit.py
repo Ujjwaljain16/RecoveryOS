@@ -154,7 +154,7 @@ class RateLimiter:
             BUCKET_TTL_SECONDS,
         )
 
-        allowed, remaining, retry_after_ms = int(result[0]), int(result[1]), int(result[2])
+        allowed, _remaining, retry_after_ms = int(result[0]), int(result[1]), int(result[2])
 
         if not allowed:
             raise HTTPException(

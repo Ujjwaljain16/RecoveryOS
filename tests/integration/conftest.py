@@ -10,6 +10,7 @@ each other.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -92,10 +93,8 @@ def patch_settings(redis_url, migrated_db, monkeypatch):
 @pytest_asyncio.fixture()
 async def redis_client(redis_url) -> AsyncGenerator[aioredis.Redis, None]:
     client = aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-    try:
+    with contextlib.suppress(Exception):
         await client.delete(STREAM_NAME, STREAM_RISK)
-    except Exception:
-        pass
     yield client
     await client.aclose()
 

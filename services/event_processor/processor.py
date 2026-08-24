@@ -21,6 +21,7 @@ Failure modes:
   - Crash after DB commit but before XACK: message re-delivered on restart,
     DB write is idempotent → no duplicate in Postgres.
 """
+
 from __future__ import annotations
 
 import logging
@@ -69,9 +70,7 @@ async def process_event(
                 msg.get("event_type"),
             )
         else:
-            logger.info(
-                "[Processor] ↩ Duplicate skipped: event_id=%s", event_id
-            )
+            logger.info("[Processor] ↩ Duplicate skipped: event_id=%s", event_id)
 
         return True
 
