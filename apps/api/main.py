@@ -42,6 +42,9 @@ async def lifespan(app: FastAPI):
     yield  # Application runs here
 
     await engine.dispose()
+    
+    from recoveryos.redis import close_redis_pool
+    await close_redis_pool()
 
 
 def create_app() -> FastAPI:

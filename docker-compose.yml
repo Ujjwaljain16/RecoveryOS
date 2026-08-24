@@ -1,5 +1,5 @@
 # RecoveryOS — Docker Compose
-# All 6 services: postgres, redis, api, worker, prometheus, grafana
+# All 7 services: postgres, redis, api, event_processor, worker, prometheus, grafana
 # Run with: docker compose up --build
 #
 # Env is loaded from .env (copy .env.example → .env and fill secrets)
@@ -11,9 +11,17 @@ services:
     image: postgres:16-alpine
     container_name: recoveryos_postgres
     restart: unless-stopped
+    env_file: .env
     environment:
       POSTGRES_USER: recoveryos
-      POSTGRES_PASSWORD: recoveryos
+      # Task 6: was a hardcoded literal ('recoveryos') — now sourced from
+      # .env via docker compose's own ${VAR} substitution (read from .env in
+      # the project root at `docker compose up` time, on the HOST, not
+      # inside the container — env_file above is what makes the var visible
+      # *inside* the container too, for anything that reads it directly).
+      # Must match RECOVERYOS_APP_ROLE_PASSWORD, since migration 0002 targets
+      # this same "recoveryos" login user.
+      POSTGRES_PASSWORD: ${RECOVERYOS_APP_ROLE_PASSWORD:?RECOVERYOS_APP_ROLE_PASSWORD must be set in .env — see .env.example}
       POSTGRES_DB: recoveryos
     ports:
       - "5433:5432"
@@ -49,7 +57,7 @@ services:
     container_name: recoveryos_migrate
     env_file: .env
     environment:
-      DATABASE_URL_SYNC: postgresql://recoveryos:recoveryos@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
     command: >
       sh -c "alembic upgrade head"
     depends_on:
@@ -66,8 +74,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://recoveryos:recoveryos@postgres:5432/recoveryos
-      DATABASE_URL_SYNC: postgresql://recoveryos:recoveryos@postgres:5432/recoveryos
+      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -87,6 +95,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── Event Processor (Redis Streams consumer: stream:payment_failed → Postgres) ──
+  event_processor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: recoveryos_event_processor
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      REDIS_URL: redis://redis:6379/0
+      ENV: demo
+    command: ["python", "-m", "services.event_processor.consumer"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   # ─── Celery Worker ─────────────────────────────────────────────────────────
   worker:
     build:
@@ -96,8 +126,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://recoveryos:recoveryos@postgres:5432/recoveryos
-      DATABASE_URL_SYNC: postgresql://recoveryos:recoveryos@postgres:5432/recoveryos
+      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
@@ -138,10 +168,14 @@ services:
     image: grafana/grafana:11.3.0
     container_name: recoveryos_grafana
     restart: unless-stopped
+    env_file: .env
     ports:
       - "3001:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: recoveryos
+      # Task 6: was a hardcoded literal ('recoveryos') — a second credential
+      # this same grep sweep found, beyond the two Postgres role passwords
+      # the task named explicitly.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env — see .env.example}
       GF_SECURITY_ADMIN_USER: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
