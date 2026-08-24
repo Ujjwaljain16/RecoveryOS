@@ -19,7 +19,14 @@ jobs:
           python-version: "3.11"
 
       - name: Install lint deps
-        run: pip install ruff black
+        # Pinned to match pyproject.toml's [tool.poetry.group.dev.dependencies]
+        # constraints exactly — an unpinned `pip install black` grabs whatever
+        # is latest at CI run time, and black's formatting rules genuinely
+        # change across major versions (confirmed: 26.x reformats multi-line
+        # text() calls differently than the 24.x this project is pinned to,
+        # so CI flip-flops between "clean" and "needs reformat" depending on
+        # nothing anyone here changed).
+        run: pip install "ruff>=0.8,<0.9" "black>=24.10,<25"
 
       - name: ruff check
         run: ruff check recoveryos/ apps/ services/ workers/ tests/ --output-format=github
@@ -79,7 +86,8 @@ jobs:
             pydantic pydantic-settings \
             sqlalchemy asyncpg psycopg2-binary \
             alembic fastapi uvicorn httpx \
-            celery redis structlog prometheus-client
+            celery redis structlog prometheus-client \
+            pyyaml
 
       - name: Run unit tests
         run: pytest tests/unit/ -v --tb=short
