@@ -21,10 +21,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from typing import Generator
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 
 # ─── Testcontainers ────────────────────────────────────────────────────────────
 # We use the PostgreSQL testcontainer — NOT docker-compose, not a shared instance.
@@ -35,9 +34,7 @@ try:
     except ImportError:
         from testcontainers.postgres import PostgresContainer
 except ImportError:
-    raise RuntimeError(
-        "testcontainers not installed. Run: pip install testcontainers"
-    )
+    raise RuntimeError("testcontainers not installed. Run: pip install testcontainers")
 
 
 # ─── Session-scoped container ──────────────────────────────────────────────────
@@ -80,8 +77,17 @@ def migrated_db(db_url_sync: str):
     os.environ["DATABASE_URL_SYNC"] = db_url_sync
     os.environ["ENV"] = "test"
 
+    # Task 6: migrations/versions/0002_db_roles.py reads DB role passwords
+    # from these env vars (no hardcoded fallback, by design — see that
+    # file). Set here to fixed test-only values: this is a throwaway
+    # testcontainer destroyed at session end, so there's no real secret to
+    # protect, only a requirement to provide *something* non-empty.
+    os.environ.setdefault("RECOVERYOS_APP_ROLE_PASSWORD", "test-only-app-role-password")
+    os.environ.setdefault("RECOVERYOS_DIAGNOSER_ROLE_PASSWORD", "test-only-diagnoser-role-password")
+
     # Clear the cached settings singleton so it re-reads the env
     from recoveryos.config import get_settings
+
     get_settings.cache_clear()
 
     result = subprocess.run(
@@ -103,7 +109,7 @@ def migrated_db(db_url_sync: str):
 @pytest.fixture(scope="session")
 def sync_engine(migrated_db: str):
     """Synchronous SQLAlchemy engine (for direct SQL in tests)."""
-    from sqlalchemy import create_engine
+
     engine = create_engine(migrated_db, pool_pre_ping=True)
     yield engine
     engine.dispose()
@@ -123,9 +129,11 @@ def db_conn(sync_engine):
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _project_root():
     """Resolve the project root (the directory containing alembic.ini)."""
     import pathlib
+
     here = pathlib.Path(__file__).parent
     # Walk up until we find alembic.ini
     for candidate in [here, here.parent, here.parent.parent]:

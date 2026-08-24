@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field, PostgresDsn, RedisDsn, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,7 @@ class AppEnvironment(str, Enum):
     STAGING: RazorpayTestAdapter is default; /v1/simulate/degrade is DISABLED.
     TEST:    Used by pytest — points to testcontainer-managed Postgres.
     """
+
     DEMO = "demo"
     STAGING = "staging"
     TEST = "test"
@@ -46,19 +47,42 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # Database
     # ─────────────────────────────────────────────────────────────────────────
+    # Task 6: the password segments of these defaults used to be the same
+    # literal values ('recoveryos', 'diagnoser_pass') that were also
+    # hardcoded into migrations/versions/0002_db_roles.py and committed to
+    # git — i.e. the "default" was a real, working, now-permanently-
+    # compromised credential. CHANGE_ME deliberately does NOT authenticate
+    # against anything: if these defaults are ever actually reached (no
+    # .env, no env vars set), connecting fails loudly with an auth error
+    # instead of silently succeeding with a known-leaked password.
     database_url: str = Field(
-        default="postgresql+asyncpg://recoveryos:recoveryos@localhost:5432/recoveryos",
-        description="Async-compatible PostgreSQL DSN used by the application.",
+        default="postgresql+asyncpg://recoveryos:CHANGE_ME@localhost:5432/recoveryos",
+        description="Async-compatible PostgreSQL DSN used by the application. Set via env/.env.",
     )
     database_url_sync: str = Field(
-        default="postgresql://recoveryos:recoveryos@localhost:5432/recoveryos",
-        description="Synchronous DSN used by Alembic migrations.",
+        default="postgresql://recoveryos:CHANGE_ME@localhost:5432/recoveryos",
+        description="Synchronous DSN used by Alembic migrations. Set via env/.env.",
     )
 
-    # DB role DSNs for privilege-separated connections
+    # DB role DSNs for privilege-separated connections.
+    # NOTE: the login user is "diagnoser" (diagnoser_role is a NOLOGIN role
+    # granted to it, not a connectable username — migrations/versions/0002_db_roles.py).
     diagnoser_database_url: str = Field(
-        default="postgresql+asyncpg://diagnoser_role:diagnoser_pass@localhost:5432/recoveryos",
-        description="Restricted DSN for the AI Diagnoser — no access to ground_truth columns.",
+        default="postgresql+asyncpg://diagnoser:CHANGE_ME@localhost:5432/recoveryos",
+        description="Restricted DSN for the AI Diagnoser — no access to ground_truth columns. Set via env/.env.",
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Auth (Task 4 — API key per merchant)
+    # ─────────────────────────────────────────────────────────────────────────
+    api_key_pepper: str = Field(
+        default="dev-insecure-pepper-change-in-production",
+        description=(
+            "Server-side secret mixed into merchants.api_key_hash (HMAC-SHA256). "
+            "MUST be overridden via env var in any non-dev deployment — the "
+            "default here is intentionally labeled insecure so it can never be "
+            "mistaken for a real secret if left unset."
+        ),
     )
 
     # ─────────────────────────────────────────────────────────────────────────

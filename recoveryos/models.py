@@ -56,6 +56,7 @@ class PolicyConfig(Base):
     Defined before Merchant because Merchant has a FK to it.
     All monetary floors in BIGINT paise.
     """
+
     __tablename__ = "policy_configs"
 
     policy_config_id: Mapped[str] = mapped_column(
@@ -64,56 +65,50 @@ class PolicyConfig(Base):
     max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     retry_cooldown_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=12)
     # ₹25,000 default cap expressed in paise — BIGINT, never Float
-    max_amount_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=2_500_000
-    )
+    max_amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=2_500_000)
     stop_after_success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     stop_after_opt_out: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     escalate_after_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     # floor for "do nothing" trigger — negative EVI always triggers DO_NOTHING
-    min_expected_value_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
+    min_expected_value_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
 
     # Relationships
-    merchants: Mapped[list["Merchant"]] = relationship(back_populates="policy_config")
-    policy_decisions: Mapped[list["PolicyDecision"]] = relationship(
-        back_populates="policy_config"
-    )
+    merchants: Mapped[list[Merchant]] = relationship(back_populates="policy_config")
+    policy_decisions: Mapped[list[PolicyDecision]] = relationship(back_populates="policy_config")
 
 
 class Merchant(Base):
     __tablename__ = "merchants"
 
-    merchant_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    merchant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     policy_config_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("policy_configs.policy_config_id"),
         nullable=True,
     )
+    # SHA-256(pepper + raw key) — never the raw key. NULL until a key is
+    # issued (auth.generate_api_key() + auth.hash_api_key()). Migration 0006.
+    # See apps/api/dependencies/auth.py for the verification path.
+    api_key_hash: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
 
     # Relationships
-    policy_config: Mapped["PolicyConfig | None"] = relationship(back_populates="merchants")
-    customers: Mapped[list["Customer"]] = relationship(back_populates="merchant")
-    payments: Mapped[list["Payment"]] = relationship(back_populates="merchant")
+    policy_config: Mapped[PolicyConfig | None] = relationship(back_populates="merchants")
+    customers: Mapped[list[Customer]] = relationship(back_populates="merchant")
+    payments: Mapped[list[Payment]] = relationship(back_populates="merchant")
 
 
 class Customer(Base):
     __tablename__ = "customers"
 
-    customer_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    customer_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     merchant_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("merchants.merchant_id"),
@@ -121,9 +116,7 @@ class Customer(Base):
     )
     is_returning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Customer lifetime value in paise — BIGINT, never Float
-    lifetime_value_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
+    lifetime_value_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     opted_out_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMPTZ, nullable=True
     )  # NULL = not opted out
@@ -132,8 +125,8 @@ class Customer(Base):
     )
 
     # Relationships
-    merchant: Mapped["Merchant"] = relationship(back_populates="customers")
-    payments: Mapped[list["Payment"]] = relationship(back_populates="customer")
+    merchant: Mapped[Merchant] = relationship(back_populates="customers")
+    payments: Mapped[list[Payment]] = relationship(back_populates="customer")
 
 
 class Payment(Base):
@@ -147,6 +140,7 @@ class Payment(Base):
       explicitly excludes this column. SELECT * is BANNED in all inference-
       reachable code paths (enforced by CI grep check).
     """
+
     __tablename__ = "payments"
     __table_args__ = (
         CheckConstraint("amount_paise > 0", name="ck_payments_amount_positive"),
@@ -154,9 +148,7 @@ class Payment(Base):
         Index("idx_payments_bank_method_time", "bank", "method", "failed_at"),
     )
 
-    payment_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    payment_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     merchant_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("merchants.merchant_id"),
@@ -169,9 +161,7 @@ class Payment(Base):
     )
     # Payment amount in paise — BIGINT, never Float/Numeric
     amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    method: Mapped[str] = mapped_column(
-        Text, nullable=False
-    )  # upi | card | netbanking | wallet
+    method: Mapped[str] = mapped_column(Text, nullable=False)  # upi | card | netbanking | wallet
     bank: Mapped[str | None] = mapped_column(Text, nullable=True)
     # created|authorized|failed|success|expired
     status: Mapped[str] = mapped_column(Text, nullable=False)
@@ -185,30 +175,22 @@ class Payment(Base):
     # SIMULATOR GROUND TRUTH — NEVER EXPOSED TO INFERENCE PATH
     # diagnoser_role has NO SELECT grant on this column.
     # ─────────────────────────────────────────────────────────────────────────
-    ground_truth_recoverable: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True
-    )
+    ground_truth_recoverable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
     failed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
 
     # Relationships
-    merchant: Mapped["Merchant"] = relationship(back_populates="payments")
-    customer: Mapped["Customer"] = relationship(back_populates="payments")
-    events: Mapped[list["Event"]] = relationship(back_populates="payment")
-    diagnoses: Mapped[list["Diagnosis"]] = relationship(back_populates="payment")
-    candidate_actions: Mapped[list["CandidateAction"]] = relationship(
-        back_populates="payment"
-    )
-    policy_decisions: Mapped[list["PolicyDecision"]] = relationship(
-        back_populates="payment"
-    )
-    recoveries: Mapped[list["Recovery"]] = relationship(back_populates="payment")
-    recovery_ledger: Mapped["RecoveryLedger | None"] = relationship(
-        back_populates="payment"
-    )
-    audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="payment")
+    merchant: Mapped[Merchant] = relationship(back_populates="payments")
+    customer: Mapped[Customer] = relationship(back_populates="payments")
+    events: Mapped[list[Event]] = relationship(back_populates="payment")
+    diagnoses: Mapped[list[Diagnosis]] = relationship(back_populates="payment")
+    candidate_actions: Mapped[list[CandidateAction]] = relationship(back_populates="payment")
+    policy_decisions: Mapped[list[PolicyDecision]] = relationship(back_populates="payment")
+    recoveries: Mapped[list[Recovery]] = relationship(back_populates="payment")
+    recovery_ledger: Mapped[RecoveryLedger | None] = relationship(back_populates="payment")
+    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="payment")
 
 
 class Event(Base):
@@ -217,19 +199,39 @@ class Event(Base):
     REVOKE UPDATE, DELETE on this table from app_role at the DB level.
     The audit explorer is a query over this table — it can never drift from reality.
     """
+
     __tablename__ = "events"
     __table_args__ = (
         Index("idx_events_payment", "payment_id", "occurred_at"),
+        # Scoped to (payment_id, idempotency_key), NOT idempotency_key alone.
+        # A global-uniqueness constraint would wrongly reject a legitimate
+        # second event on a DIFFERENT payment if a client (or a bug) ever
+        # reused a key across payments — e.g. a naive client that generates
+        # idempotency_key from something coarser than the payment (a request
+        # timestamp, a batch id). Scoping to the payment means "this exact
+        # payment's retry of this exact logical event" is deduplicated,
+        # without silently dropping unrelated events that happen to collide
+        # on the key alone.
+        UniqueConstraint("payment_id", "idempotency_key", name="uq_events_payment_idempotency_key"),
     )
 
-    event_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    event_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
         nullable=False,
     )
+    # Client-supplied (or server-generated fallback) dedup key — see
+    # EventPayload.idempotency_key (apps/api/routers/events.py), read from
+    # the JSON BODY, not a header (a body field travels with the specific
+    # logical event being retried; a header would apply to the whole
+    # request/connection, which is the wrong granularity for "retry this
+    # exact payment event"). Two HTTP submissions for the SAME payment with
+    # the same idempotency_key must resolve to exactly one events row — this
+    # is the DB-level backstop; repository.insert_event_idempotent() enforces
+    # it atomically via INSERT ... ON CONFLICT (payment_id, idempotency_key)
+    # DO NOTHING.
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
     # PAYMENT_CREATED|PAYMENT_FAILED|RETRY_EXECUTED|CUSTOMER_OPTED_OUT|...
     event_type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -238,7 +240,7 @@ class Event(Base):
     )
 
     # Relationships
-    payment: Mapped["Payment"] = relationship(back_populates="events")
+    payment: Mapped[Payment] = relationship(back_populates="events")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -252,22 +254,18 @@ class AnomalyWindow(Base):
     baseline_rate and observed_rate are failure rates (dimensionless 0.0–1.0),
     stored as NUMERIC(5,4) for statistical correctness — NOT money columns.
     """
+
     __tablename__ = "anomaly_windows"
     __table_args__ = (
         UniqueConstraint(
-            "scope_type", "scope_entity", "time_bucket",
-            name="uq_anomaly_scope_bucket"
+            "scope_type", "scope_entity", "time_bucket", name="uq_anomaly_scope_bucket"
         ),
     )
 
-    window_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    window_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     scope_type: Mapped[str] = mapped_column(Text, nullable=False)  # bank|method|merchant
     scope_entity: Mapped[str] = mapped_column(Text, nullable=False)
-    time_bucket: Mapped[datetime] = mapped_column(
-        TIMESTAMPTZ, nullable=False
-    )  # 15-min bucket
+    time_bucket: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)  # 15-min bucket
     baseline_rate: Mapped[float | None] = mapped_column(
         # These are rates (0.0–1.0), not money — NUMERIC is appropriate here
         nullable=True
@@ -288,11 +286,10 @@ class Diagnosis(Base):
     confidence is capped at 0.6 max for fallback diagnoses (gaps.md §A.3).
     model_version='fallback-rule-v1' identifies the fallback path.
     """
+
     __tablename__ = "diagnoses"
 
-    diagnosis_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    diagnosis_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
@@ -315,8 +312,8 @@ class Diagnosis(Base):
     )
 
     # Relationships
-    payment: Mapped["Payment | None"] = relationship(back_populates="diagnoses")
-    audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="diagnosis")
+    payment: Mapped[Payment | None] = relationship(back_populates="diagnoses")
+    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="diagnosis")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -334,11 +331,10 @@ class CandidateAction(Base):
       expected_value_paise: BIGINT — computed as (amount_paise * recovery_prob_bps) // 10_000
       All cost/penalty columns are BIGINT paise.
     """
+
     __tablename__ = "candidate_actions"
 
-    candidate_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    candidate_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
@@ -359,11 +355,9 @@ class CandidateAction(Base):
     )
 
     # Relationships
-    payment: Mapped["Payment"] = relationship(back_populates="candidate_actions")
-    policy_decisions: Mapped[list["PolicyDecision"]] = relationship(
-        back_populates="candidate"
-    )
-    audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="candidate")
+    payment: Mapped[Payment] = relationship(back_populates="candidate_actions")
+    policy_decisions: Mapped[list[PolicyDecision]] = relationship(back_populates="candidate")
+    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="candidate")
 
 
 class PolicyDecision(Base):
@@ -372,11 +366,10 @@ class PolicyDecision(Base):
     rule_trace contains the ordered list of {rule, passed, reason} — this makes
     every decision independently replayable without re-running code.
     """
+
     __tablename__ = "policy_decisions"
 
-    decision_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    decision_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
@@ -401,11 +394,11 @@ class PolicyDecision(Base):
     )
 
     # Relationships
-    payment: Mapped["Payment"] = relationship(back_populates="policy_decisions")
-    candidate: Mapped["CandidateAction"] = relationship(back_populates="policy_decisions")
-    policy_config: Mapped["PolicyConfig"] = relationship(back_populates="policy_decisions")
-    recoveries: Mapped[list["Recovery"]] = relationship(back_populates="policy_decision")
-    audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="policy_decision")
+    payment: Mapped[Payment] = relationship(back_populates="policy_decisions")
+    candidate: Mapped[CandidateAction] = relationship(back_populates="policy_decisions")
+    policy_config: Mapped[PolicyConfig] = relationship(back_populates="policy_decisions")
+    recoveries: Mapped[list[Recovery]] = relationship(back_populates="policy_decision")
+    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="policy_decision")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -420,14 +413,11 @@ class Recovery(Base):
     preventing double-execution even if the advisory lock logic has a bug.
     (gaps.md §B.2 — the UNIQUE constraint is the physical guarantee, not just a convention.)
     """
-    __tablename__ = "recoveries"
-    __table_args__ = (
-        Index("idx_recoveries_payment", "payment_id"),
-    )
 
-    recovery_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    __tablename__ = "recoveries"
+    __table_args__ = (Index("idx_recoveries_payment", "payment_id"),)
+
+    recovery_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
@@ -447,9 +437,7 @@ class Recovery(Base):
     executed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)  # SUCCESS|FAILED|PENDING
     # Recovered amount in paise — BIGINT, never Float
-    recovered_amount_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
+    recovered_amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     provider_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     stopping_rule_triggered: Mapped[str | None] = mapped_column(
         Text, nullable=True
@@ -459,9 +447,9 @@ class Recovery(Base):
     )
 
     # Relationships
-    payment: Mapped["Payment"] = relationship(back_populates="recoveries")
-    policy_decision: Mapped["PolicyDecision"] = relationship(back_populates="recoveries")
-    audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="recovery")
+    payment: Mapped[Payment] = relationship(back_populates="recoveries")
+    policy_decision: Mapped[PolicyDecision] = relationship(back_populates="recoveries")
+    audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="recovery")
 
 
 class RecoveryLedger(Base):
@@ -471,11 +459,10 @@ class RecoveryLedger(Base):
     incremental_recovery_paise = actual_recovery_paise - baseline equivalent.
     ALL columns are BIGINT paise. The evaluation SQL query SUM()s only these columns.
     """
+
     __tablename__ = "recovery_ledger"
 
-    ledger_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    ledger_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
@@ -486,19 +473,15 @@ class RecoveryLedger(Base):
     actual_recovery_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     # from simulator ground truth: what baseline strategy would've gotten
     baseline_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
-    incremental_recovery_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
-    intervention_cost_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
+    incremental_recovery_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    intervention_cost_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     net_recovery_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
 
     # Relationships
-    payment: Mapped["Payment"] = relationship(back_populates="recovery_ledger")
+    payment: Mapped[Payment] = relationship(back_populates="recovery_ledger")
 
 
 class AuditLog(Base):
@@ -510,11 +493,10 @@ class AuditLog(Base):
     Every state transition is traceable from this table joined to events.
     The audit explorer is a query over this table — not a separately-maintained view.
     """
+
     __tablename__ = "audit_log"
 
-    audit_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    audit_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
@@ -547,13 +529,11 @@ class AuditLog(Base):
     )
 
     # Relationships
-    payment: Mapped["Payment | None"] = relationship(back_populates="audit_logs")
-    diagnosis: Mapped["Diagnosis | None"] = relationship(back_populates="audit_logs")
-    candidate: Mapped["CandidateAction | None"] = relationship(back_populates="audit_logs")
-    policy_decision: Mapped["PolicyDecision | None"] = relationship(
-        back_populates="audit_logs"
-    )
-    recovery: Mapped["Recovery | None"] = relationship(back_populates="audit_logs")
+    payment: Mapped[Payment | None] = relationship(back_populates="audit_logs")
+    diagnosis: Mapped[Diagnosis | None] = relationship(back_populates="audit_logs")
+    candidate: Mapped[CandidateAction | None] = relationship(back_populates="audit_logs")
+    policy_decision: Mapped[PolicyDecision | None] = relationship(back_populates="audit_logs")
+    recovery: Mapped[Recovery | None] = relationship(back_populates="audit_logs")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -568,6 +548,7 @@ class ActionCost(Base):
     Lookup order: merchant-specific first → platform default fallback.
     All costs in BIGINT paise.
     """
+
     __tablename__ = "action_costs"
     __table_args__ = (
         # Unique per (merchant, action_type, version)
@@ -605,20 +586,17 @@ class BaselineRun(Base):
     Used in the evaluation harness SQL join (TRD §7).
     baseline_recovery_paise = what the simple fixed-retry strategy recovered.
     """
+
     __tablename__ = "baseline_runs"
 
-    run_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    run_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     experiment_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("payments.payment_id"),
         nullable=False,
     )
-    recovered_amount_paise: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
+    recovered_amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
@@ -634,11 +612,10 @@ class SimulationManifest(Base):
     """
     Tracks metadata and configuration for reproducible simulation runs.
     """
+
     __tablename__ = "simulator_manifests"
 
-    simulation_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    simulation_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
     generator_version: Mapped[str] = mapped_column(Text, nullable=False)
     scenario_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -649,7 +626,7 @@ class SimulationManifest(Base):
     )
 
     # Relationships
-    latent_states: Mapped[list["SimulatorLatentState"]] = relationship(
+    latent_states: Mapped[list[SimulatorLatentState]] = relationship(
         back_populates="manifest", cascade="all, delete-orphan"
     )
 
@@ -658,17 +635,14 @@ class SimulatorLatentState(Base):
     """
     Stores hidden parameters and true recoverability probability generated by
     the simulator's latent recoverability function.
-    
+
     SECURITY: No inference role or diagnoser role is granted access to this table.
     """
-    __tablename__ = "simulator_latent_state"
-    __table_args__ = (
-        Index("idx_latent_simulation", "simulation_id"),
-    )
 
-    latent_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    __tablename__ = "simulator_latent_state"
+    __table_args__ = (Index("idx_latent_simulation", "simulation_id"),)
+
+    latent_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     simulation_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("simulator_manifests.simulation_id", ondelete="CASCADE"),
@@ -691,5 +665,4 @@ class SimulatorLatentState(Base):
     )
 
     # Relationships
-    manifest: Mapped["SimulationManifest"] = relationship(back_populates="latent_states")
-
+    manifest: Mapped[SimulationManifest] = relationship(back_populates="latent_states")

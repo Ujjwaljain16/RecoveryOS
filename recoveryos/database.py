@@ -11,14 +11,17 @@ Connection roles:
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import contextlib
+import hashlib
+from collections.abc import AsyncGenerator, Generator
 
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy import create_engine, text
 
 from recoveryos.config import get_settings
 
@@ -104,3 +107,45 @@ def get_sync_engine():
         _sync_engine = _build_sync_engine(get_settings().database_url_sync)
     return _sync_engine
 
+
+def _advisory_lock_key(key: str) -> int:
+    """
+    Deterministically map an arbitrary string idempotency key to the signed
+    64-bit integer pg_advisory_lock(bigint) requires.
+    """
+    digest = hashlib.sha256(key.encode("utf-8")).digest()[:8]
+    value = int.from_bytes(digest, byteorder="big", signed=False)
+    return value - (1 << 64) if value >= (1 << 63) else value
+
+
+@contextlib.contextmanager
+def advisory_lock(conn: Connection, key: str) -> Generator[None, None, None]:
+    """
+    Postgres session-level advisory lock, keyed by an arbitrary string.
+
+    MUST be acquired BEFORE the existence check in any idempotent
+    check-then-act flow (gaps.md §B.2) — locking AFTER the check is the
+    textbook TOCTOU race this exists to close: two callers can both pass a
+    "does this already exist?" check before either has written a result,
+    then both perform the side effect. The caller is responsible for
+    structuring their code so the check happens inside this context, not
+    around it — see services/execution_engine/idempotency.py:execute_with_idempotency
+    for the reference usage.
+
+    `conn` must be a single checked-out connection/transaction held for the
+    ENTIRE duration of the lock (through the existence check, the action,
+    and the result write) — pg_advisory_lock is session-scoped, so pulling a
+    fresh connection per statement (e.g. a new `engine.connect()` for the
+    check and another for the write) would silently make each acquisition a
+    no-op against a different session and defeat the whole guarantee.
+
+    Blocks (does not fail) if another session already holds the same key —
+    this is the intended behavior: a concurrent caller waits its turn rather
+    than racing.
+    """
+    lock_key = _advisory_lock_key(key)
+    conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
+    try:
+        yield
+    finally:
+        conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
