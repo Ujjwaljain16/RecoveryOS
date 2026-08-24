@@ -82,7 +82,7 @@ jobs:
             celery redis structlog prometheus-client
 
       - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short --co -q
+        run: pytest tests/unit/ -v --tb=short
         env:
           ENV: test
           DATABASE_URL: postgresql+asyncpg://x:x@localhost:5432/x
@@ -101,15 +101,26 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Extra names verified against the installed package's own Provides-Extra
+      # metadata (testcontainers 4.15.0, matching pyproject.toml's ^4.9.0 pin) —
+      # "postgres", not "postgresql". The latter is silently accepted by pip as
+      # an unknown-extra no-op (pip just warns, doesn't fail), so a typo here
+      # would not show up as a CI failure — it would just quietly drop whatever
+      # that extra was supposed to pull in. "redis" is a real gated dependency
+      # (redis>=7); "postgres" itself currently adds nothing beyond the base
+      # package (PostgresContainer needs no extra driver deps from
+      # testcontainers — psycopg2-binary/asyncpg above cover that), but the
+      # correct name is used regardless so a future testcontainers release that
+      # does gate something behind it doesn't silently go missing again.
       - name: Install deps (including testcontainers)
         run: |
           pip install \
             pytest pytest-asyncio pytest-cov \
             pydantic pydantic-settings \
             sqlalchemy asyncpg psycopg2-binary \
-            alembic fastapi uvicorn httpx \
+            alembic fastapi uvicorn httpx aiohttp \
             celery redis structlog prometheus-client \
-            "testcontainers[postgresql]"
+            "testcontainers[postgres,redis]"
 
       - name: Run integration tests
         run: pytest tests/integration/ -v --tb=short
