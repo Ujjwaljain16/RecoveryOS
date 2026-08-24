@@ -11,6 +11,23 @@ Idempotency guarantee (TRD §4.3, gaps.md §B.2):
 
 The UNIQUE constraint on recoveries.idempotency_key is the physical DB-level backstop.
 Even if two workers race past the advisory lock, only one INSERT can succeed.
+
+The lock-before-check pattern itself is implemented and proven correct under
+genuine concurrency (threading.Barrier, real Postgres, a call-counting spy
+standing in for the provider call) in
+services/execution_engine/idempotency.py:execute_with_idempotency +
+tests/integration/test_idempotent_execution.py — this task does NOT yet call
+it, because that requires ProviderAdapter and the recovery-decision logic
+(candidate generation, policy evaluation) that don't exist yet. Wiring it in
+once those exist is:
+
+    from services.execution_engine.idempotency import execute_with_idempotency
+    result = execute_with_idempotency(
+        conn, idempotency_key,
+        action_fn=lambda: provider_adapter.retry(job["payment_id"]),
+        get_existing=lambda k: db.get_recovery(k),
+        save_result=lambda k, r: db.upsert_recovery(k, r),
+    )
 """
 
 from __future__ import annotations
@@ -44,7 +61,11 @@ def execute_recovery(self, job: dict[str, Any]) -> dict[str, Any]:
         "adapter": "simulator" | "razorpay_test"
       }
 
-    Phase 7 implementation: full advisory lock + ProviderAdapter call.
+    Phase 7 implementation: wire this to a real ProviderAdapter + recovery
+    decision. The idempotency wrapper itself is not scaffolding — it's real,
+    tested code — see services.execution_engine.idempotency.execute_with_idempotency
+    and the module docstring above for the exact call shape this task will
+    use once ProviderAdapter and the recovery-decision path exist.
     Scaffold: log and return pending.
     """
     idempotency_key = job.get("idempotency_key", "unknown")
@@ -52,14 +73,5 @@ def execute_recovery(self, job: dict[str, Any]) -> dict[str, Any]:
         "execute_recovery called",
         extra={"idempotency_key": idempotency_key, "attempt": job.get("attempt_number")},
     )
-
-    # Phase 7 will implement:
-    # with db.advisory_lock(idempotency_key):          # LOCK FIRST
-    #     existing = db.get_recovery(idempotency_key)  # then check
-    #     if existing and existing.outcome is not None:
-    #         return existing.to_dict()
-    #     result = provider_adapter.retry(job["payment_id"])
-    #     db.upsert_recovery(idempotency_key, result)
-    #     return result
 
     return {"idempotency_key": idempotency_key, "outcome": "PENDING", "scaffold": True}
