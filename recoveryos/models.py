@@ -268,11 +268,17 @@ class AnomalyWindow(Base):
     scope_entity: Mapped[str] = mapped_column(Text, nullable=False)
     time_bucket: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)  # 15-min bucket
     baseline_rate: Mapped[float | None] = mapped_column(
-        # These are rates (0.0–1.0), not money — NUMERIC is appropriate here
-        nullable=True
+        # These are rates (0.0–1.0), not money — NUMERIC is appropriate here.
+        # Explicit type matches migrations/0001 and TRD §2 exactly (Task R2,
+        # pre-Phase-8 audit) -- without it, SQLAlchemy's default type
+        # inference for `float` is FLOAT, not NUMERIC, which drifted from
+        # the real schema and would confuse a future `alembic
+        # revision --autogenerate` into proposing to revert it.
+        Numeric(5, 4),
+        nullable=True,
     )
-    observed_rate: Mapped[float | None] = mapped_column(nullable=True)
-    z_score: Mapped[float | None] = mapped_column(nullable=True)
+    observed_rate: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    z_score: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
     severity: Mapped[str | None] = mapped_column(Text, nullable=True)  # low|medium|high
     is_anomaly: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -304,7 +310,9 @@ class Diagnosis(Base):
         UUID(as_uuid=False), nullable=True
     )  # NULL if isolated, set if systemic
     root_cause: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[float | None] = mapped_column(nullable=True)  # 0.0-1.0 (not money)
+    # 0.0-1.0 (not money) -- explicit Numeric(4,3) matches migrations/0001 and
+    # TRD §2 (Task R2, pre-Phase-8 audit; same drift class as AnomalyWindow above).
+    confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
     evidence: Mapped[dict] = mapped_column(
         JSONB, nullable=False
     )  # structured facts cited, for grounding checks

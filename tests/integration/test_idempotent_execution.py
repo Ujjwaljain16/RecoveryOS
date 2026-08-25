@@ -219,3 +219,118 @@ def test_advisory_lock_actually_blocks_a_second_session(db_url_sync: str):
         f"expected it to block for ~0.5s until the holder released"
     )
     engine.dispose()
+
+
+# ─── Task R1: advisory_lock's rollback scope ───────────────────────────────
+#
+# The pre-fix advisory_lock() called conn.rollback() unconditionally in its
+# finally block -- on the clean-success path too, not just after an
+# exception. Today's one real caller (workers/execution_worker.py) is safe
+# only because it always commits before returning from inside the locked
+# block; nothing about advisory_lock() itself guaranteed that. These two
+# tests are the negative control the audit identified as missing:
+# test_idempotent_execution.py's own concurrency proof above uses a
+# SEPARATE connection for save_result (see _save_result's own
+# engine.begin()), which structurally never exercises "a write through the
+# SAME locked connection, with no explicit commit before the block exits."
+
+
+def test_successful_write_through_locked_connection_survives_without_explicit_commit(
+    scratch_table,
+):
+    """
+    The exact scenario the pre-fix design failed silently on: a caller that
+    writes INSIDE advisory_lock()'s block but only commits AFTER releasing
+    the lock (a legitimate pattern -- e.g. holding the lock only around the
+    check-and-write, then committing once outside it). Against the old
+    unconditional-rollback code, advisory_lock()'s own finally block would
+    roll back the pending write the instant the `with` block exits --
+    before the caller's own conn.commit() below ever runs -- so that commit
+    silently commits nothing. Against the fix (rollback scoped to the
+    exception path only), the write is still pending when control reaches
+    the caller's commit, and it lands for real.
+
+    Note: this deliberately does NOT commit inside the block -- a variant
+    that commits before the block exits would pass under both the old and
+    new code, since there'd be nothing left for advisory_lock's rollback to
+    discard either way. The commit has to happen AFTER the block for this
+    test to actually distinguish the two behaviors.
+    """
+    engine = scratch_table
+    key = f"no-explicit-commit-{uuid.uuid4()}"
+
+    conn = engine.connect()
+    with advisory_lock(conn, key):
+        conn.execute(
+            text(
+                "INSERT INTO idempotent_action_results (idempotency_key, result_value) "
+                "VALUES (:k, :v)"
+            ),
+            {"k": key, "v": "written-without-explicit-commit"},
+        )
+        # Deliberately NOT calling conn.commit() inside the block -- the
+        # caller here commits only after the lock is released, below.
+    conn.commit()
+    conn.close()
+
+    with engine.connect() as check_conn:
+        row = check_conn.execute(
+            text("SELECT result_value FROM idempotent_action_results WHERE idempotency_key = :k"),
+            {"k": key},
+        ).first()
+
+    assert row is not None, (
+        "a write made through the locked connection, with no explicit commit before the "
+        "`with advisory_lock(...)` block exited, was silently discarded -- advisory_lock()'s "
+        "finally block must not unconditionally roll back the connection on the success path"
+    )
+    assert row[0] == "written-without-explicit-commit"
+
+
+def test_exception_path_still_clears_failed_transaction_before_unlock(scratch_table):
+    """
+    Re-verify the guarantee the rollback was actually FOR, after narrowing
+    its scope to the exception path: a real Postgres-level error (not just
+    an application-level raise) leaves the transaction in a FAILED state
+    that refuses any further command -- including the unlock call itself --
+    until rolled back. Confirm the narrowed advisory_lock() still recovers
+    from this and the unlock genuinely runs (a second session can still
+    acquire the same key afterward).
+    """
+    engine = scratch_table
+    key = f"failed-txn-recovery-{uuid.uuid4()}"
+
+    conn = engine.connect()
+    # Genuinely any DB error is fine here (noqa: B017 -- broad Exception is intentional)
+    with pytest.raises(Exception), advisory_lock(conn, key):  # noqa: B017
+        # A real SQL-level error (violates the scratch table's PRIMARY KEY
+        # by inserting NULL into it) -- this is what actually left Postgres
+        # in a FAILED transaction state pre-fix, not a bare
+        # `raise ValueError(...)` which never touches the DB at all.
+        conn.execute(
+            text(
+                "INSERT INTO idempotent_action_results (idempotency_key, result_value) VALUES (NULL, 'x')"
+            )
+        )
+    conn.close()
+
+    # If the unlock call never actually ran (masked by a FAILED transaction
+    # blocking it), the lock would still be held and this second acquisition
+    # would hang/timeout. Use a bounded wait so a real regression fails the
+    # test instead of hanging the suite.
+    acquired = threading.Event()
+
+    def second_holder():
+        with engine.connect() as conn2, advisory_lock(conn2, key):
+            acquired.set()
+
+    t = threading.Thread(target=second_holder, daemon=True)
+    t.start()
+    t.join(timeout=5)
+
+    assert acquired.is_set(), (
+        "a second session could not acquire the same advisory lock key after the first "
+        "session's block raised -- the unlock call was likely masked by a FAILED transaction "
+        "that the exception-path rollback should have cleared"
+    )
+    engine.dispose()

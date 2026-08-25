@@ -174,17 +174,24 @@ def advisory_lock(conn: Connection, key: str) -> Generator[None, None, None]:
     Robustness note: if the wrapped code raises after leaving the
     connection's transaction in a FAILED state (e.g. an IntegrityError from
     a bad write), Postgres refuses to run ANY further command — including
-    the unlock call itself — until the transaction is rolled back. Without
-    the rollback() below, the unlock call would itself raise
-    (InFailedSqlTransaction), masking the original exception's cleanup and
-    leaving the advisory lock held until the connection eventually closes
-    rather than released promptly. Rolling back first (safe regardless of
-    transaction state) ensures the unlock always actually runs.
+    the unlock call itself — until the transaction is rolled back. The
+    rollback below is scoped to exactly that path (Task R1, pre-Phase-8
+    audit) — it used to run unconditionally, including on the clean-success
+    path, which would silently discard any write made through this
+    connection that wasn't followed by an explicit commit before the `with`
+    block exited. Today's caller (workers/execution_worker.py) always
+    commits before returning, so it was never actually hit, but nothing
+    about this function guaranteed that — the next caller that didn't would
+    have lost a write with no error raised anywhere. Scoping the rollback to
+    the exception path preserves the FAILED-transaction recovery this exists
+    for, without imposing it on callers who never hit that state.
     """
     lock_key = _advisory_lock_key(key)
     conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
     try:
         yield
-    finally:
+    except Exception:
         conn.rollback()
+        raise
+    finally:
         conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
