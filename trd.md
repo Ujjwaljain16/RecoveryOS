@@ -451,11 +451,12 @@ def execute(job):
 ```
 POST /v1/events
   → ingest a payment event
-  body: { payment_id, merchant_id, customer_id, amount_paise, method, bank, event_type, failure_code? }
+  body: { payment_id, merchant_id, customer_id, amount_paise, method, bank, event_type, failure_code?, idempotency_key? }
   → 202 { event_id }
 
-GET /v1/risk/summary?merchant_id=...
+GET /v1/risk/summary
   → { total_revenue_at_risk_paise, recoverable_estimate_paise, affected_payment_count }
+  (merchant is the caller's own verified identity — see auth note below, not a query param)
 
 GET /v1/payments/{payment_id}/detail
   → { payment, diagnosis, candidate_actions[], policy_decision, recovery_history[] }
@@ -474,7 +475,9 @@ POST /v1/policy-configs
   → merchant-configurable policy (§53 PRD, merchant-specific policies stretch goal)
 ```
 
-All mutating endpoints require `Idempotency-Key` header where relevant; all responses include `X-Model-Version` and `X-Policy-Version` headers so any dashboard screenshot is reproducible against the exact model/policy that produced it — useful for judges who ask "can you show me that again."
+Auth (Task 4): every route above resolves the caller's identity from a verified `X-API-Key` (hashed lookup against `merchants.api_key_hash`), never from a client-supplied `merchant_id` in a header, query param, or body field. This is why `GET /v1/risk/summary` takes no `?merchant_id=` — the merchant is whichever identity the API key resolves to, not something the caller states. Where a request body still names `merchant_id` (e.g. `POST /v1/events`), it is checked *against* the verified identity (mismatch → 403), never trusted as the identity itself.
+
+Idempotency: mutating endpoints that need a client-supplied idempotency key take it as a **request BODY field** (`idempotency_key`), not an `Idempotency-Key` header — deliberately: it names the specific logical event/action being retried, which is a property of that one request's payload, not something that applies to the whole HTTP request/connection the way a header-scoped value would. Falls back to a server-generated id if the caller omits it. All responses include `X-Model-Version` and `X-Policy-Version` headers so any dashboard screenshot is reproducible against the exact model/policy that produced it — useful for judges who ask "can you show me that again." Both headers are read live from the actual running model/policy version at response time (`apps/api/versioning.py`), not hardcoded.
 
 ---
 
