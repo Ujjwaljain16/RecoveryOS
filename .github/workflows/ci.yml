@@ -164,6 +164,3 @@ jobs:
   # unit-tests started passing. Removed rather than kept as a placeholder --
   # same reasoning as the dead models/anomaly/ and models/recovery_propensity/
   # packages found in the same audit pass.
-        env:
-          ENV: test
-          DATABASE_URL_SYNC: postgresql://x:x@localhost:5432/x
