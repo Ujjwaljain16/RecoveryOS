@@ -35,7 +35,9 @@ class CountingSimulatorAdapter:
         self._inner = SimulatorAdapter()
         self._call_log_table = call_log_table
 
-    def retry(self, conn: Connection, payment_id: str, amount_paise: int) -> ProviderResult:
+    def retry(
+        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         # Unconditional insert — no ON CONFLICT, no dedup. If process_job's
         # idempotency wrapper is broken and calls this twice, two rows
         # appear here, full stop.
@@ -44,7 +46,7 @@ class CountingSimulatorAdapter:
             {"cid": str(uuid.uuid4()), "pid": payment_id},
         )
         conn.commit()
-        return self._inner.retry(conn, payment_id, amount_paise)
+        return self._inner.retry(conn, payment_id, amount_paise, attempt_number)
 
 
 def main() -> None:

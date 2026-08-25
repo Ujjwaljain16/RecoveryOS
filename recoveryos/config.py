@@ -18,9 +18,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AppEnvironment(StrEnum):
     """
-    DEMO:    SimulatorAdapter is default; /v1/simulate/degrade endpoint is ENABLED.
-    STAGING: RazorpayTestAdapter is default; /v1/simulate/degrade is DISABLED.
+    DEMO:    /v1/simulate/degrade endpoint is ENABLED.
+    STAGING: /v1/simulate/degrade is DISABLED.
     TEST:    Used by pytest — points to testcontainer-managed Postgres.
+
+    Payment provider adapter selection is deliberately NOT tied to this enum
+    (decided in the pre-Phase-8 audit) — see Settings.payment_provider_adapter
+    below. Auto-coupling "staging" to "calls a real external payment API"
+    would mean someone setting ENV=staging for an unrelated reason starts
+    hitting Razorpay's real test servers unexpectedly; explicit-over-inferred
+    matches this project's established config philosophy elsewhere
+    (action_costs' merchant-scoped overrides, same reasoning).
     """
 
     DEMO = "demo"
@@ -166,6 +174,10 @@ class Settings(BaseSettings):
     razorpay_key_id: str = Field(default="", description="Razorpay TEST-mode key id.")
     razorpay_key_secret: str = Field(default="", description="Razorpay TEST-mode key secret.")
     razorpay_base_url: str = Field(default="https://api.razorpay.com/v1")
+    razorpay_timeout_seconds: float = Field(
+        default=10.0,
+        description="HTTP timeout for Razorpay API calls. Matches ai_diagnoser_timeout_seconds' pattern — was a bare hardcoded 10 in adapter.py.",
+    )
 
     @property
     def is_demo(self) -> bool:

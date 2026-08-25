@@ -247,7 +247,7 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
             logger.info("[ExecutionWorker] test fault-injection sleep: %sms", inject_delay_ms)
             time.sleep(int(inject_delay_ms) / 1000.0)
 
-        result = provider.retry(conn, payment_id, amount_paise)
+        result = provider.retry(conn, payment_id, amount_paise, attempt_number)
 
         _emit_event(
             conn, payment_id, "RECOVERY_VERIFYING", f"{idempotency_key}:VERIFYING",

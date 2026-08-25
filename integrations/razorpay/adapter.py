@@ -61,7 +61,9 @@ class PaymentProvider(Protocol):
     one layer up. A provider is just "make the attempt, report what
     happened."""
 
-    def retry(self, conn: Connection, payment_id: str, amount_paise: int) -> ProviderResult: ...
+    def retry(
+        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult: ...
 
 
 def resolve_simulated_outcome(true_recovery_prob_bps: int) -> bool:
@@ -81,14 +83,90 @@ def resolve_simulated_outcome(true_recovery_prob_bps: int) -> bool:
     return random.uniform(0, 10_000) < true_recovery_prob_bps
 
 
+def _recompute_attempt_aware_prob_bps(
+    *,
+    customer_patience_score: float,
+    bank_latent_health: float,
+    latent_customer_propensity: float,
+    true_failure_type_value: str,
+    attempt_number: int,
+) -> int:
+    """
+    Re-derive true_recovery_prob_bps for the GIVEN attempt_number, using the
+    exact same LatentRecoverabilityFunction the episode generator uses
+    (simulator/outcomes/ground_truth.py) — not a re-hardcoded approximation
+    of its decay curve.
+
+    Why this is valid: simulator_latent_state rows reachable from the live
+    pipeline are only ever created by the payments-mode PaymentGenerator
+    (simulator/payments/generator.py:199), which always calls
+    compute_latent_recovery(..., attempt_number=1, ...). At attempt_number=1
+    the patience-decay factor is exp(-decay_rate * 0) == 1, so the STORED
+    customer_patience_score IS customer.latent_patience_mean, undecayed —
+    exactly the raw input compute_latent_recovery itself expects, letting
+    it re-apply decay correctly for whatever attempt_number is passed here.
+    If episode-mode's per-attempt latent rows (simulator/episodes/generator.py)
+    are ever persisted to simulator_latent_state as well, this assumption
+    would need re-deriving from the specific row's own recorded attempt.
+
+    Only the recomputed PROBABILITY is used here — the function's own
+    internal coin-flip (its returned `is_recoverable` bool) is discarded.
+    The actual pass/fail decision still goes through
+    resolve_simulated_outcome() exclusively (TRD §7's shared-resolver
+    requirement is between SimulatorAdapter and baseline.py, not between
+    this and the episode generator's own internal sampling).
+    """
+    from datetime import datetime, timezone
+
+    from simulator.core.rng import SimRng
+    from simulator.customers.generator import SimulatedCustomer
+    from simulator.failures.codes import TrueFailureType
+    from simulator.outcomes.ground_truth import LatentRecoverabilityFunction
+
+    # Fresh RNG seed per call — this models a genuinely live, non-reproducible
+    # retry attempt (not offline dataset generation), so there is no
+    # determinism requirement to preserve here.
+    rng = SimRng(uuid.uuid4().int & 0xFFFFFFFF)
+    latent_function = LatentRecoverabilityFunction(rng)
+
+    # Only latent_patience_mean and latent_propensity_bias are ever read by
+    # compute_latent_recovery — every other field below is an unused
+    # placeholder, never a real customer record (none is available at
+    # execution time; only the derived latent snapshot is persisted).
+    stub_customer = SimulatedCustomer(
+        customer_id="",
+        merchant_id="",
+        is_returning=False,
+        lifetime_value_paise=0,
+        opted_out_at=None,
+        created_at=datetime.now(timezone.utc),
+        latent_patience_mean=customer_patience_score,
+        latent_propensity_bias=latent_customer_propensity,
+    )
+
+    _is_recoverable, latent_record = latent_function.compute_latent_recovery(
+        simulation_id="live-execution",
+        latent_id=str(uuid.uuid4()),
+        payment_id="live-execution",
+        customer=stub_customer,
+        true_failure_type=TrueFailureType(true_failure_type_value),
+        latent_bank_health=bank_latent_health,
+        attempt_number=attempt_number,
+        timestamp=datetime.now(timezone.utc),
+    )
+    return latent_record.true_recovery_prob_bps
+
+
 class SimulatorAdapter:
     """
-    Demo-mode provider: resolves a retry's outcome from
-    simulator_latent_state.true_recovery_prob_bps for this exact payment —
-    the same latent recoverability the Phase 1 simulator already computed
-    at payment-generation time — sampled stochastically, exactly like the
-    episode generator itself resolves a retry attempt
-    (simulator/episodes/generator.py: `rng.uniform("latent") < retry_prob`).
+    Demo-mode provider: resolves a retry's outcome from the SAME latent
+    recoverability model the Phase 1 simulator uses
+    (LatentRecoverabilityFunction.compute_latent_recovery), re-applying its
+    attempt-based patience decay for whichever attempt_number this call
+    represents — a live-executed attempt 3 gets genuinely decayed odds,
+    not attempt 1's snapshot re-sampled unchanged (see
+    _recompute_attempt_aware_prob_bps's docstring for why re-deriving this
+    from the stored simulator_latent_state row is valid).
 
     If no latent state row exists for this payment (a genuinely live,
     non-synthetic payment has none), there is no ground truth to sample
@@ -96,14 +174,17 @@ class SimulatorAdapter:
     scenario, not silently faked: it returns PENDING rather than guessing.
     """
 
-    def retry(self, conn: Connection, payment_id: str, amount_paise: int) -> ProviderResult:
+    def retry(
+        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         row = conn.execute(
             text(
-                "SELECT true_recovery_prob_bps FROM simulator_latent_state "
+                "SELECT true_recovery_prob_bps, customer_patience_score, bank_latent_health, "
+                "latent_customer_propensity, true_failure_type FROM simulator_latent_state "
                 "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
             ),
             {"pid": payment_id},
-        ).first()
+        ).mappings().first()
 
         if row is None:
             logger.warning(
@@ -113,13 +194,44 @@ class SimulatorAdapter:
             )
             return ProviderResult(outcome="PENDING", provider_ref=None, recovered_amount_paise=0)
 
-        true_recovery_prob_bps = row[0]
+        if attempt_number <= 1:
+            # No decay to apply yet — use the stored value directly rather
+            # than introducing a needless fresh-RNG recomputation for the
+            # common case.
+            true_recovery_prob_bps = row["true_recovery_prob_bps"]
+        else:
+            true_recovery_prob_bps = _recompute_attempt_aware_prob_bps(
+                customer_patience_score=float(row["customer_patience_score"]),
+                bank_latent_health=float(row["bank_latent_health"]),
+                latent_customer_propensity=float(row["latent_customer_propensity"]),
+                true_failure_type_value=row["true_failure_type"],
+                attempt_number=attempt_number,
+            )
+
         succeeded = resolve_simulated_outcome(true_recovery_prob_bps)
         return ProviderResult(
             outcome="SUCCESS" if succeeded else "FAILED",
             provider_ref=f"sim_{uuid.uuid4().hex[:16]}",
             recovered_amount_paise=amount_paise if succeeded else 0,
         )
+
+
+_http_client: httpx.Client | None = None
+
+
+def _get_shared_http_client() -> httpx.Client:
+    """
+    ONE pooled/keep-alive httpx.Client reused across every
+    RazorpayTestAdapter instance and call, instead of a fresh TCP+TLS
+    handshake per retry (a bare httpx.post(...) call opens and tears down
+    a temporary client internally on every invocation). Process-lifetime
+    singleton — get_provider_adapter() constructs a fresh RazorpayTestAdapter
+    per call, but they all share this one client.
+    """
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.Client()
+    return _http_client
 
 
 class RazorpayTestAdapter:
@@ -150,6 +262,22 @@ class RazorpayTestAdapter:
     code does structurally, not that it has been proven against the real
     API. Treat this adapter as unverified integration code until someone
     with real test-mode credentials runs it once.
+
+    OUTAGE FALLBACK (TRD §8 NFR table: "Provider Adapter degrades to
+    Simulator on Razorpay test-API outage" — this is a named demo-day
+    availability requirement, not a nice-to-have): both failure branches
+    below (a raised httpx error, or a >=400 response) delegate to a real
+    SimulatorAdapter instance instead of returning a bare, permanent
+    PENDING. Logged distinctly (grep "RAZORPAY_OUTAGE_FALLBACK") so this
+    is a visible, callable-out demo beat ("watch the system survive a real
+    provider outage"), not a silently-swallowed failure.
+
+    Reuses ONE httpx.Client (module-level, connection-pooled/keep-alive)
+    across every call instead of a fresh TCP+TLS handshake per retry —
+    this method is called from inside a held Postgres advisory lock
+    (services/execution_engine/idempotency.py) with BATCH_SIZE=1
+    (workers/execution_worker.py), so avoidable per-call latency here
+    directly bounds worker throughput.
     """
 
     def __init__(self) -> None:
@@ -157,25 +285,37 @@ class RazorpayTestAdapter:
         self._key_id = settings.razorpay_key_id
         self._key_secret = settings.razorpay_key_secret
         self._base_url = settings.razorpay_base_url
+        self._timeout = settings.razorpay_timeout_seconds
+        self._client = _get_shared_http_client()
+        self._fallback = SimulatorAdapter()
 
-    def retry(self, conn: Connection, payment_id: str, amount_paise: int) -> ProviderResult:
+    def retry(
+        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         try:
-            response = httpx.post(
+            response = self._client.post(
                 f"{self._base_url}/orders",
                 auth=(self._key_id, self._key_secret),
                 json={
                     "amount": amount_paise,
                     "currency": "INR",
                     # The real idempotency mechanism (see class docstring) —
-                    # deterministic per payment_id, NOT a header.
-                    "receipt": f"recovery_{payment_id}",
-                    "notes": {"recovery_of_payment_id": payment_id},
+                    # deterministic per (payment_id, attempt_number), NOT a
+                    # header. MUST include attempt_number: a legitimate
+                    # attempt 2 is a distinct idempotency_key one layer up
+                    # (workers/execution_worker.py's
+                    # recovery:{payment_id}:{action_type}:{attempt_number})
+                    # and must not collide with attempt 1's receipt, or
+                    # Razorpay itself would reject the real retry as a
+                    # duplicate of the first attempt.
+                    "receipt": f"recovery_{payment_id}_{attempt_number}",
+                    "notes": {"recovery_of_payment_id": payment_id, "attempt_number": str(attempt_number)},
                 },
-                timeout=10,
+                timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
             logger.warning("[RazorpayTestAdapter] request failed: %s: %s", type(exc).__name__, exc)
-            return ProviderResult(outcome="PENDING", provider_ref=None, recovered_amount_paise=0)
+            return self._fallback_to_simulator(conn, payment_id, amount_paise, attempt_number, reason=str(exc))
 
         if response.status_code >= 400:
             logger.warning(
@@ -183,7 +323,9 @@ class RazorpayTestAdapter:
                 response.status_code,
                 response.text[:500],
             )
-            return ProviderResult(outcome="PENDING", provider_ref=None, recovered_amount_paise=0)
+            return self._fallback_to_simulator(
+                conn, payment_id, amount_paise, attempt_number, reason=f"status={response.status_code}"
+            )
 
         body = response.json()
         # A created order is not itself a completed payment — the customer
@@ -195,6 +337,18 @@ class RazorpayTestAdapter:
             provider_ref=body.get("id"),
             recovered_amount_paise=0,
         )
+
+    def _fallback_to_simulator(
+        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int, *, reason: str
+    ) -> ProviderResult:
+        logger.warning(
+            "RAZORPAY_OUTAGE_FALLBACK payment_id=%s attempt_number=%s reason=%s -- "
+            "degrading to SimulatorAdapter per TRD §8's availability guarantee",
+            payment_id,
+            attempt_number,
+            reason,
+        )
+        return self._fallback.retry(conn, payment_id, amount_paise, attempt_number)
 
 
 _ADAPTERS = {

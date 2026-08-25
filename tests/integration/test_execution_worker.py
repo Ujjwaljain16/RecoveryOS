@@ -35,7 +35,7 @@ class CountingSpyProvider:
         self._lock = threading.Lock()
         self.call_log: list[float] = []
 
-    def retry(self, conn, payment_id: str, amount_paise: int) -> ProviderResult:
+    def retry(self, conn, payment_id: str, amount_paise: int, attempt_number: int) -> ProviderResult:
         with self._lock:
             self.call_log.append(time.monotonic())
         time.sleep(0.3)  # widen the race window

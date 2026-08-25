@@ -42,23 +42,28 @@ def test_monkeypatching_the_shared_resolver_changes_both_call_sites(monkeypatch)
     monkeypatch.setattr(baseline_module, "resolve_simulated_outcome", fake_resolver)
 
     # --- SimulatorAdapter.retry() side ---
-    class _FakeRow:
-        def __init__(self, value):
-            self._value = value
+    # attempt_number=1 stays on the fast path (uses the stored
+    # true_recovery_prob_bps directly, no attempt-decay recomputation) --
+    # this test only needs to prove the shared resolver is what decides
+    # SUCCESS/FAILED, not exercise the attempt>1 decay path (that's
+    # test_simulator_adapter_decays_across_attempts's job, against a real DB).
+    class _FakeRow(dict):
+        pass
 
-        def __getitem__(self, idx):
-            return self._value
+    class _FakeMappingsResult:
+        def first(self_inner):
+            return _FakeRow(true_recovery_prob_bps=1)  # near-zero, irrelevant once patched
+
+    class _FakeResult:
+        def mappings(self_inner):
+            return _FakeMappingsResult()
 
     class _FakeConn:
         def execute(self, *args, **kwargs):
-            class _Result:
-                def first(self_inner):
-                    return _FakeRow(1)  # true_recovery_prob_bps = 1 (near-zero)
-
-            return _Result()
+            return _FakeResult()
 
     adapter = adapter_module.SimulatorAdapter()
-    result = adapter.retry(_FakeConn(), "fake-payment-id", 100_000)
+    result = adapter.retry(_FakeConn(), "fake-payment-id", 100_000, 1)
     assert result.outcome == "SUCCESS", (
         "SimulatorAdapter.retry() did not observe the patched shared resolver -- "
         "it may be calling a different function than the one that was patched"
