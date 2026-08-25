@@ -28,6 +28,7 @@ from sqlalchemy import (
     Numeric,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -555,10 +556,17 @@ class ActionCost(Base):
 
     __tablename__ = "action_costs"
     __table_args__ = (
-        # Unique per (merchant, action_type, version)
-        # COALESCE trick: NULL merchant_id is treated as a fixed sentinel UUID
-        # for uniqueness purposes — enforced via partial unique index instead:
-        Index("idx_action_cost_merchant_action", "merchant_id", "action_type", "version"),
+        # Unique per (merchant, action_type, version). NULL merchant_id (the
+        # platform default) is folded to a sentinel UUID via COALESCE so
+        # Postgres's NULL-is-distinct semantics don't allow duplicate
+        # platform-default rows — migrations/0010_action_costs_unique_constraint.py.
+        Index(
+            "uq_action_cost_merchant_action",
+            text("COALESCE(merchant_id, '00000000-0000-0000-0000-000000000000')"),
+            "action_type",
+            "version",
+            unique=True,
+        ),
     )
 
     action_cost_id: Mapped[str] = mapped_column(
