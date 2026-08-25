@@ -446,13 +446,23 @@ existed from Phase 2; this only changes which one production actually uses.
 `test_lgbm_does_not_beat_baseline_on_the_real_holdout_so_lr_stays_default` (tests/unit/test_propensity.py)
 locks this in: it fails loudly if the artifacts are ever regenerated in a way that reverses it.
 
-**Not yet fixed (flagged, not silently left implicit):** the root cause in
-`simulator/dataset/builder.py`/`run_episode_mode` (re-seeding the same seed across independent
-`generate_episodes()` calls) is still there — any FUTURE dataset regeneration for Phase 8's
-canonical eval run will hit the same duplication in `val_random`/whichever OOD split is generated
-the same way, unless the generation code is changed to draw an actual held-out subset from a
-single larger run instead of an independently re-seeded call. Worth fixing before Phase 8 trusts
-any split other than a genuine temporal one.
+**Not yet fixed — and NOT a Phase 8 schedule blocker (resolved ambiguity, see below):** the root
+cause in `simulator/dataset/builder.py`/`run_episode_mode` (re-seeding the same seed across
+independent `generate_episodes()` calls) is still there.
+
+**Why it doesn't block Phase 8:** TRD §7's evaluation harness computes its headline number
+(`incremental_recovery`) via a raw SQL join over `recovery_ledger` and `baseline_runs` — tables
+populated by running the LIVE pipeline against a canonical synthetic payment set, not by reading
+`data/val_random`/`data/test_scenario` parquet files at all. Phase 8 never touches the
+contaminated splits. The propensity model's own certification already correctly uses
+`test_temporal` (verified zero overlap with train) as its reporting split, per gaps.md §C.2's fix.
+
+**When it WOULD matter:** only if Phase 2's propensity model is ever retrained/re-certified again
+in the future (a Phase 2 rerun, not a Phase 8 one) — that regeneration would reintroduce the same
+`val_random`/`test_scenario` duplication and could silently re-flip the LR-vs-LightGBM gate
+decision. Fix `simulator/dataset/builder.py` to draw an actual held-out subset from a single
+larger generation run (instead of an independently re-seeded call) before anyone next runs
+`models/recovery/train.py`, not before Phase 8.
 
 ---
 

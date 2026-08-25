@@ -10,7 +10,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: recoveryos_postgres
-    restart: unless-stopped
+    restart: always
     env_file: .env
     environment:
       POSTGRES_USER: recoveryos
@@ -37,7 +37,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: recoveryos_redis
-    restart: unless-stopped
+    restart: always
     ports:
       - "6379:6379"
     command: redis-server --save 60 1 --loglevel warning
@@ -71,7 +71,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     container_name: recoveryos_api
-    restart: unless-stopped
+    restart: always
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
@@ -101,7 +101,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     container_name: recoveryos_event_processor
-    restart: unless-stopped
+    restart: always
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
@@ -123,7 +123,7 @@ services:
       context: .
       dockerfile: workers/Dockerfile
     container_name: recoveryos_worker
-    restart: unless-stopped
+    restart: always
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
@@ -145,11 +145,33 @@ services:
       timeout: 10s
       retries: 3
 
+  # ─── Execution Worker (Phase 6) ────────────────────────────────────────────
+  execution_worker:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: recoveryos_execution_worker
+    restart: always
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      REDIS_URL: redis://redis:6379/0
+      ENV: demo
+    command: ["python", "-m", "workers.execution_worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   # ─── Prometheus ────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.55.0
     container_name: recoveryos_prometheus
-    restart: unless-stopped
+    restart: always
     ports:
       - "9090:9090"
     volumes:
@@ -167,7 +189,7 @@ services:
   grafana:
     image: grafana/grafana:11.3.0
     container_name: recoveryos_grafana
-    restart: unless-stopped
+    restart: always
     env_file: .env
     ports:
       - "3001:3000"
