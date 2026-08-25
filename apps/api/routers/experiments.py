@@ -16,19 +16,23 @@ async def experiment_results(run_id: str, merchant: Merchant = Depends(verify_ap
     — for ANY run_id, indistinguishable from a real experiment that
     genuinely recovered nothing.
 
-    501s explicitly instead: this depends on recovery_ledger and
-    baseline_runs, neither of which the live system writes to yet (the
-    offline ML evaluation harness under models/recovery/ is real and
-    produces real numbers — see phase_2_certificate.json — but it's a
-    separate, disconnected pipeline, not this live API's data source).
+    STATUS (re-checked in the pre-Phase-8 audit): recovery_ledger and
+    baseline_runs are no longer empty — services/pipeline/ledger.py and
+    services/pipeline/baseline.py have been writing real rows to both
+    since Phase 7 (proven end-to-end: 966/966 payments reached a real
+    recovery_ledger row with a real baseline_outcome in the Phase 7 10k
+    run). This endpoint is just not wired to query them yet — deferred to
+    Phase 9 (dashboard) so the response shape is designed against actual
+    UI needs rather than guessed now and redone later. Still 501, but the
+    REASON is "not wired," not "nothing to wire to."
     """
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail=(
             "Experiment results are not implemented yet for the live API. "
-            "This depends on recovery_ledger + baseline_runs, which nothing "
-            "in the live system writes to yet — the offline ML evaluation "
-            "harness (models/recovery/) is real but is a separate pipeline. "
-            "This is an honest 501, not a placeholder comparison."
+            "The underlying data now exists (recovery_ledger and "
+            "baseline_runs have been written to since Phase 7), but this "
+            "endpoint is not yet wired to serve it — real implementation "
+            "deferred to Phase 9 (dashboard)."
         ),
     )

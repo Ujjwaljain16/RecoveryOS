@@ -24,14 +24,20 @@ async def payment_detail(
     whether the payment existed. Indistinguishable, to a caller, from a
     genuinely-empty result.
 
-    Now backed by the actual `payments` and `events` tables, which the real
-    ingest path (services/event_processor) has been writing to since Task 2
-    — so there's real data to serve. `diagnosis`, `candidate_actions`,
-    `policy_decision`, and `recovery_history` are still reported as
-    empty/null, but HONESTLY: nothing writes to those tables yet
-    (diagnosis_engine, policy_engine, recovery_engine are all still empty
-    packages), so returning empty is the truth, not a placeholder standing
-    in for a real query nobody wrote.
+    Backed by the actual `payments` and `events` tables, which the real
+    ingest path (services/event_processor) has been writing to since Task 2.
+
+    STATUS (re-checked in the pre-Phase-8 audit): `diagnosis`,
+    `candidate_actions`, `policy_decision`, and `recovery_history` are
+    still returned as empty/null below — but that is NO LONGER because
+    "nothing writes to those tables yet." services/diagnosis_engine/,
+    services/recovery_engine/, and workers/execution_worker.py have all
+    been writing real rows to diagnoses/candidate_actions/policy_decisions/
+    recoveries since Phase 5-7. The empty response here is now a "not
+    wired to query it yet" gap, not an honest reflection of empty tables —
+    real implementation deferred to Phase 9 (dashboard) so the response
+    shape is designed against actual UI needs rather than guessed now and
+    redone later.
 
     Scoped to the authenticated merchant — a payment_id belonging to a
     DIFFERENT merchant (or not existing at all) both 404 identically. Never
@@ -74,9 +80,10 @@ async def payment_detail(
             }
             for e in event_rows
         ],
-        # Honestly empty — no diagnosis/policy/recovery engine writes to
-        # these tables yet. Not a hardcoded stand-in for a query that
-        # doesn't exist.
+        # Hardcoded empty — NOT because the underlying tables are empty
+        # (they aren't, since Phase 5-7 — see the function docstring), but
+        # because this endpoint isn't wired to query them yet. Deferred to
+        # Phase 9. Do not read this as "honest empty"; it's "not wired."
         "diagnosis": None,
         "candidate_actions": [],
         "policy_decision": None,

@@ -15,19 +15,26 @@ async def audit_trail(payment_id: str, merchant: Merchant = Depends(verify_api_k
     unconditionally, for ANY payment_id, valid or not — indistinguishable
     from "this payment genuinely has no audit history."
 
-    501s explicitly instead: the audit chain joins events, diagnoses,
-    candidate_actions, policy_decisions, and recoveries — everything past
-    `events` is still an empty table (diagnosis_engine/policy_engine/
-    recovery_engine don't exist yet), so there is no real audit chain to
-    return, honest or otherwise, beyond the raw event log payments.py
-    already serves for real.
+    STATUS (re-checked in the pre-Phase-8 audit): the audit chain's
+    underlying tables — diagnoses, candidate_actions, policy_decisions,
+    recoveries, audit_log — are no longer empty. services/pipeline/,
+    services/diagnosis_engine/, services/recovery_engine/, and
+    workers/execution_worker.py have been writing real rows to all of them
+    since Phase 5-7 (proven end-to-end: Phase 7's 10k-payment run, 0
+    errors, 966/966 terminal audit_log rows). This endpoint itself is just
+    not wired to serve that data yet — the query/response-shape work is
+    deferred to Phase 9 (dashboard), not because the data doesn't exist,
+    but so the response shape gets designed against Phase 9's actual UI
+    needs instead of being guessed at now and redone later. Still 501,
+    but the REASON is "not wired," not "nothing to wire to."
     """
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail=(
-            "Audit trail is not implemented yet. It joins diagnoses, "
-            "candidate_actions, policy_decisions, and recoveries — none of "
-            "which anything writes to yet. This is an honest 501, not an "
-            "empty-but-plausible audit_chain."
+            "Audit trail is not implemented yet. The underlying data now "
+            "exists (diagnoses, candidate_actions, policy_decisions, "
+            "recoveries, and audit_log have been written to since Phase "
+            "5-7), but this endpoint is not yet wired to serve it — real "
+            "implementation deferred to Phase 9 (dashboard)."
         ),
     )
