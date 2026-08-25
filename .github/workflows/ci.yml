@@ -134,6 +134,10 @@ jobs:
         # services/recovery_engine/orchestrator.py (imported by several
         # integration tests) imports services.recovery_engine.propensity,
         # which needs both to import and to unpickle its model artifacts.
+        # pyyaml: propensity.py's import chain (simulator/episodes/generator.py
+        # -> simulator/payments/distributions.py -> simulator/calibration/loader.py)
+        # reaches a bare `import yaml` -- same transitive-dependency gap as
+        # pandas/scikit-learn, just one hop further down the chain.
         run: |
           pip install \
             pytest pytest-asyncio pytest-cov \
@@ -141,7 +145,7 @@ jobs:
             sqlalchemy asyncpg psycopg2-binary \
             alembic fastapi uvicorn httpx aiohttp \
             celery redis structlog prometheus-client \
-            pandas scikit-learn \
+            pandas scikit-learn pyyaml \
             "testcontainers[postgres,redis]"
 
       - name: Run integration tests
@@ -149,25 +153,17 @@ jobs:
         env:
           ENV: test
 
-  # ─── Adversarial Tests ────────────────────────────────────────────────────
-  adversarial-tests:
-    name: Adversarial Suite
-    runs-on: ubuntu-latest
-    needs: [unit-tests]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: |
-          pip install pytest pytest-asyncio pydantic pydantic-settings sqlalchemy psycopg2-binary
-
-      - name: Run adversarial tests
-        run: pytest tests/adversarial/ -v --tb=short -q
+  # Adversarial-style tests (test_diagnosis_adversarial.py,
+  # test_next_best_action_negative_control.py, etc.) live under tests/unit/
+  # and tests/integration/ and already run in those jobs above. The
+  # dedicated tests/adversarial/ directory this job used to target was an
+  # empty scaffold (__init__.py only, zero test files) that had never
+  # actually run to completion -- this job's own `needs: [unit-tests]` meant
+  # it was always skipped while unit-tests was broken, so its
+  # "no tests collected" failure (pytest exit code 5) was invisible until
+  # unit-tests started passing. Removed rather than kept as a placeholder --
+  # same reasoning as the dead models/anomaly/ and models/recovery_propensity/
+  # packages found in the same audit pass.
         env:
           ENV: test
           DATABASE_URL_SYNC: postgresql://x:x@localhost:5432/x
