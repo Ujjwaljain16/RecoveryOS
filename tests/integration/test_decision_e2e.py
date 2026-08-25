@@ -9,7 +9,7 @@ real model artifact, zero mocks.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -43,7 +43,7 @@ async def _insert_failed_payment(
                 "mid": merchant_id,
                 "cid": customer_id,
                 "amount": amount_paise,
-                "ts": datetime.now(timezone.utc) - timedelta(hours=1),
+                "ts": datetime.now(UTC) - timedelta(hours=1),
             },
         )
     await engine.dispose()
@@ -59,12 +59,19 @@ async def test_end_to_end_decision_persists_full_audit_trail(migrated_db):
 
     result = await decide_and_persist(payment_id)
 
-    print(f"\n[e2e decision] payment_id={payment_id} chosen_action={result['chosen_action']} "
-          f"evi={result['chosen_evi_paise']} verdict={result['verdict']} "
-          f"prob_bps={result['propensity_probability_bps']}")
+    print(
+        f"\n[e2e decision] payment_id={payment_id} chosen_action={result['chosen_action']} "
+        f"evi={result['chosen_evi_paise']} verdict={result['verdict']} "
+        f"prob_bps={result['propensity_probability_bps']}"
+    )
 
     assert result["chosen_action"] in {
-        "RETRY_NOW", "RETRY_LATER", "ALT_ROUTE", "REMINDER", "ESCALATE", "DO_NOTHING"
+        "RETRY_NOW",
+        "RETRY_LATER",
+        "ALT_ROUTE",
+        "REMINDER",
+        "ESCALATE",
+        "DO_NOTHING",
     }
     assert result["verdict"] in {"ALLOW", "BLOCK", "ESCALATE"}
     assert len(result["candidate_ids"]) == 6
@@ -81,7 +88,9 @@ async def test_end_to_end_decision_persists_full_audit_trail(migrated_db):
             )
         ).fetchall()
 
-    assert len(candidate_rows) == 6, "all 6 candidate actions must be persisted, not just the chosen one"
+    assert (
+        len(candidate_rows) == 6
+    ), "all 6 candidate actions must be persisted, not just the chosen one"
     assert len(decision_rows) == 1
     decision_row = decision_rows[0]
     assert decision_row.rule_trace, "rule_trace must be non-empty JSON"
@@ -103,7 +112,9 @@ async def test_decision_is_deterministic_for_the_same_payment(migrated_db):
     merchant_id = str(uuid.uuid4())
     customer_id = str(uuid.uuid4())
     await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
-    payment_id = await _insert_failed_payment(migrated_db, merchant_id, customer_id, amount_paise=500_000)
+    payment_id = await _insert_failed_payment(
+        migrated_db, merchant_id, customer_id, amount_paise=500_000
+    )
 
     from services.recovery_engine.orchestrator import build_decision
 

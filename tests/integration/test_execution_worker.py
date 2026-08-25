@@ -35,11 +35,17 @@ class CountingSpyProvider:
         self._lock = threading.Lock()
         self.call_log: list[float] = []
 
-    def retry(self, conn, payment_id: str, amount_paise: int, attempt_number: int) -> ProviderResult:
+    def retry(
+        self, conn, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         with self._lock:
             self.call_log.append(time.monotonic())
         time.sleep(0.3)  # widen the race window
-        return ProviderResult(outcome="SUCCESS", provider_ref=f"spy_{uuid.uuid4().hex[:8]}", recovered_amount_paise=amount_paise)
+        return ProviderResult(
+            outcome="SUCCESS",
+            provider_ref=f"spy_{uuid.uuid4().hex[:8]}",
+            recovered_amount_paise=amount_paise,
+        )
 
 
 async def _seed_failed_payment(migrated_db: str, amount_paise: int = 100_000) -> str:
@@ -81,7 +87,8 @@ async def _seed_decision_fk_chain(migrated_db: str, payment_id: str, amount_pais
     engine = create_async_engine(to_async_url(migrated_db))
     async with engine.begin() as conn:
         await conn.execute(
-            text("INSERT INTO policy_configs (policy_config_id) VALUES (:id)"), {"id": policy_config_id}
+            text("INSERT INTO policy_configs (policy_config_id) VALUES (:id)"),
+            {"id": policy_config_id},
         )
         await conn.execute(
             text(
@@ -103,7 +110,9 @@ async def _seed_decision_fk_chain(migrated_db: str, payment_id: str, amount_pais
     return decision_id
 
 
-def _make_job(payment_id: str, decision_id: str, amount_paise: int = 100_000, attempt_number: int = 1) -> dict:
+def _make_job(
+    payment_id: str, decision_id: str, amount_paise: int = 100_000, attempt_number: int = 1
+) -> dict:
     idempotency_key = f"recovery:{payment_id}:RETRY_NOW:{attempt_number}"
     return {
         "payment_id": payment_id,
@@ -160,7 +169,9 @@ async def test_duplicate_job_same_idempotency_key_executes_once(migrated_db):
     assert not errors, f"worker thread(s) raised: {errors}"
     assert not t1.is_alive() and not t2.is_alive()
 
-    print(f"\n[duplicate-fire] provider.retry() call count = {len(spy.call_log)} (timestamps: {spy.call_log})")
+    print(
+        f"\n[duplicate-fire] provider.retry() call count = {len(spy.call_log)} (timestamps: {spy.call_log})"
+    )
     assert len(spy.call_log) == 1, (
         f"provider.retry() must fire EXACTLY ONCE for two concurrent callers sharing "
         f"an idempotency_key — it fired {len(spy.call_log)} times"
@@ -353,7 +364,9 @@ def test_worker_crash_recovery(migrated_db, redis_url):
     proc1.wait(timeout=10)
 
     with engine.connect() as conn:
-        call_count_after_kill = conn.execute(text(f"SELECT count(*) FROM {call_log_table}")).scalar_one()
+        call_count_after_kill = conn.execute(
+            text(f"SELECT count(*) FROM {call_log_table}")
+        ).scalar_one()
     print(f"\n[crash-recovery] provider calls after kill (run 1): {call_count_after_kill}")
     assert call_count_after_kill == 1
 
@@ -378,7 +391,9 @@ def test_worker_crash_recovery(migrated_db, redis_url):
     print(f"\n[crash-recovery] run 2 stdout:\n{proc2.stdout}")
 
     with engine.connect() as conn:
-        call_count_after_restart = conn.execute(text(f"SELECT count(*) FROM {call_log_table}")).scalar_one()
+        call_count_after_restart = conn.execute(
+            text(f"SELECT count(*) FROM {call_log_table}")
+        ).scalar_one()
         recovery_row_count = conn.execute(
             text("SELECT count(*) FROM recoveries WHERE idempotency_key = :key"),
             {"key": idempotency_key},
@@ -444,8 +459,12 @@ async def test_recovery_workflow_state_machine_logs_every_transition(migrated_db
 
 
 def test_provider_adapter_swap_is_config_only(monkeypatch):
+    from integrations.razorpay.adapter import (
+        RazorpayTestAdapter,
+        SimulatorAdapter,
+        get_provider_adapter,
+    )
     from recoveryos.config import get_settings
-    from integrations.razorpay.adapter import RazorpayTestAdapter, SimulatorAdapter, get_provider_adapter
 
     monkeypatch.setenv("PAYMENT_PROVIDER_ADAPTER", "simulator")
     get_settings.cache_clear()

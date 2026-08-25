@@ -51,7 +51,9 @@ class TestSettings:
         assert s.cors_allowed_origins == "http://localhost:3000"
 
     def test_cors_allowed_origins_is_env_overridable(self, monkeypatch):
-        monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://dashboard.example.com,https://app.example.com")
+        monkeypatch.setenv(
+            "CORS_ALLOWED_ORIGINS", "https://dashboard.example.com,https://app.example.com"
+        )
         from recoveryos.config import Settings
 
         s = Settings()

@@ -19,6 +19,8 @@
     "temporal_auc": 0.8374,
     "scenario_holdout_auc": 0.8332
   },
+  "model_selected_for_production": "lr",
+  "model_selection_reason": "train.py's best_model ('lightgbm') was picked on val_random, later found 58.8% duplicate-of-train rows (gaps.md \u00a7C.2). On test_temporal -- the only split verified to have zero overlap with train -- LightGBM does not clear TRD \u00a73.3's >0.03 AUC lift gate over LR (0.8374 vs 0.8378), so services/recovery_engine/propensity.py loads model_lr.pkl in production, not the model this certificate's 'best_model' field names.",
   "economics": {
     "baseline_net_value_rupees": 1314958.3,
     "model_net_value_rupees": 1369227.61,

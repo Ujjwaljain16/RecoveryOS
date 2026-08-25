@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from services.policy_engine.rules import RULES, CandidateContext, PaymentContext, PolicyConfigContext
+from services.policy_engine.rules import (
+    RULES,
+    CandidateContext,
+    PaymentContext,
+    PolicyConfigContext,
+)
 
 
 @dataclass(frozen=True)

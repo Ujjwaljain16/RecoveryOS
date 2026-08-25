@@ -9,7 +9,7 @@ zero mocks in the chain itself.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -50,9 +50,13 @@ async def _seed_payment_with_latent_state(
                 "true, :ts, :ts)"
             ),
             {
-                "pid": payment_id, "mid": merchant_id, "cid": customer_id, "amount": amount_paise,
-                "fcode": failure_code, "fclass": failure_class,
-                "ts": datetime.now(timezone.utc) - timedelta(hours=1),
+                "pid": payment_id,
+                "mid": merchant_id,
+                "cid": customer_id,
+                "amount": amount_paise,
+                "fcode": failure_code,
+                "fclass": failure_class,
+                "ts": datetime.now(UTC) - timedelta(hours=1),
             },
         )
         simulation_id = str(uuid.uuid4())
@@ -71,7 +75,12 @@ async def _seed_payment_with_latent_state(
                 "latent_customer_propensity, true_recovery_prob_bps, true_failure_type) "
                 "VALUES (:lid, :sim_id, :pid, 0.8, 0.9, 0.1, 0.2, :prob, 'TEMPORARY_GATEWAY_TIMEOUT')"
             ),
-            {"lid": str(uuid.uuid4()), "sim_id": simulation_id, "pid": payment_id, "prob": true_recovery_prob_bps},
+            {
+                "lid": str(uuid.uuid4()),
+                "sim_id": simulation_id,
+                "pid": payment_id,
+                "prob": true_recovery_prob_bps,
+            },
         )
     await engine.dispose()
     return payment_id, merchant_id, customer_id
@@ -108,14 +117,20 @@ async def test_full_pipeline_e2e_single_payment(migrated_db, redis_client):
         from workers.execution_worker import run_worker
 
         settings = get_settings()
-        sync_client = sync_redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+        sync_client = sync_redis.from_url(
+            settings.redis_url, encoding="utf-8", decode_responses=True
+        )
         run_worker(sync_client, max_iterations=1)
         sync_client.close()
 
     with sync_engine.connect() as conn:
-        ledger_row = conn.execute(
-            text("SELECT * FROM recovery_ledger WHERE payment_id = :pid"), {"pid": payment_id}
-        ).mappings().first()
+        ledger_row = (
+            conn.execute(
+                text("SELECT * FROM recovery_ledger WHERE payment_id = :pid"), {"pid": payment_id}
+            )
+            .mappings()
+            .first()
+        )
 
     print(f"\n[e2e pipeline] ledger row: {dict(ledger_row) if ledger_row else None}")
 
@@ -128,9 +143,13 @@ async def test_full_pipeline_e2e_single_payment(migrated_db, redis_client):
     assert ledger_row["baseline_outcome"] is not None
 
     with sync_engine.connect() as conn:
-        audit_row = conn.execute(
-            text("SELECT * FROM audit_log WHERE payment_id = :pid"), {"pid": payment_id}
-        ).mappings().first()
+        audit_row = (
+            conn.execute(
+                text("SELECT * FROM audit_log WHERE payment_id = :pid"), {"pid": payment_id}
+            )
+            .mappings()
+            .first()
+        )
     assert audit_row is not None
     assert audit_row["summary"]
 
@@ -163,11 +182,20 @@ async def test_correlation_id_threads_through_all_tables(migrated_db, redis_clie
         from workers.execution_worker import run_worker
 
         settings = get_settings()
-        sync_client = sync_redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+        sync_client = sync_redis.from_url(
+            settings.redis_url, encoding="utf-8", decode_responses=True
+        )
         run_worker(sync_client, max_iterations=1)
         sync_client.close()
 
-    tables = ["events", "diagnoses", "candidate_actions", "policy_decisions", "recovery_ledger", "audit_log"]
+    tables = [
+        "events",
+        "diagnoses",
+        "candidate_actions",
+        "policy_decisions",
+        "recovery_ledger",
+        "audit_log",
+    ]
     counts = {}
     with sync_engine.connect() as conn:
         for table in tables:
@@ -183,7 +211,9 @@ async def test_correlation_id_threads_through_all_tables(migrated_db, redis_clie
 
 
 @pytest.mark.asyncio
-async def test_pipeline_handles_ai_diagnoser_outage_gracefully(migrated_db, redis_client, monkeypatch):
+async def test_pipeline_handles_ai_diagnoser_outage_gracefully(
+    migrated_db, redis_client, monkeypatch
+):
     """
     Kill the AI Diagnoser (no OPENAI_API_KEY) and confirm the pipeline still
     completes via the Phase 4 deterministic fallback — doesn't hang, doesn't
@@ -204,11 +234,17 @@ async def test_pipeline_handles_ai_diagnoser_outage_gracefully(migrated_db, redi
 
     sync_engine = create_engine(migrated_db, pool_pre_ping=True)
     with sync_engine.connect() as conn:
-        diagnosis_row = conn.execute(
-            text("SELECT is_fallback, model_version FROM diagnoses WHERE payment_id = :pid "
-                 "ORDER BY created_at DESC LIMIT 1"),
-            {"pid": payment_id},
-        ).mappings().first()
+        diagnosis_row = (
+            conn.execute(
+                text(
+                    "SELECT is_fallback, model_version FROM diagnoses WHERE payment_id = :pid "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
 
     print(f"\n[diagnoser outage] diagnosis: {dict(diagnosis_row) if diagnosis_row else None}")
     assert diagnosis_row is not None, "pipeline dropped the payment instead of using the fallback"
@@ -225,15 +261,23 @@ async def test_pipeline_handles_ai_diagnoser_outage_gracefully(migrated_db, redi
 
         from workers.execution_worker import run_worker
 
-        sync_client = sync_redis.from_url(get_settings().redis_url, encoding="utf-8", decode_responses=True)
+        sync_client = sync_redis.from_url(
+            get_settings().redis_url, encoding="utf-8", decode_responses=True
+        )
         run_worker(sync_client, max_iterations=1)
         sync_client.close()
 
     with sync_engine.connect() as conn:
-        ledger_row = conn.execute(
-            text("SELECT * FROM recovery_ledger WHERE payment_id = :pid"), {"pid": payment_id}
-        ).mappings().first()
-    assert ledger_row is not None, "pipeline did not reach a terminal state despite the diagnoser outage"
+        ledger_row = (
+            conn.execute(
+                text("SELECT * FROM recovery_ledger WHERE payment_id = :pid"), {"pid": payment_id}
+            )
+            .mappings()
+            .first()
+        )
+    assert (
+        ledger_row is not None
+    ), "pipeline did not reach a terminal state despite the diagnoser outage"
 
     sync_engine.dispose()
     get_settings.cache_clear()

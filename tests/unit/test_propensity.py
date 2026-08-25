@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import pickle
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -27,18 +27,18 @@ from services.recovery_engine.propensity import (
 
 
 def _sample_context(**overrides) -> PropensityContext:
-    defaults = dict(
-        amount_paise=100_000,
-        method="upi",
-        bank="HDFC",
-        is_returning_customer=True,
-        customer_ltv_decile=7,
-        initial_failure_code="TIMEOUT",
-        initial_failure_class="TEMPORARY",
-        hour_of_day=9,
-        day_of_week=3,
-        merchant_id="not-a-training-merchant",
-    )
+    defaults = {
+        "amount_paise": 100_000,
+        "method": "upi",
+        "bank": "HDFC",
+        "is_returning_customer": True,
+        "customer_ltv_decile": 7,
+        "initial_failure_code": "TIMEOUT",
+        "initial_failure_class": "TEMPORARY",
+        "hour_of_day": 9,
+        "day_of_week": 3,
+        "merchant_id": "not-a-training-merchant",
+    }
     defaults.update(overrides)
     return PropensityContext(**defaults)
 
@@ -66,12 +66,14 @@ def test_production_inference_uses_the_certified_artifact():
 def test_production_feature_schema_matches_transformer_schema():
     with open(TRANSFORMER_ARTIFACT_PATH, "rb") as f:
         transformer = pickle.load(f)
-    expected = set(transformer._present_cats) | set(transformer._present_cont) | {
-        "hour_of_day", "day_of_week", "is_returning_customer", "customer_ltv_decile"
-    }
-    assert set(FEATURE_ORDER) == expected, (
-        f"Schema drift: production sends {set(FEATURE_ORDER)}, transformer expects {expected}"
+    expected = (
+        set(transformer._present_cats)
+        | set(transformer._present_cont)
+        | {"hour_of_day", "day_of_week", "is_returning_customer", "customer_ltv_decile"}
     )
+    assert (
+        set(FEATURE_ORDER) == expected
+    ), f"Schema drift: production sends {set(FEATURE_ORDER)}, transformer expects {expected}"
 
 
 def test_categorical_features_are_a_subset_of_the_feature_order():
@@ -134,7 +136,9 @@ def test_no_latent_fields_can_enter_inference():
         "latent_network_noise",
         "latent_customer_propensity",
     }
-    assert not (field_names & forbidden), f"latent field(s) leaked into PropensityContext: {field_names & forbidden}"
+    assert not (
+        field_names & forbidden
+    ), f"latent field(s) leaked into PropensityContext: {field_names & forbidden}"
 
 
 def test_build_propensity_context_fails_loudly_on_missing_bank():
@@ -147,7 +151,7 @@ def test_build_propensity_context_fails_loudly_on_missing_bank():
             lifetime_value_paise=100_000,
             initial_failure_code="TIMEOUT",
             initial_failure_class="TEMPORARY",
-            created_at=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+            created_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
             merchant_id="m1",
         )
 
@@ -162,7 +166,7 @@ def test_build_propensity_context_fails_loudly_on_missing_failure_code():
             lifetime_value_paise=100_000,
             initial_failure_code=None,
             initial_failure_class="TEMPORARY",
-            created_at=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+            created_at=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
             merchant_id="m1",
         )
 
@@ -188,7 +192,10 @@ def test_lr_baseline_auc_reported():
 
     eval_path = (
         Path(__file__).resolve().parent.parent.parent
-        / "models" / "recovery" / "artifacts" / "eval_test_temporal.json"
+        / "models"
+        / "recovery"
+        / "artifacts"
+        / "eval_test_temporal.json"
     )
     with open(eval_path) as f:
         eval_data = json.load(f)
@@ -213,7 +220,10 @@ def test_lgbm_does_not_beat_baseline_on_the_real_holdout_so_lr_stays_default():
 
     eval_path = (
         Path(__file__).resolve().parent.parent.parent
-        / "models" / "recovery" / "artifacts" / "eval_test_temporal.json"
+        / "models"
+        / "recovery"
+        / "artifacts"
+        / "eval_test_temporal.json"
     )
     with open(eval_path) as f:
         eval_data = json.load(f)

@@ -113,9 +113,7 @@ class CooldownRule(PolicyRule):
         elapsed = payment.now - payment.last_attempt_at
         required = timedelta(hours=policy_config.retry_cooldown_hours)
         if elapsed >= required:
-            return RuleResult(
-                True, f"elapsed={elapsed} >= cooldown={required}"
-            )
+            return RuleResult(True, f"elapsed={elapsed} >= cooldown={required}")
         return RuleResult(False, f"elapsed={elapsed} < cooldown={required}")
 
 
@@ -131,10 +129,12 @@ class RetryLimitRule(PolicyRule):
     def check(self, payment, candidate, policy_config) -> RuleResult:
         if payment.attempt_number <= policy_config.max_retries:
             return RuleResult(
-                True, f"attempt_number={payment.attempt_number} <= max_retries={policy_config.max_retries}"
+                True,
+                f"attempt_number={payment.attempt_number} <= max_retries={policy_config.max_retries}",
             )
         return RuleResult(
-            False, f"attempt_number={payment.attempt_number} > max_retries={policy_config.max_retries}"
+            False,
+            f"attempt_number={payment.attempt_number} > max_retries={policy_config.max_retries}",
         )
 
 

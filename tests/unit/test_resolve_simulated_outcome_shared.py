@@ -51,11 +51,11 @@ def test_monkeypatching_the_shared_resolver_changes_both_call_sites(monkeypatch)
         pass
 
     class _FakeMappingsResult:
-        def first(self_inner):
+        def first(self):
             return _FakeRow(true_recovery_prob_bps=1)  # near-zero, irrelevant once patched
 
     class _FakeResult:
-        def mappings(self_inner):
+        def mappings(self):
             return _FakeMappingsResult()
 
     class _FakeConn:

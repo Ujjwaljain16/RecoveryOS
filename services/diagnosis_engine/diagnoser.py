@@ -30,11 +30,11 @@ from services.risk_engine.anomaly import derive_cohort_id
 
 logger = logging.getLogger(__name__)
 
-# 12 safe columns from migrations/0002 DIAGNOSER_PAYMENT_COLUMNS. SELECT *
-# is banned in any inference-reachable path (gaps.md §B.1) — this explicit
-# allow-list IS the enforcement, not just documentation of intent: even if
-# someone widened the DB grant by mistake later, this query still only
-# asks for these columns.
+# 12 safe columns from migrations/0002 DIAGNOSER_PAYMENT_COLUMNS. A
+# wildcard select-all is banned in any inference-reachable path (gaps.md
+# §B.1) — this explicit allow-list IS the enforcement, not just
+# documentation of intent: even if someone widened the DB grant by mistake
+# later, this query still only asks for these columns.
 _PAYMENT_SAFE_COLUMNS = (
     "payment_id, merchant_id, customer_id, amount_paise, method, bank, "
     "status, failure_code, failure_class, is_synthetic, created_at, failed_at"
@@ -49,37 +49,49 @@ async def build_diagnosis_input(
     diagnoser_role connection. Returns None if the payment doesn't exist.
     """
     row = (
-        await diagnoser_session.execute(
-            text(f"SELECT {_PAYMENT_SAFE_COLUMNS} FROM payments WHERE payment_id = :pid"),
-            {"pid": payment_id},
+        (
+            await diagnoser_session.execute(
+                text(f"SELECT {_PAYMENT_SAFE_COLUMNS} FROM payments WHERE payment_id = :pid"),
+                {"pid": payment_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return None
 
     customer_row = (
-        await diagnoser_session.execute(
-            text("SELECT is_returning FROM customers WHERE customer_id = :cid"),
-            {"cid": row["customer_id"]},
+        (
+            await diagnoser_session.execute(
+                text("SELECT is_returning FROM customers WHERE customer_id = :cid"),
+                {"cid": row["customer_id"]},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     anomaly_row = None
     if row["bank"]:
         anomaly_row = (
-            await diagnoser_session.execute(
-                text(
-                    """
+            (
+                await diagnoser_session.execute(
+                    text(
+                        """
                     SELECT scope_type, scope_entity, time_bucket, z_score, severity,
                            observed_rate, baseline_rate, is_anomaly
                     FROM anomaly_windows
                     WHERE scope_type = 'bank' AND scope_entity = :bank
                     ORDER BY time_bucket DESC LIMIT 1
                     """
-                ),
-                {"bank": row["bank"]},
+                    ),
+                    {"bank": row["bank"]},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
 
     return DiagnosisInput(
         payment_id=str(row["payment_id"]),
@@ -137,7 +149,9 @@ def _attach_cohort_if_systemic(
         diagnosis_input.anomaly_scope_entity,
         diagnosis_input.anomaly_time_bucket,
     )
-    return output.model_copy(update={"root_cause": RootCause.SYSTEMIC_DEGRADATION, "cohort_id": cohort_id})
+    return output.model_copy(
+        update={"root_cause": RootCause.SYSTEMIC_DEGRADATION, "cohort_id": cohort_id}
+    )
 
 
 async def diagnose(payment_id: str) -> DiagnosisOutput | None:

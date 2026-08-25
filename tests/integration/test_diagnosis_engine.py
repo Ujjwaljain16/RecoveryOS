@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -106,11 +106,13 @@ async def test_diagnoser_role_has_no_write_access(migrated_db):
                 await session.commit()
             except DBAPIError as exc:
                 denied.append(table_name)
-                assert "permission denied" in str(exc).lower(), (
-                    f"expected a permission-denied error writing to {table_name}, got: {exc}"
-                )
+                assert (
+                    "permission denied" in str(exc).lower()
+                ), f"expected a permission-denied error writing to {table_name}, got: {exc}"
             else:
-                pytest.fail(f"diagnoser_role was able to INSERT into {table_name} — no write boundary")
+                pytest.fail(
+                    f"diagnoser_role was able to INSERT into {table_name} — no write boundary"
+                )
 
     assert denied == [t for t, _ in write_attempts]
 
@@ -146,17 +148,15 @@ async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, m
 
     output = await diagnose(payment_id)
 
-    print(
-        f"\n[test_diagnoser_timeout_falls_back] output={output!r}"
-    )
+    print(f"\n[test_diagnoser_timeout_falls_back] output={output!r}")
 
     assert output is not None
     assert output.is_fallback is True
     assert output.model_version == "fallback-rule-v1"
     assert output.confidence <= 0.6
-    assert any("ai_diagnoser_timeout" in e.fact for e in output.evidence), (
-        f"expected fallback evidence to name the timeout reason, got: {output.evidence}"
-    )
+    assert any(
+        "ai_diagnoser_timeout" in e.fact for e in output.evidence
+    ), f"expected fallback evidence to name the timeout reason, got: {output.evidence}"
 
     get_settings.cache_clear()
 
@@ -183,7 +183,7 @@ async def test_systemic_degradation_produces_cohort_diagnosis(migrated_db, monke
     await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
 
     bank = f"COHORTBANK-{uuid.uuid4().hex[:8]}"
-    time_bucket = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    time_bucket = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     anomaly_result = AnomalyResult(
         scope_type="bank",

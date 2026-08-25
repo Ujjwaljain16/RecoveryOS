@@ -26,16 +26,22 @@ async def test_evi_uses_db_action_cost_not_hardcoded_constant(migrated_db):
     engine = create_async_engine(to_async_url(migrated_db))
     async with AsyncSession(engine) as session:
         original = await get_action_cost(session, merchant_id=None, action_type="REMINDER")
-        original_evi = calculate_evi(8200, 100_000, original.cost_paise, original.friction_base_paise, 0)
+        original_evi = calculate_evi(
+            8200, 100_000, original.cost_paise, original.friction_base_paise, 0
+        )
 
     async with engine.begin() as conn:
         await conn.execute(
-            text("UPDATE action_costs SET cost_paise = cost_paise + 1000 WHERE merchant_id IS NULL AND action_type = 'REMINDER'")
+            text(
+                "UPDATE action_costs SET cost_paise = cost_paise + 1000 WHERE merchant_id IS NULL AND action_type = 'REMINDER'"
+            )
         )
 
     async with AsyncSession(engine) as session:
         updated = await get_action_cost(session, merchant_id=None, action_type="REMINDER")
-        updated_evi = calculate_evi(8200, 100_000, updated.cost_paise, updated.friction_base_paise, 0)
+        updated_evi = calculate_evi(
+            8200, 100_000, updated.cost_paise, updated.friction_base_paise, 0
+        )
 
     assert updated.cost_paise == original.cost_paise + 1000
     assert updated_evi == original_evi - 1000
@@ -62,7 +68,9 @@ async def test_merchant_specific_cost_overrides_platform_default(migrated_db):
         )
 
     async with AsyncSession(engine) as session:
-        merchant_cost = await get_action_cost(session, merchant_id=merchant_id, action_type="ESCALATE")
+        merchant_cost = await get_action_cost(
+            session, merchant_id=merchant_id, action_type="ESCALATE"
+        )
         platform_cost = await get_action_cost(session, merchant_id=None, action_type="ESCALATE")
 
     assert merchant_cost.cost_paise == 99_999

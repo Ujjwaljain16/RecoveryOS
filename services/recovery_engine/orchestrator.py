@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoveryos.database import (
@@ -42,7 +42,10 @@ from services.recovery_engine.next_best_action import (
     generate_candidate_actions,
     select_next_best_action,
 )
-from services.recovery_engine.propensity import build_propensity_context, predict_recovery_probability
+from services.recovery_engine.propensity import (
+    build_propensity_context,
+    predict_recovery_probability,
+)
 from services.recovery_engine.timing import AnomalyContext
 
 # inference_role's allow-listed payment columns (matches
@@ -87,15 +90,19 @@ async def _fetch_anomaly_context(session: AsyncSession, bank: str | None) -> Ano
     if bank is None:
         return None
     row = (
-        await session.execute(
-            text(
-                "SELECT severity, is_anomaly, observed_rate, baseline_rate "
-                "FROM anomaly_windows WHERE scope_type = 'bank' AND scope_entity = :bank "
-                "ORDER BY time_bucket DESC LIMIT 1"
-            ),
-            {"bank": bank},
+        (
+            await session.execute(
+                text(
+                    "SELECT severity, is_anomaly, observed_rate, baseline_rate "
+                    "FROM anomaly_windows WHERE scope_type = 'bank' AND scope_entity = :bank "
+                    "ORDER BY time_bucket DESC LIMIT 1"
+                ),
+                {"bank": bank},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return None
     return AnomalyContext(
@@ -106,23 +113,31 @@ async def _fetch_anomaly_context(session: AsyncSession, bank: str | None) -> Ano
     )
 
 
-async def _fetch_retry_history(session: AsyncSession, payment_id: str) -> tuple[datetime | None, int]:
+async def _fetch_retry_history(
+    session: AsyncSession, payment_id: str
+) -> tuple[datetime | None, int]:
     """(last_attempt_at, next_attempt_number) from the recoveries table."""
     row = (
-        await session.execute(
-            text(
-                "SELECT executed_at, attempt_number FROM recoveries "
-                "WHERE payment_id = :pid ORDER BY attempt_number DESC LIMIT 1"
-            ),
-            {"pid": payment_id},
+        (
+            await session.execute(
+                text(
+                    "SELECT executed_at, attempt_number FROM recoveries "
+                    "WHERE payment_id = :pid ORDER BY attempt_number DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return None, 1
     return row["executed_at"], row["attempt_number"] + 1
 
 
-async def build_decision(payment_id: str) -> tuple[NextBestActionResult, PolicyDecisionResult, dict]:
+async def build_decision(
+    payment_id: str,
+) -> tuple[NextBestActionResult, PolicyDecisionResult, dict]:
     """
     Full read + score + decide pipeline for one payment. Does NOT persist —
     persistence is a separate step (persist_decision) so callers/tests can
@@ -134,23 +149,33 @@ async def build_decision(payment_id: str) -> tuple[NextBestActionResult, PolicyD
     """
     async with get_inference_session_factory()() as inf_session:
         payment_row = (
-            await inf_session.execute(
-                text(f"SELECT {_PAYMENT_SAFE_COLUMNS} FROM payments WHERE payment_id = :pid"),
-                {"pid": payment_id},
+            (
+                await inf_session.execute(
+                    text(f"SELECT {_PAYMENT_SAFE_COLUMNS} FROM payments WHERE payment_id = :pid"),
+                    {"pid": payment_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if payment_row is None:
-            raise ValueError(f"payment_id={payment_id} not found (or not visible under inference_role)")
+            raise ValueError(
+                f"payment_id={payment_id} not found (or not visible under inference_role)"
+            )
 
         customer_row = (
-            await inf_session.execute(
-                text(
-                    "SELECT is_returning, lifetime_value_paise, opted_out_at "
-                    "FROM customers WHERE customer_id = :cid"
-                ),
-                {"cid": payment_row["customer_id"]},
+            (
+                await inf_session.execute(
+                    text(
+                        "SELECT is_returning, lifetime_value_paise, opted_out_at "
+                        "FROM customers WHERE customer_id = :cid"
+                    ),
+                    {"cid": payment_row["customer_id"]},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
 
     propensity_context = build_propensity_context(
         amount_paise=payment_row["amount_paise"],
@@ -186,10 +211,12 @@ async def build_decision(payment_id: str) -> tuple[NextBestActionResult, PolicyD
     )
 
     is_expired = payment_row["failed_at"] is not None and (
-        datetime.now(timezone.utc) - payment_row["failed_at"] > timedelta(days=7)
+        datetime.now(UTC) - payment_row["failed_at"] > timedelta(days=7)
     )
     is_high_severity_anomaly = bool(
-        anomaly_context is not None and anomaly_context.severity == "high" and anomaly_context.is_anomaly
+        anomaly_context is not None
+        and anomaly_context.severity == "high"
+        and anomaly_context.is_anomaly
     )
 
     payment_ctx = PaymentContext(
@@ -200,7 +227,7 @@ async def build_decision(payment_id: str) -> tuple[NextBestActionResult, PolicyD
         last_attempt_at=last_attempt_at,
         attempt_number=attempt_number,
         amount_paise=payment_row["amount_paise"],
-        now=datetime.now(timezone.utc),
+        now=datetime.now(UTC),
         is_high_severity_anomaly=is_high_severity_anomaly,
     )
     candidate_ctx = CandidateContext(
@@ -223,9 +250,7 @@ async def build_decision(payment_id: str) -> tuple[NextBestActionResult, PolicyD
         "feature_schema_version": prediction.feature_schema_version,
         "policy_config_id": policy_config_row.policy_config_id,
         "is_high_severity_anomaly": is_high_severity_anomaly,
-        "blocking_rule": next(
-            (e["rule"] for e in decision.rule_trace if not e["passed"]), None
-        ),
+        "blocking_rule": next((e["rule"] for e in decision.rule_trace if not e["passed"]), None),
     }
     return nba_result, decision, context
 
@@ -289,7 +314,9 @@ async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
     (e.g. tests that only care about the decision).
     """
     nba_result, decision, context = await build_decision(payment_id)
-    candidate_rows, policy_decision_row = await persist_decision(payment_id, nba_result, decision, context)
+    candidate_rows, policy_decision_row = await persist_decision(
+        payment_id, nba_result, decision, context
+    )
 
     result = {
         "payment_id": payment_id,
@@ -303,7 +330,11 @@ async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
         "candidate_ids": [c.candidate_id for c in candidate_rows],
     }
 
-    if redis_client is not None and decision.verdict == "ALLOW" and nba_result.chosen_action != "DO_NOTHING":
+    if (
+        redis_client is not None
+        and decision.verdict == "ALLOW"
+        and nba_result.chosen_action != "DO_NOTHING"
+    ):
         from services.execution_engine.publisher import enqueue_recovery_job
 
         async with get_app_session_factory()() as session:

@@ -5,7 +5,7 @@ CRITICAL INVARIANT:
     - fit() is called on TRAIN split only.
     - The fitted transformer is pickled to artifacts/.
     - transform() uses the frozen fitted transformer — never re-fits on val/test.
-    - Violation is tested in tests/unit/test_feature_transformer.py.
+    - Violation is tested in tests/unit/test_episodes.py::TestFeatureTransformer.
 
 Encoding strategy:
     - Categoricals (bank, method, failure_class, failure_code, merchant_id):

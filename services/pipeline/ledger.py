@@ -104,10 +104,15 @@ async def populate_ledger_and_audit_async(
     from services.pipeline.baseline import compute_and_persist_baseline_run
 
     payment_row = (
-        await session.execute(
-            text("SELECT amount_paise FROM payments WHERE payment_id = :pid"), {"pid": payment_id}
+        (
+            await session.execute(
+                text("SELECT amount_paise FROM payments WHERE payment_id = :pid"),
+                {"pid": payment_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     amount_paise = payment_row["amount_paise"] if payment_row else 0
 
     baseline = await compute_and_persist_baseline_run(session, payment_id)
@@ -192,13 +197,17 @@ def populate_ledger_and_audit_sync(
     ).first()
     amount_paise = payment_row[0] if payment_row else 0
 
-    baseline_row = conn.execute(
-        text(
-            "SELECT outcome, recovered_amount_paise FROM baseline_runs "
-            "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
-        ),
-        {"pid": payment_id},
-    ).mappings().first()
+    baseline_row = (
+        conn.execute(
+            text(
+                "SELECT outcome, recovered_amount_paise FROM baseline_runs "
+                "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"pid": payment_id},
+        )
+        .mappings()
+        .first()
+    )
     baseline_outcome = baseline_row["outcome"] if baseline_row else None
     baseline_amount = baseline_row["recovered_amount_paise"] if baseline_row else None
 

@@ -13,7 +13,7 @@ STREAM_MAXLEN = 50_000
 
 
 def enqueue_recovery_job(
-    redis_client: "sync_redis.Redis",
+    redis_client: sync_redis.Redis,
     *,
     payment_id: str,
     decision_id: str,

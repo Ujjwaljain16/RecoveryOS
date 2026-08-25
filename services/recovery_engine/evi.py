@@ -137,7 +137,9 @@ async def get_action_cost(
     )
 
 
-def friction_penalty_paise(action_type: str, friction_base_paise: int, customer_is_returning: bool) -> int:
+def friction_penalty_paise(
+    action_type: str, friction_base_paise: int, customer_is_returning: bool
+) -> int:
     """
     TRD §3.1: friction penalty scaled by customer opt-out risk. Only REMINDER
     is differentiated by customer type (TRD's own text names reminders
@@ -185,7 +187,7 @@ def calculate_evi(
         RECOVERY_MARGIN_BPS, scaled down by BPS_SCALE twice (once per bps
         factor) — floor division throughout, deterministic.
     """
-    expected_recovery_paise = (
-        amount_paise * recovery_prob_bps * RECOVERY_MARGIN_BPS
-    ) // (BPS_SCALE * BPS_SCALE)
+    expected_recovery_paise = (amount_paise * recovery_prob_bps * RECOVERY_MARGIN_BPS) // (
+        BPS_SCALE * BPS_SCALE
+    )
     return expected_recovery_paise - cost_paise - friction_paise - risk_paise

@@ -29,7 +29,7 @@ import os
 import socket
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import redis as sync_redis
@@ -37,7 +37,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from integrations.razorpay.adapter import ProviderResult, get_provider_adapter
-from recoveryos.database import advisory_lock, get_sync_engine
+from recoveryos.database import get_sync_engine
 from services.execution_engine.idempotency import execute_with_idempotency
 
 logger = logging.getLogger(__name__)
@@ -65,10 +65,12 @@ INJECT_DELAY_BEFORE_ACK_MS_ENV = "RECOVERYOS_EXECUTION_WORKER_INJECT_DELAY_BEFOR
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def _emit_event(conn: Connection, payment_id: str, event_type: str, transition_key: str, payload: dict) -> None:
+def _emit_event(
+    conn: Connection, payment_id: str, event_type: str, transition_key: str, payload: dict
+) -> None:
     """
     Every state transition (TRD §4.2) is a logged events row. idempotency_key
     is deterministic (job's idempotency_key + event_type) — re-processing the
@@ -176,21 +178,29 @@ def _write_ledger_and_audit(
 ) -> None:
     from services.pipeline.ledger import populate_ledger_and_audit_sync
 
-    candidate_row = conn.execute(
-        text(
-            "SELECT candidate_id, cost_paise, recovery_prob_bps FROM candidate_actions "
-            "WHERE payment_id = :pid AND action_type = :action ORDER BY created_at DESC LIMIT 1"
-        ),
-        {"pid": payment_id, "action": action_type},
-    ).mappings().first()
+    candidate_row = (
+        conn.execute(
+            text(
+                "SELECT candidate_id, cost_paise, recovery_prob_bps FROM candidate_actions "
+                "WHERE payment_id = :pid AND action_type = :action ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"pid": payment_id, "action": action_type},
+        )
+        .mappings()
+        .first()
+    )
 
     recovery_row = conn.execute(
-        text("SELECT recovery_id FROM recoveries WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"),
+        text(
+            "SELECT recovery_id FROM recoveries WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+        ),
         {"pid": payment_id},
     ).first()
 
     diagnosis_row = conn.execute(
-        text("SELECT diagnosis_id FROM diagnoses WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"),
+        text(
+            "SELECT diagnosis_id FROM diagnoses WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+        ),
         {"pid": payment_id},
     ).first()
 
@@ -230,14 +240,20 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
     provider = provider or get_provider_adapter()
 
     _emit_event(
-        conn, payment_id, "RECOVERY_SCHEDULED", f"{idempotency_key}:SCHEDULED",
+        conn,
+        payment_id,
+        "RECOVERY_SCHEDULED",
+        f"{idempotency_key}:SCHEDULED",
         {"action_type": action_type, "attempt_number": attempt_number},
     )
     conn.commit()
 
     def action_fn() -> dict[str, Any]:
         _emit_event(
-            conn, payment_id, "RECOVERY_EXECUTING", f"{idempotency_key}:EXECUTING",
+            conn,
+            payment_id,
+            "RECOVERY_EXECUTING",
+            f"{idempotency_key}:EXECUTING",
             {"action_type": action_type, "attempt_number": attempt_number},
         )
         conn.commit()
@@ -250,7 +266,10 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
         result = provider.retry(conn, payment_id, amount_paise, attempt_number)
 
         _emit_event(
-            conn, payment_id, "RECOVERY_VERIFYING", f"{idempotency_key}:VERIFYING",
+            conn,
+            payment_id,
+            "RECOVERY_VERIFYING",
+            f"{idempotency_key}:VERIFYING",
             {"outcome": result.outcome},
         )
         conn.commit()
@@ -265,11 +284,16 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
             result=result,
         )
 
-        final_event_type = "RECOVERY_SUCCEEDED" if result.outcome == "SUCCESS" else (
-            "RECOVERY_FAILED" if result.outcome == "FAILED" else "RECOVERY_PENDING"
+        final_event_type = (
+            "RECOVERY_SUCCEEDED"
+            if result.outcome == "SUCCESS"
+            else ("RECOVERY_FAILED" if result.outcome == "FAILED" else "RECOVERY_PENDING")
         )
         _emit_event(
-            conn, payment_id, final_event_type, f"{idempotency_key}:{final_event_type}",
+            conn,
+            payment_id,
+            final_event_type,
+            f"{idempotency_key}:{final_event_type}",
             {"outcome": result.outcome, "recovered_amount_paise": result.recovered_amount_paise},
         )
         conn.commit()
@@ -308,7 +332,8 @@ def _process_message(engine, stream_msg_id: str, raw_msg: dict[str, str], provid
         inject_before_ack_ms = os.environ.get(INJECT_DELAY_BEFORE_ACK_MS_ENV)
         if inject_before_ack_ms:
             logger.info(
-                "[ExecutionWorker] test fault-injection sleep before XACK: %sms", inject_before_ack_ms
+                "[ExecutionWorker] test fault-injection sleep before XACK: %sms",
+                inject_before_ack_ms,
             )
             time.sleep(int(inject_before_ack_ms) / 1000.0)
 
@@ -318,7 +343,7 @@ def _process_message(engine, stream_msg_id: str, raw_msg: dict[str, str], provid
         return False
 
 
-def _ensure_consumer_group(redis_client: "sync_redis.Redis") -> None:
+def _ensure_consumer_group(redis_client: sync_redis.Redis) -> None:
     try:
         redis_client.xgroup_create(STREAM_NAME, GROUP_NAME, id="0", mkstream=True)
     except sync_redis.ResponseError as e:
@@ -326,7 +351,7 @@ def _ensure_consumer_group(redis_client: "sync_redis.Redis") -> None:
             raise
 
 
-def _reclaim_pending(redis_client: "sync_redis.Redis", engine, provider=None) -> None:
+def _reclaim_pending(redis_client: sync_redis.Redis, engine, provider=None) -> None:
     """On startup: reclaim messages a previous (possibly crashed) consumer
     instance never XACK'd — same XAUTOCLAIM pattern as event_processor."""
     while True:
@@ -340,7 +365,10 @@ def _reclaim_pending(redis_client: "sync_redis.Redis", engine, provider=None) ->
         )
         if not messages:
             break
-        logger.info("[ExecutionWorker] reclaiming %d pending message(s) from a prior crashed consumer", len(messages))
+        logger.info(
+            "[ExecutionWorker] reclaiming %d pending message(s) from a prior crashed consumer",
+            len(messages),
+        )
         for stream_msg_id, raw_msg in messages:
             ok = _process_message(engine, stream_msg_id, raw_msg, provider=provider)
             if ok:
@@ -349,7 +377,9 @@ def _reclaim_pending(redis_client: "sync_redis.Redis", engine, provider=None) ->
             break
 
 
-def run_worker(redis_client: "sync_redis.Redis", *, max_iterations: int | None = None, provider=None) -> None:
+def run_worker(
+    redis_client: sync_redis.Redis, *, max_iterations: int | None = None, provider=None
+) -> None:
     """
     Main consumer loop. Runs indefinitely unless max_iterations is given
     (test-only — bounds how many poll cycles to run before returning).

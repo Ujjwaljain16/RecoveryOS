@@ -115,7 +115,7 @@ class DiagnosisOutput(BaseModel):
     is_fallback: bool
 
     @model_validator(mode="after")
-    def _fallback_confidence_cap(self) -> "DiagnosisOutput":
+    def _fallback_confidence_cap(self) -> DiagnosisOutput:
         # Belt-and-suspenders: the authoritative cap is applied explicitly in
         # fallback_rules.py (documented there with the reasoning); this
         # validator just makes it impossible for ANY code path — a future

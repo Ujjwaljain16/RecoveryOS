@@ -15,7 +15,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from services.recovery_engine.next_best_action import generate_candidate_actions, select_next_best_action
+from services.recovery_engine.next_best_action import (
+    generate_candidate_actions,
+    select_next_best_action,
+)
 from services.recovery_engine.timing import AnomalyContext
 from tests.integration.conftest import to_async_url
 
@@ -53,7 +56,9 @@ async def test_retry_later_beats_retry_now_on_probability_alone_during_high_anom
                 {"mid": merchant_id, "action_type": action_type},
             )
 
-    high_anomaly = AnomalyContext(severity="high", is_anomaly=True, observed_rate=0.30, baseline_rate=0.03)
+    high_anomaly = AnomalyContext(
+        severity="high", is_anomaly=True, observed_rate=0.30, baseline_rate=0.03
+    )
 
     async with AsyncSession(engine) as session:
         candidates = await generate_candidate_actions(
@@ -77,7 +82,9 @@ async def test_retry_later_beats_retry_now_on_probability_alone_during_high_anom
     assert retry_later.recovery_prob_bps > retry_now.recovery_prob_bps
     assert retry_later.expected_value_paise > retry_now.expected_value_paise
 
-    result = select_next_best_action(candidates, min_expected_value_paise=0, propensity_probability_bps=8200)
+    result = select_next_best_action(
+        candidates, min_expected_value_paise=0, propensity_probability_bps=8200
+    )
     assert result.chosen_action == "RETRY_LATER"
 
     print(
@@ -126,6 +133,8 @@ async def test_retry_later_does_not_beat_retry_now_absent_an_anomaly(migrated_db
 
     by_action = {c.action_type: c for c in candidates}
     assert by_action["RETRY_NOW"].recovery_prob_bps == by_action["RETRY_LATER"].recovery_prob_bps
-    assert by_action["RETRY_NOW"].expected_value_paise == by_action["RETRY_LATER"].expected_value_paise
+    assert (
+        by_action["RETRY_NOW"].expected_value_paise == by_action["RETRY_LATER"].expected_value_paise
+    )
 
     await engine.dispose()

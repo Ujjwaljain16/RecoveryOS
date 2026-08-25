@@ -17,9 +17,15 @@ from services.recovery_engine.evi import (
 )
 from services.recovery_engine.timing import AnomalyContext
 
-HIGH_ANOMALY = AnomalyContext(severity="high", is_anomaly=True, observed_rate=0.18, baseline_rate=0.03)
-MEDIUM_ANOMALY = AnomalyContext(severity="medium", is_anomaly=True, observed_rate=0.08, baseline_rate=0.03)
-INSUFFICIENT = AnomalyContext(severity="insufficient_data", is_anomaly=False, observed_rate=None, baseline_rate=None)
+HIGH_ANOMALY = AnomalyContext(
+    severity="high", is_anomaly=True, observed_rate=0.18, baseline_rate=0.03
+)
+MEDIUM_ANOMALY = AnomalyContext(
+    severity="medium", is_anomaly=True, observed_rate=0.08, baseline_rate=0.03
+)
+INSUFFICIENT = AnomalyContext(
+    severity="insufficient_data", is_anomaly=False, observed_rate=None, baseline_rate=None
+)
 
 
 def test_recovery_margin_bps_matches_phase2_constant():
@@ -119,14 +125,18 @@ def test_evi_calculation_uses_only_integer_arithmetic():
     tree = ast.parse(source)
 
     float_literals = [
-        node for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, float)
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, float)
     ]
     assert not float_literals, f"float literal(s) found in evi.py: {float_literals}"
 
     float_casts = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "float"
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "float"
     ]
     assert not float_casts, "float() cast found in evi.py"
 
@@ -155,7 +165,9 @@ def test_evi_no_rounding_drift_across_10000_summed_payments():
 
     integer_from_float_rounding = int(round(float_total))
     drift = abs(integer_total - integer_from_float_rounding)
-    print(f"\n[rounding drift] integer_total={integer_total} float_total_rounded={integer_from_float_rounding} drift={drift}")
+    print(
+        f"\n[rounding drift] integer_total={integer_total} float_total_rounded={integer_from_float_rounding} drift={drift}"
+    )
 
     # The integer path is internally self-consistent by construction (every
     # call uses the same floor-division formula) — verify it exactly equals

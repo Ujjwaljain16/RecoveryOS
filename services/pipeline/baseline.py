@@ -57,9 +57,7 @@ PIPELINE_BASELINE_EXPERIMENT_ID = "00000000-0000-0000-0000-0000000000e8"
 def _would_baseline_retry(failure_class: str | None, failure_code: str | None) -> bool:
     if failure_class in BASELINE_UNRETRYABLE_FAILURE_CLASSES:
         return False
-    if failure_code in BASELINE_UNRETRYABLE_FAILURE_CODES:
-        return False
-    return True
+    return failure_code not in BASELINE_UNRETRYABLE_FAILURE_CODES
 
 
 async def compute_and_persist_baseline_run(session: AsyncSession, payment_id: str) -> dict | None:
@@ -72,23 +70,33 @@ async def compute_and_persist_baseline_run(session: AsyncSession, payment_id: st
     payment has no simulator ground truth to compare against.
     """
     existing = (
-        await session.execute(
-            text(
-                "SELECT outcome, recovered_amount_paise FROM baseline_runs "
-                "WHERE payment_id = :pid AND experiment_id = :exp_id"
-            ),
-            {"pid": payment_id, "exp_id": PIPELINE_BASELINE_EXPERIMENT_ID},
+        (
+            await session.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise FROM baseline_runs "
+                    "WHERE payment_id = :pid AND experiment_id = :exp_id"
+                ),
+                {"pid": payment_id, "exp_id": PIPELINE_BASELINE_EXPERIMENT_ID},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if existing is not None:
         return dict(existing)
 
     payment_row = (
-        await session.execute(
-            text("SELECT amount_paise, failure_class, failure_code FROM payments WHERE payment_id = :pid"),
-            {"pid": payment_id},
+        (
+            await session.execute(
+                text(
+                    "SELECT amount_paise, failure_class, failure_code FROM payments WHERE payment_id = :pid"
+                ),
+                {"pid": payment_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if payment_row is None:
         return None
 

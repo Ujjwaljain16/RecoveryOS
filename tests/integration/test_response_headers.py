@@ -28,12 +28,14 @@ async def _seeded_merchant(migrated_db: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_model_version_header_reflects_the_actual_loaded_model(async_client, migrated_db, monkeypatch):
+async def test_model_version_header_reflects_the_actual_loaded_model(
+    async_client, migrated_db, monkeypatch
+):
     """
     Swap the value predict_recovery_probability() actually uses (not a
     second hardcoded string in the test) and confirm the header follows it.
     """
-    api_key = await _seeded_merchant(migrated_db)
+    await _seeded_merchant(migrated_db)
 
     resp_before = await async_client.get("/health")
     original_version = resp_before.headers["X-Model-Version"]
@@ -58,8 +60,10 @@ async def test_policy_version_header_reflects_a_real_version_bump(async_client, 
     engine = create_async_engine(to_async_url(migrated_db))
     async with engine.begin() as conn:
         await conn.execute(
-            text("INSERT INTO policy_configs (policy_config_id, version) VALUES (:id, 1) "
-                 "ON CONFLICT (policy_config_id) DO UPDATE SET version = 1"),
+            text(
+                "INSERT INTO policy_configs (policy_config_id, version) VALUES (:id, 1) "
+                "ON CONFLICT (policy_config_id) DO UPDATE SET version = 1"
+            ),
             {"id": PLATFORM_DEFAULT_POLICY_CONFIG_ID},
         )
     clear_policy_version_cache()
@@ -122,7 +126,10 @@ async def test_health_reports_unhealthy_when_redis_down(async_client, migrated_d
         redis_module,
         "get_redis_pool",
         lambda: __import__("redis.asyncio", fromlist=["Redis"]).from_url(
-            "redis://localhost:1/0", encoding="utf-8", decode_responses=True, socket_connect_timeout=1
+            "redis://localhost:1/0",
+            encoding="utf-8",
+            decode_responses=True,
+            socket_connect_timeout=1,
         ),
     )
     # health.py imports get_redis_pool directly into its own namespace at
@@ -137,7 +144,9 @@ async def test_health_reports_unhealthy_when_redis_down(async_client, migrated_d
     body = resp.json()
     assert body["status"] == "unhealthy"
     assert "unreachable" in body["checks"]["redis"]
-    assert body["checks"]["database"] == "ok", "a Redis outage must not also report the DB as unhealthy"
+    assert (
+        body["checks"]["database"] == "ok"
+    ), "a Redis outage must not also report the DB as unhealthy"
 
     # Restore the real pool for any test running after this one.
     redis_module._redis_pool = None

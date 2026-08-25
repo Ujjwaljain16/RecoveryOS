@@ -10,13 +10,11 @@ from __future__ import annotations
 import math
 
 import httpx
-import pytest
 
 import integrations.razorpay.adapter as adapter_module
 from integrations.razorpay.adapter import (
     ProviderResult,
     RazorpayTestAdapter,
-    SimulatorAdapter,
     _get_shared_http_client,
     _recompute_attempt_aware_prob_bps,
 )
@@ -28,11 +26,17 @@ class _FakeConn:
     stub the fallback out."""
 
     def execute(self, *args, **kwargs):
-        raise AssertionError("RazorpayTestAdapter.retry() must not touch conn on its own success/error path")
+        raise AssertionError(
+            "RazorpayTestAdapter.retry() must not touch conn on its own success/error path"
+        )
 
 
-def _make_response(status_code: int, json_body: dict | None = None, text: str = "") -> httpx.Response:
-    return httpx.Response(status_code=status_code, json=json_body, text=text if json_body is None else None)
+def _make_response(
+    status_code: int, json_body: dict | None = None, text: str = ""
+) -> httpx.Response:
+    return httpx.Response(
+        status_code=status_code, json=json_body, text=text if json_body is None else None
+    )
 
 
 # ─── Task I1: receipt must differ per attempt_number ───────────────────────
@@ -72,13 +76,15 @@ def test_razorpay_receipt_differs_per_attempt_number(monkeypatch):
 def test_razorpay_adapter_reuses_http_client_across_calls():
     client_a = _get_shared_http_client()
     client_b = _get_shared_http_client()
-    assert client_a is client_b, "_get_shared_http_client() must return the same pooled instance every time"
+    assert (
+        client_a is client_b
+    ), "_get_shared_http_client() must return the same pooled instance every time"
 
     adapter_1 = RazorpayTestAdapter()
     adapter_2 = RazorpayTestAdapter()
-    assert adapter_1._client is adapter_2._client is client_a, (
-        "every RazorpayTestAdapter instance must share the one pooled client, not construct its own"
-    )
+    assert (
+        adapter_1._client is adapter_2._client is client_a
+    ), "every RazorpayTestAdapter instance must share the one pooled client, not construct its own"
 
 
 # ─── Task I5: real branch coverage, not just isinstance() ─────────────────
@@ -94,7 +100,9 @@ def test_razorpay_success_branch_parses_order_id(monkeypatch):
     adapter = RazorpayTestAdapter()
     result = adapter.retry(_FakeConn(), "pay_1", 50_000, 1)
 
-    assert result == ProviderResult(outcome="PENDING", provider_ref="order_abc123", recovered_amount_paise=0)
+    assert result == ProviderResult(
+        outcome="PENDING", provider_ref="order_abc123", recovered_amount_paise=0
+    )
 
 
 def test_razorpay_4xx_branch_falls_back_to_simulator(monkeypatch):
@@ -109,7 +117,9 @@ def test_razorpay_4xx_branch_falls_back_to_simulator(monkeypatch):
     class _SpySimulator:
         def retry(self, conn, payment_id, amount_paise, attempt_number):
             fallback_calls.append((payment_id, amount_paise, attempt_number))
-            return ProviderResult(outcome="FAILED", provider_ref="sim_fallback", recovered_amount_paise=0)
+            return ProviderResult(
+                outcome="FAILED", provider_ref="sim_fallback", recovered_amount_paise=0
+            )
 
     adapter = RazorpayTestAdapter()
     adapter._fallback = _SpySimulator()
@@ -133,7 +143,11 @@ def test_razorpay_http_error_branch_falls_back_to_simulator(monkeypatch):
     class _SpySimulator:
         def retry(self, conn, payment_id, amount_paise, attempt_number):
             fallback_calls.append((payment_id, amount_paise, attempt_number))
-            return ProviderResult(outcome="SUCCESS", provider_ref="sim_fallback_2", recovered_amount_paise=amount_paise)
+            return ProviderResult(
+                outcome="SUCCESS",
+                provider_ref="sim_fallback_2",
+                recovered_amount_paise=amount_paise,
+            )
 
     adapter = RazorpayTestAdapter()
     adapter._fallback = _SpySimulator()
@@ -161,9 +175,9 @@ def test_razorpay_outage_fallback_logs_a_greppable_marker(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         adapter.retry(_FakeConn(), "pay_4", 10_000, 1)
 
-    assert any("RAZORPAY_OUTAGE_FALLBACK" in record.message for record in caplog.records), (
-        "the outage fallback must log a distinctly greppable marker for the demo script"
-    )
+    assert any(
+        "RAZORPAY_OUTAGE_FALLBACK" in record.message for record in caplog.records
+    ), "the outage fallback must log a distinctly greppable marker for the demo script"
 
 
 # ─── Task I4: timeout is a settings field, not a bare 10 ──────────────────
@@ -227,9 +241,9 @@ def test_simulator_adapter_decays_across_attempts(monkeypatch):
     decay_rate = 0.45
     expected_patience_attempt_1 = max(0.01, min(1.0, patience_mean * math.exp(-decay_rate * 0)))
     expected_patience_attempt_3 = max(0.01, min(1.0, patience_mean * math.exp(-decay_rate * 2)))
-    assert expected_patience_attempt_3 < expected_patience_attempt_1, (
-        "sanity: the hand-computed decay curve itself must actually decrease with attempt number"
-    )
+    assert (
+        expected_patience_attempt_3 < expected_patience_attempt_1
+    ), "sanity: the hand-computed decay curve itself must actually decrease with attempt number"
 
     # With noise pinned to 0, a lower patience score at attempt 3 must
     # produce a lower (or equal, if clamped) recovery probability than

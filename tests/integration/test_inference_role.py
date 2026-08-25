@@ -14,7 +14,9 @@ def test_inference_role_cannot_select_ground_truth_recoverable(migrated_db):
     engine = create_engine(migrated_db)
     with engine.connect() as conn:
         conn.execute(
-            text("INSERT INTO merchants (merchant_id, name) VALUES (gen_random_uuid(), 'test_merchant')")
+            text(
+                "INSERT INTO merchants (merchant_id, name) VALUES (gen_random_uuid(), 'test_merchant')"
+            )
         )
         conn.execute(
             text(
@@ -52,7 +54,9 @@ def test_inference_role_can_read_safe_payment_columns(migrated_db):
     with engine.connect() as conn:
         conn.execute(text("SET ROLE inference_role"))
         result = conn.execute(
-            text("SELECT payment_id, amount_paise, method, bank, failure_code FROM payments LIMIT 1")
+            text(
+                "SELECT payment_id, amount_paise, method, bank, failure_code FROM payments LIMIT 1"
+            )
         )
         result.fetchall()  # must not raise
 

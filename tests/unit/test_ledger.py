@@ -23,14 +23,18 @@ def test_compute_ledger_entry_uses_only_integer_arithmetic():
     tree = ast.parse(source)
 
     float_literals = [
-        node for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, float)
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, float)
     ]
     assert not float_literals, f"float literal(s) found in compute_ledger_entry: {float_literals}"
 
     float_casts = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "float"
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "float"
     ]
     assert not float_casts, "float() cast found in compute_ledger_entry"
 

@@ -34,8 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import text
@@ -69,23 +68,29 @@ async def _run_anomaly_detection_for_payment(session: AsyncSession, bank: str | 
     if bank is None:
         return
     try:
-        bucket_start = datetime.now(timezone.utc)
+        bucket_start = datetime.now(UTC)
         result = await compute_anomaly_window(session, "bank", bank, bucket_start)
         await persist_anomaly_window(session, result)
     except Exception:
         logger.exception("[Pipeline] anomaly detection step failed for bank=%s (continuing)", bank)
 
 
-async def _fetch_chosen_candidate(session: AsyncSession, payment_id: str, action_type: str) -> dict | None:
+async def _fetch_chosen_candidate(
+    session: AsyncSession, payment_id: str, action_type: str
+) -> dict | None:
     row = (
-        await session.execute(
-            text(
-                "SELECT candidate_id, cost_paise, recovery_prob_bps FROM candidate_actions "
-                "WHERE payment_id = :pid AND action_type = :action ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"pid": payment_id, "action": action_type},
+        (
+            await session.execute(
+                text(
+                    "SELECT candidate_id, cost_paise, recovery_prob_bps FROM candidate_actions "
+                    "WHERE payment_id = :pid AND action_type = :action ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id, "action": action_type},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     return dict(row) if row else None
 
 
@@ -157,15 +162,20 @@ async def _process_batch(redis: aioredis.Redis, messages: list[tuple[str, dict[s
             await redis.xack(STREAM_NAME, GROUP_NAME, stream_msg_id)
         except Exception:
             logger.exception(
-                "[Pipeline] failed processing payment_id=%s, leaving pending", raw_msg.get("payment_id")
+                "[Pipeline] failed processing payment_id=%s, leaving pending",
+                raw_msg.get("payment_id"),
             )
 
 
 async def _reclaim_pending(redis: aioredis.Redis) -> None:
     while True:
         next_id, messages, _ = await redis.xautoclaim(
-            STREAM_NAME, GROUP_NAME, CONSUMER_NAME,
-            min_idle_time=PENDING_RECLAIM_IDLE_MS, start_id="0-0", count=BATCH_SIZE,
+            STREAM_NAME,
+            GROUP_NAME,
+            CONSUMER_NAME,
+            min_idle_time=PENDING_RECLAIM_IDLE_MS,
+            start_id="0-0",
+            count=BATCH_SIZE,
         )
         if not messages:
             break
@@ -183,8 +193,11 @@ async def run_consumer(redis: aioredis.Redis, *, max_iterations: int | None = No
         iterations += 1
         try:
             results = await redis.xreadgroup(
-                groupname=GROUP_NAME, consumername=CONSUMER_NAME,
-                streams={STREAM_NAME: ">"}, count=BATCH_SIZE, block=BLOCK_MS,
+                groupname=GROUP_NAME,
+                consumername=CONSUMER_NAME,
+                streams={STREAM_NAME: ">"},
+                count=BATCH_SIZE,
+                block=BLOCK_MS,
             )
             if not results:
                 continue
@@ -199,7 +212,9 @@ async def main() -> None:
 
     from recoveryos.config import get_settings
 
-    _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    _logging.basicConfig(
+        level=_logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     settings = get_settings()
     redis_client = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     try:

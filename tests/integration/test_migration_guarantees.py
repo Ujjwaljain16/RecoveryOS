@@ -31,7 +31,6 @@ from sqlalchemy.exc import IntegrityError
 
 from tests.integration.conftest import diagnoser_database_url, inference_database_url
 
-
 # ─── Task M1: action_costs UNIQUE constraint ───────────────────────────────
 
 
@@ -116,7 +115,9 @@ class TestActionCostsUniqueConstraint:
         with engine.connect() as conn:
             for mid in (merchant_a, merchant_b):
                 conn.execute(
-                    text("INSERT INTO merchants (merchant_id, name) VALUES (:mid, 'test_merchant')"),
+                    text(
+                        "INSERT INTO merchants (merchant_id, name) VALUES (:mid, 'test_merchant')"
+                    ),
                     {"mid": mid},
                 )
                 conn.execute(
@@ -138,25 +139,23 @@ class TestMerchantApiKeyHashColumnGrants:
     def test_diagnoser_role_cannot_select_merchant_api_key_hash(self, migrated_db):
         url = diagnoser_database_url(migrated_db).replace("+asyncpg", "+psycopg2")
         engine = create_engine(url)
-        with pytest.raises(Exception) as exc_info:
-            with engine.connect() as conn:
-                conn.execute(text("SELECT api_key_hash FROM merchants LIMIT 1"))
+        with pytest.raises(Exception) as exc_info, engine.connect() as conn:
+            conn.execute(text("SELECT api_key_hash FROM merchants LIMIT 1"))
         err = str(exc_info.value).lower()
-        assert any(p in err for p in ["permission denied", "denied", "privilege", "column"]), (
-            f"diagnoser_role must not be able to SELECT merchants.api_key_hash, got: {exc_info.value}"
-        )
+        assert any(
+            p in err for p in ["permission denied", "denied", "privilege", "column"]
+        ), f"diagnoser_role must not be able to SELECT merchants.api_key_hash, got: {exc_info.value}"
         engine.dispose()
 
     def test_inference_role_cannot_select_merchant_api_key_hash(self, migrated_db):
         url = inference_database_url(migrated_db).replace("+asyncpg", "+psycopg2")
         engine = create_engine(url)
-        with pytest.raises(Exception) as exc_info:
-            with engine.connect() as conn:
-                conn.execute(text("SELECT api_key_hash FROM merchants LIMIT 1"))
+        with pytest.raises(Exception) as exc_info, engine.connect() as conn:
+            conn.execute(text("SELECT api_key_hash FROM merchants LIMIT 1"))
         err = str(exc_info.value).lower()
-        assert any(p in err for p in ["permission denied", "denied", "privilege", "column"]), (
-            f"inference_role must not be able to SELECT merchants.api_key_hash, got: {exc_info.value}"
-        )
+        assert any(
+            p in err for p in ["permission denied", "denied", "privilege", "column"]
+        ), f"inference_role must not be able to SELECT merchants.api_key_hash, got: {exc_info.value}"
         engine.dispose()
 
     def test_diagnoser_role_can_still_read_safe_merchant_columns(self, migrated_db):
@@ -166,7 +165,9 @@ class TestMerchantApiKeyHashColumnGrants:
         engine = create_engine(url)
         with engine.connect() as conn:
             result = conn.execute(
-                text("SELECT merchant_id, name, policy_config_id, created_at FROM merchants LIMIT 1")
+                text(
+                    "SELECT merchant_id, name, policy_config_id, created_at FROM merchants LIMIT 1"
+                )
             )
             result.fetchall()  # must not raise
         engine.dispose()
@@ -176,7 +177,9 @@ class TestMerchantApiKeyHashColumnGrants:
         engine = create_engine(url)
         with engine.connect() as conn:
             result = conn.execute(
-                text("SELECT merchant_id, name, policy_config_id, created_at FROM merchants LIMIT 1")
+                text(
+                    "SELECT merchant_id, name, policy_config_id, created_at FROM merchants LIMIT 1"
+                )
             )
             result.fetchall()  # must not raise
         engine.dispose()
@@ -221,7 +224,9 @@ class TestAppendOnlyTablesRejectMutation:
         engine = create_engine(migrated_db)
         with engine.connect() as conn:
             conn.execute(
-                text("INSERT INTO audit_log (audit_id, summary) VALUES (gen_random_uuid(), 'm4-append-only')")
+                text(
+                    "INSERT INTO audit_log (audit_id, summary) VALUES (gen_random_uuid(), 'm4-append-only')"
+                )
             )
             conn.commit()
 

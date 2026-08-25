@@ -40,7 +40,7 @@ from __future__ import annotations
 import statistics
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -194,7 +194,9 @@ async def compute_anomaly_window(
         raise ValueError(f"unknown scope_type {scope_type!r}, must be one of {list(SCOPE_COLUMNS)}")
 
     settings = get_settings()
-    bucket_minutes = bucket_minutes if bucket_minutes is not None else settings.anomaly_bucket_minutes
+    bucket_minutes = (
+        bucket_minutes if bucket_minutes is not None else settings.anomaly_bucket_minutes
+    )
     min_sample_size = (
         min_sample_size if min_sample_size is not None else settings.anomaly_min_sample_size
     )
@@ -202,11 +204,15 @@ async def compute_anomaly_window(
         high_threshold if high_threshold is not None else settings.anomaly_z_score_high_threshold
     )
     medium_threshold = (
-        medium_threshold if medium_threshold is not None else settings.anomaly_z_score_medium_threshold
+        medium_threshold
+        if medium_threshold is not None
+        else settings.anomaly_z_score_medium_threshold
     )
 
     bucket_start = floor_to_bucket(bucket_start, bucket_minutes)
-    total, failed = await _bucket_stats(session, scope_type, scope_entity, bucket_start, bucket_minutes)
+    total, failed = await _bucket_stats(
+        session, scope_type, scope_entity, bucket_start, bucket_minutes
+    )
 
     # Minimum sample size guard (TRD §3.2): n < 30 in the CURRENT bucket ->
     # skip z-score entirely, regardless of how much baseline history exists.
@@ -271,7 +277,9 @@ async def compute_anomaly_window(
     # only "high" additionally forms a cohort and suppresses retries.
     is_anomaly = severity in (SEVERITY_MEDIUM, SEVERITY_HIGH)
     cohort_id = (
-        derive_cohort_id(scope_type, scope_entity, bucket_start) if severity == SEVERITY_HIGH else None
+        derive_cohort_id(scope_type, scope_entity, bucket_start)
+        if severity == SEVERITY_HIGH
+        else None
     )
 
     return AnomalyResult(
@@ -347,7 +355,9 @@ async def run_anomaly_detection(
 
     async def _run(s: AsyncSession) -> None:
         for scope_type in scope_types:
-            entities = await _distinct_entities(s, scope_type, bucket_start, get_settings().anomaly_bucket_minutes)
+            entities = await _distinct_entities(
+                s, scope_type, bucket_start, get_settings().anomaly_bucket_minutes
+            )
             for entity in entities:
                 result = await compute_anomaly_window(s, scope_type, entity, bucket_start)
                 await persist_anomaly_window(s, result)
@@ -383,7 +393,7 @@ async def is_cohort_suppressed(
     READS anomaly_windows — it makes no policy decision itself (that's
     Phase 5's SystemicSuppressionRule, which this exists to feed).
     """
-    as_of = as_of or datetime.now(timezone.utc)
+    as_of = as_of or datetime.now(UTC)
     cutoff = as_of - timedelta(minutes=suppression_window_minutes)
 
     for scope_type, scope_entity in (("bank", bank), ("method", method)):

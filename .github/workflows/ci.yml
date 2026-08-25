@@ -80,6 +80,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
+        # pandas + scikit-learn: services/recovery_engine/propensity.py imports
+        # both at module level (pandas directly; scikit-learn is required to
+        # unpickle model_lr.pkl/feature_transformer_v1.pkl -- pickle needs the
+        # actual sklearn classes available to reconstruct them). Every test
+        # module that imports anything from services.recovery_engine transitively
+        # imports propensity.py, so without these two, collection itself fails
+        # with ModuleNotFoundError before a single test runs (Task MD1,
+        # pre-Phase-8 audit -- this was happening on every CI run and going
+        # unnoticed because local dev environments already had these installed).
         run: |
           pip install \
             pytest pytest-asyncio pytest-cov \
@@ -87,7 +96,7 @@ jobs:
             sqlalchemy asyncpg psycopg2-binary \
             alembic fastapi uvicorn httpx \
             celery redis structlog prometheus-client \
-            pyyaml
+            pyyaml pandas scikit-learn
 
       - name: Run unit tests
         run: pytest tests/unit/ -v --tb=short
@@ -121,6 +130,10 @@ jobs:
       # correct name is used regardless so a future testcontainers release that
       # does gate something behind it doesn't silently go missing again.
       - name: Install deps (including testcontainers)
+        # pandas + scikit-learn: same reason as the unit-tests job above --
+        # services/recovery_engine/orchestrator.py (imported by several
+        # integration tests) imports services.recovery_engine.propensity,
+        # which needs both to import and to unpickle its model artifacts.
         run: |
           pip install \
             pytest pytest-asyncio pytest-cov \
@@ -128,6 +141,7 @@ jobs:
             sqlalchemy asyncpg psycopg2-binary \
             alembic fastapi uvicorn httpx aiohttp \
             celery redis structlog prometheus-client \
+            pandas scikit-learn \
             "testcontainers[postgres,redis]"
 
       - name: Run integration tests

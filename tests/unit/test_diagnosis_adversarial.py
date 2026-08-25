@@ -5,7 +5,11 @@ PRD §37 adversarial cases + gaps.md §A.3. Pure functions, no DB required.
 
 from __future__ import annotations
 
-from services.diagnosis_engine.fallback_rules import FALLBACK_CONFIDENCE_CAP, FALLBACK_MAP, diagnose_fallback
+from services.diagnosis_engine.fallback_rules import (
+    FALLBACK_CONFIDENCE_CAP,
+    FALLBACK_MAP,
+    diagnose_fallback,
+)
 from services.diagnosis_engine.guards import (
     CONFLICTING_SIGNALS_CONFIDENCE_CAP,
     MISSING_BANK_CONFIDENCE_CAP,
@@ -14,14 +18,14 @@ from services.diagnosis_engine.schemas import DiagnosisInput, RootCause
 
 
 def _base_input(**overrides) -> DiagnosisInput:
-    defaults = dict(
-        payment_id="pay_test",
-        amount_paise=100000,
-        method="upi",
-        bank="HDFC",
-        failure_code="TIMEOUT",
-        failure_class=None,
-    )
+    defaults = {
+        "payment_id": "pay_test",
+        "amount_paise": 100000,
+        "method": "upi",
+        "bank": "HDFC",
+        "failure_code": "TIMEOUT",
+        "failure_class": None,
+    }
     defaults.update(overrides)
     return DiagnosisInput(**defaults)
 
@@ -37,9 +41,9 @@ def test_missing_bank_metadata_lowers_confidence():
     without_bank = diagnose_fallback(_base_input(bank=None), reason="ai_diagnoser_not_configured")
 
     assert with_bank.root_cause == RootCause.TEMPORARY_BANK_DEGRADATION
-    assert without_bank.root_cause == RootCause.TEMPORARY_BANK_DEGRADATION, (
-        "a missing bank shouldn't erase the failure_code evidence that IS present"
-    )
+    assert (
+        without_bank.root_cause == RootCause.TEMPORARY_BANK_DEGRADATION
+    ), "a missing bank shouldn't erase the failure_code evidence that IS present"
     assert without_bank.confidence <= MISSING_BANK_CONFIDENCE_CAP
     assert without_bank.confidence < with_bank.confidence
     assert any("bank_metadata_missing" in e.fact for e in without_bank.evidence)
@@ -66,9 +70,9 @@ def test_conflicting_signals_flagged_not_silently_resolved():
 
     assert output.root_cause == RootCause.CONFLICTING_SIGNALS
     assert output.confidence <= CONFLICTING_SIGNALS_CONFIDENCE_CAP
-    assert any("conflict:" in e.fact for e in output.evidence), (
-        "the conflict itself must be recorded as evidence, not just reflected in a lower number"
-    )
+    assert any(
+        "conflict:" in e.fact for e in output.evidence
+    ), "the conflict itself must be recorded as evidence, not just reflected in a lower number"
 
     # Sanity: the SAME failure_code with no active anomaly window (nothing
     # to conflict against) must NOT trigger this path.

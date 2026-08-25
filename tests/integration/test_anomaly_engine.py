@@ -15,7 +15,7 @@ simulator/run.py's actual BankDegradationScenario).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -87,7 +87,7 @@ async def test_zscore_flags_known_injected_spike(migrated_db):
     bank = f"TESTBANK-{uuid.uuid4().hex[:8]}"
     engine = create_async_engine(to_async_url(migrated_db))
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     current_bucket = floor_to_bucket(now, BUCKET_MINUTES)
 
     # 7 days of clean baseline history at the SAME time-of-day bucket, ~3% failure.
@@ -123,14 +123,18 @@ async def test_zscore_flags_known_injected_spike(migrated_db):
     # ran on app_role — the only role that can write it).
     async with engine.connect() as conn:
         row = (
-            await conn.execute(
-                text(
-                    "SELECT severity, z_score, is_anomaly FROM anomaly_windows "
-                    "WHERE scope_type='bank' AND scope_entity=:bank AND time_bucket=:bucket"
-                ),
-                {"bank": bank, "bucket": current_bucket},
+            (
+                await conn.execute(
+                    text(
+                        "SELECT severity, z_score, is_anomaly FROM anomaly_windows "
+                        "WHERE scope_type='bank' AND scope_entity=:bank AND time_bucket=:bucket"
+                    ),
+                    {"bank": bank, "bucket": current_bucket},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
     assert row is not None, "anomaly window was not persisted"
     assert row["severity"] == SEVERITY_HIGH
     assert row["is_anomaly"] is True
@@ -153,7 +157,7 @@ async def test_insufficient_data_guard_prevents_false_positive_on_low_traffic(mi
     bank = f"SPARSEBANK-{uuid.uuid4().hex[:8]}"
     engine = create_async_engine(to_async_url(migrated_db))
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     current_bucket = floor_to_bucket(now, BUCKET_MINUTES)
 
     # Only 10 payments (< min_sample_size=30), 8 of them "failed" — an

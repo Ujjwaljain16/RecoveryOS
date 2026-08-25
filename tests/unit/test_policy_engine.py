@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 import inspect
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from services.policy_engine.evaluate import evaluate
 from services.policy_engine.rules import (
@@ -26,39 +26,39 @@ from services.policy_engine.rules import (
     SystemicSuppressionRule,
 )
 
-NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=UTC)
 
 
 def _payment(**overrides) -> PaymentContext:
-    defaults = dict(
-        payment_id="pay_1",
-        status="failed",
-        is_expired=False,
-        opted_out_at=None,
-        last_attempt_at=None,
-        attempt_number=1,
-        amount_paise=100_000,
-        now=NOW,
-        is_high_severity_anomaly=False,
-    )
+    defaults = {
+        "payment_id": "pay_1",
+        "status": "failed",
+        "is_expired": False,
+        "opted_out_at": None,
+        "last_attempt_at": None,
+        "attempt_number": 1,
+        "amount_paise": 100_000,
+        "now": NOW,
+        "is_high_severity_anomaly": False,
+    }
     defaults.update(overrides)
     return PaymentContext(**defaults)
 
 
 def _candidate(**overrides) -> CandidateContext:
-    defaults = dict(action_type="RETRY_NOW", expected_value_paise=1_000)
+    defaults = {"action_type": "RETRY_NOW", "expected_value_paise": 1_000}
     defaults.update(overrides)
     return CandidateContext(**defaults)
 
 
 def _policy_config(**overrides) -> PolicyConfigContext:
-    defaults = dict(
-        max_retries=2,
-        retry_cooldown_hours=12,
-        max_amount_paise=2_500_000,
-        escalate_after_failures=2,
-        min_expected_value_paise=0,
-    )
+    defaults = {
+        "max_retries": 2,
+        "retry_cooldown_hours": 12,
+        "max_amount_paise": 2_500_000,
+        "escalate_after_failures": 2,
+        "min_expected_value_paise": 0,
+    }
     defaults.update(overrides)
     return PolicyConfigContext(**defaults)
 
@@ -69,24 +69,32 @@ def _policy_config(**overrides) -> PolicyConfigContext:
 
 
 def test_eligibility_pass_case_failed_and_not_expired():
-    result = EligibilityRule().check(_payment(status="failed", is_expired=False), _candidate(), _policy_config())
+    result = EligibilityRule().check(
+        _payment(status="failed", is_expired=False), _candidate(), _policy_config()
+    )
     assert result.passed is True
 
 
 def test_eligibility_fails_when_status_is_not_failed():
-    result = EligibilityRule().check(_payment(status="success", is_expired=False), _candidate(), _policy_config())
+    result = EligibilityRule().check(
+        _payment(status="success", is_expired=False), _candidate(), _policy_config()
+    )
     assert result.passed is False
 
 
 def test_eligibility_fails_when_expired():
-    result = EligibilityRule().check(_payment(status="failed", is_expired=True), _candidate(), _policy_config())
+    result = EligibilityRule().check(
+        _payment(status="failed", is_expired=True), _candidate(), _policy_config()
+    )
     assert result.passed is False
 
 
 def test_eligibility_fails_when_status_created_not_yet_failed():
     """'exactly-at-limit' equivalent for a boolean-ish rule: the boundary
     between eligible and not is the status value itself."""
-    result = EligibilityRule().check(_payment(status="created", is_expired=False), _candidate(), _policy_config())
+    result = EligibilityRule().check(
+        _payment(status="created", is_expired=False), _candidate(), _policy_config()
+    )
     assert result.passed is False
 
 
@@ -127,13 +135,17 @@ def test_optout_fails_even_if_opted_out_at_exactly_now():
 
 
 def test_cooldown_pass_case_no_prior_attempt():
-    result = CooldownRule().check(_payment(last_attempt_at=None), _candidate(), _policy_config(retry_cooldown_hours=12))
+    result = CooldownRule().check(
+        _payment(last_attempt_at=None), _candidate(), _policy_config(retry_cooldown_hours=12)
+    )
     assert result.passed is True
 
 
 def test_cooldown_exactly_at_limit_passes():
     result = CooldownRule().check(
-        _payment(last_attempt_at=NOW - timedelta(hours=12)), _candidate(), _policy_config(retry_cooldown_hours=12)
+        _payment(last_attempt_at=NOW - timedelta(hours=12)),
+        _candidate(),
+        _policy_config(retry_cooldown_hours=12),
     )
     assert result.passed is True
 
@@ -162,22 +174,30 @@ def test_cooldown_one_minute_over_the_limit_passes():
 
 
 def test_retry_limit_pass_case_well_under():
-    result = RetryLimitRule().check(_payment(attempt_number=1), _candidate(), _policy_config(max_retries=2))
+    result = RetryLimitRule().check(
+        _payment(attempt_number=1), _candidate(), _policy_config(max_retries=2)
+    )
     assert result.passed is True
 
 
 def test_retry_limit_one_under_passes():
-    result = RetryLimitRule().check(_payment(attempt_number=1), _candidate(), _policy_config(max_retries=2))
+    result = RetryLimitRule().check(
+        _payment(attempt_number=1), _candidate(), _policy_config(max_retries=2)
+    )
     assert result.passed is True
 
 
 def test_retry_limit_exactly_at_limit_passes():
-    result = RetryLimitRule().check(_payment(attempt_number=2), _candidate(), _policy_config(max_retries=2))
+    result = RetryLimitRule().check(
+        _payment(attempt_number=2), _candidate(), _policy_config(max_retries=2)
+    )
     assert result.passed is True
 
 
 def test_retry_limit_one_over_fails():
-    result = RetryLimitRule().check(_payment(attempt_number=3), _candidate(), _policy_config(max_retries=2))
+    result = RetryLimitRule().check(
+        _payment(attempt_number=3), _candidate(), _policy_config(max_retries=2)
+    )
     assert result.passed is False
 
 
@@ -191,22 +211,30 @@ def test_retry_limit_failure_marked_as_escalating():
 
 
 def test_amount_limit_pass_case_well_under():
-    result = AmountLimitRule().check(_payment(amount_paise=100_000), _candidate(), _policy_config(max_amount_paise=2_500_000))
+    result = AmountLimitRule().check(
+        _payment(amount_paise=100_000), _candidate(), _policy_config(max_amount_paise=2_500_000)
+    )
     assert result.passed is True
 
 
 def test_amount_limit_one_paise_under_passes():
-    result = AmountLimitRule().check(_payment(amount_paise=2_499_999), _candidate(), _policy_config(max_amount_paise=2_500_000))
+    result = AmountLimitRule().check(
+        _payment(amount_paise=2_499_999), _candidate(), _policy_config(max_amount_paise=2_500_000)
+    )
     assert result.passed is True
 
 
 def test_amount_limit_exactly_at_limit_passes():
-    result = AmountLimitRule().check(_payment(amount_paise=2_500_000), _candidate(), _policy_config(max_amount_paise=2_500_000))
+    result = AmountLimitRule().check(
+        _payment(amount_paise=2_500_000), _candidate(), _policy_config(max_amount_paise=2_500_000)
+    )
     assert result.passed is True
 
 
 def test_amount_limit_one_paise_over_fails():
-    result = AmountLimitRule().check(_payment(amount_paise=2_500_001), _candidate(), _policy_config(max_amount_paise=2_500_000))
+    result = AmountLimitRule().check(
+        _payment(amount_paise=2_500_001), _candidate(), _policy_config(max_amount_paise=2_500_000)
+    )
     assert result.passed is False
 
 
@@ -217,14 +245,18 @@ def test_amount_limit_one_paise_over_fails():
 
 def test_systemic_suppression_pass_case_no_anomaly():
     result = SystemicSuppressionRule().check(
-        _payment(is_high_severity_anomaly=False), _candidate(action_type="RETRY_NOW"), _policy_config()
+        _payment(is_high_severity_anomaly=False),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
     )
     assert result.passed is True
 
 
 def test_systemic_suppression_blocks_retry_now_during_high_severity_anomaly():
     result = SystemicSuppressionRule().check(
-        _payment(is_high_severity_anomaly=True), _candidate(action_type="RETRY_NOW"), _policy_config()
+        _payment(is_high_severity_anomaly=True),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
     )
     assert result.passed is False
 
@@ -233,7 +265,9 @@ def test_systemic_suppression_does_not_block_retry_later_during_high_severity_an
     """'one-under' equivalent: same anomaly condition, different action —
     only RETRY_NOW specifically is suppressed."""
     result = SystemicSuppressionRule().check(
-        _payment(is_high_severity_anomaly=True), _candidate(action_type="RETRY_LATER"), _policy_config()
+        _payment(is_high_severity_anomaly=True),
+        _candidate(action_type="RETRY_LATER"),
+        _policy_config(),
     )
     assert result.passed is True
 
@@ -242,7 +276,9 @@ def test_systemic_suppression_does_not_block_do_nothing_during_high_severity_ano
     """'one-over' equivalent boundary: exercising every other action type is
     unaffected even at maximum anomaly severity."""
     result = SystemicSuppressionRule().check(
-        _payment(is_high_severity_anomaly=True), _candidate(action_type="DO_NOTHING"), _policy_config()
+        _payment(is_high_severity_anomaly=True),
+        _candidate(action_type="DO_NOTHING"),
+        _policy_config(),
     )
     assert result.passed is True
 
@@ -253,23 +289,33 @@ def test_systemic_suppression_does_not_block_do_nothing_during_high_severity_ano
 
 
 def test_min_expected_value_pass_case_well_above_floor():
-    result = MinExpectedValueRule().check(_payment(), _candidate(expected_value_paise=10_000), _policy_config(min_expected_value_paise=0))
+    result = MinExpectedValueRule().check(
+        _payment(),
+        _candidate(expected_value_paise=10_000),
+        _policy_config(min_expected_value_paise=0),
+    )
     assert result.passed is True
 
 
 def test_min_expected_value_one_paise_above_floor_passes():
-    result = MinExpectedValueRule().check(_payment(), _candidate(expected_value_paise=1), _policy_config(min_expected_value_paise=0))
+    result = MinExpectedValueRule().check(
+        _payment(), _candidate(expected_value_paise=1), _policy_config(min_expected_value_paise=0)
+    )
     assert result.passed is True
 
 
 def test_min_expected_value_exactly_at_floor_fails():
     """Strict inequality: EVI == floor does NOT clear it."""
-    result = MinExpectedValueRule().check(_payment(), _candidate(expected_value_paise=0), _policy_config(min_expected_value_paise=0))
+    result = MinExpectedValueRule().check(
+        _payment(), _candidate(expected_value_paise=0), _policy_config(min_expected_value_paise=0)
+    )
     assert result.passed is False
 
 
 def test_min_expected_value_one_paise_under_floor_fails():
-    result = MinExpectedValueRule().check(_payment(), _candidate(expected_value_paise=-1), _policy_config(min_expected_value_paise=0))
+    result = MinExpectedValueRule().check(
+        _payment(), _candidate(expected_value_paise=-1), _policy_config(min_expected_value_paise=0)
+    )
     assert result.passed is False
 
 
@@ -327,7 +373,9 @@ def test_systemic_suppression_blocks_retry_now_end_to_end_via_evaluate():
         _policy_config(),
     )
     assert result.verdict == "BLOCK"
-    assert any(e["rule"] == "SystemicSuppressionRule" and not e["passed"] for e in result.rule_trace)
+    assert any(
+        e["rule"] == "SystemicSuppressionRule" and not e["passed"] for e in result.rule_trace
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -344,15 +392,14 @@ def _assert_no_forbidden_imports(module) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".")[0]
-                assert root not in FORBIDDEN_MODULES and root != "db", (
-                    f"forbidden import {alias.name!r} found in {module.__name__}"
-                )
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                root = node.module.split(".")[0]
-                assert root not in FORBIDDEN_MODULES and root != "db", (
-                    f"forbidden import from {node.module!r} found in {module.__name__}"
-                )
+                assert (
+                    root not in FORBIDDEN_MODULES and root != "db"
+                ), f"forbidden import {alias.name!r} found in {module.__name__}"
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            root = node.module.split(".")[0]
+            assert (
+                root not in FORBIDDEN_MODULES and root != "db"
+            ), f"forbidden import from {node.module!r} found in {module.__name__}"
 
 
 def test_policy_engine_module_has_zero_forbidden_imports():

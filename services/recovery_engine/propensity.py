@@ -57,14 +57,12 @@ call.
 
 from __future__ import annotations
 
-import math
 import pickle
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from simulator.episodes.generator import _compute_ltv_decile
@@ -80,7 +78,13 @@ MODEL_NAME = "recovery_propensity_logistic_regression"
 MODEL_VERSION = "phase2-certified-lr-v2-corrected"
 FEATURE_SCHEMA_VERSION = "phase2-v1"
 
-CATEGORICAL_FEATURES = ("method", "bank", "initial_failure_code", "initial_failure_class", "merchant_id")
+CATEGORICAL_FEATURES = (
+    "method",
+    "bank",
+    "initial_failure_code",
+    "initial_failure_class",
+    "merchant_id",
+)
 CONTINUOUS_FEATURES = ("amount_paise",)
 CYCLIC_FEATURES = {"hour_of_day": 24, "day_of_week": 7}
 PASSTHROUGH_FEATURES = ("is_returning_customer", "customer_ltv_decile")
@@ -101,8 +105,16 @@ FEATURE_ORDER = (
 # a fixed constant list, NOT fit from data at runtime, so it is safe to
 # reuse for a live customer's decile without any leakage or refitting risk.
 _LTV_DECILE_CUTS = [
-    5_000, 15_000, 35_000, 70_000, 120_000,
-    200_000, 350_000, 600_000, 1_200_000, 999_999_999,
+    5_000,
+    15_000,
+    35_000,
+    70_000,
+    120_000,
+    200_000,
+    350_000,
+    600_000,
+    1_200_000,
+    999_999_999,
 ]
 
 

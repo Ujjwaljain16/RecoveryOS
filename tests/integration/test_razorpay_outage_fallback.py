@@ -9,10 +9,8 @@ merely delegates to something that could itself be a no-op.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 
 import httpx
-import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -21,7 +19,9 @@ from integrations.razorpay.adapter import RazorpayTestAdapter
 from tests.integration.conftest import seed_merchant_and_customer, to_async_url
 
 
-async def _seed_latent_state(migrated_db: str, payment_id: str, true_recovery_prob_bps: int) -> None:
+async def _seed_latent_state(
+    migrated_db: str, payment_id: str, true_recovery_prob_bps: int
+) -> None:
     merchant_id = str(uuid.uuid4())
     customer_id = str(uuid.uuid4())
     await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
@@ -52,7 +52,12 @@ async def _seed_latent_state(migrated_db: str, payment_id: str, true_recovery_pr
                 "latent_customer_propensity, true_recovery_prob_bps, true_failure_type) "
                 "VALUES (:lid, :sim_id, :pid, 0.8, 0.9, 0.1, 0.2, :prob, 'TEMPORARY_GATEWAY_TIMEOUT')"
             ),
-            {"lid": str(uuid.uuid4()), "sim_id": simulation_id, "pid": payment_id, "prob": true_recovery_prob_bps},
+            {
+                "lid": str(uuid.uuid4()),
+                "sim_id": simulation_id,
+                "pid": payment_id,
+                "prob": true_recovery_prob_bps,
+            },
         )
     await engine.dispose()
 
@@ -83,9 +88,8 @@ def test_razorpay_outage_falls_back_to_simulator(migrated_db, monkeypatch, caplo
     sync_engine = create_engine(migrated_db, pool_pre_ping=True)
     adapter = RazorpayTestAdapter()
 
-    with caplog.at_level("WARNING"):
-        with sync_engine.connect() as conn:
-            result = adapter.retry(conn, payment_id, 500_000, 1)
+    with caplog.at_level("WARNING"), sync_engine.connect() as conn:
+        result = adapter.retry(conn, payment_id, 500_000, 1)
 
     assert result.outcome == "SUCCESS", (
         "with true_recovery_prob_bps=10000 the fallback's SimulatorAdapter resolution "
