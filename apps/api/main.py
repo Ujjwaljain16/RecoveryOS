@@ -27,8 +27,14 @@ from recoveryos.database import get_app_engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Startup: verify DB connectivity.
+    Startup: verify DB and Redis connectivity.
     Shutdown: dispose async engine (closes connection pool).
+
+    Task A3: this used to only check Postgres — a broken Redis connection
+    was only discovered on the first request that needed it (rate
+    limiting, event ingest), not at boot. Checking both here means a
+    misconfigured/unreachable Redis fails loudly at startup instead of
+    surfacing as a mysterious 500 on the first real request.
     """
     engine = get_app_engine()
     # Warm-up: execute a trivial query to surface misconfiguration early
@@ -36,6 +42,11 @@ async def lifespan(app: FastAPI):
 
     async with engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
+
+    from recoveryos.redis import get_redis_pool
+
+    redis_client = get_redis_pool()
+    await redis_client.ping()
 
     yield  # Application runs here
 
@@ -62,9 +73,11 @@ def create_app() -> FastAPI:
     )
 
     # ─── CORS ─────────────────────────────────────────────────────────────────
+    # Task A4: was hardcoded to the Next.js dev server literal — read from
+    # config/env instead (still defaults to localhost:3000 for dev).
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000"],  # Next.js dev server
+        allow_origins=[origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -73,11 +86,16 @@ def create_app() -> FastAPI:
     # ─── Request-ID middleware ─────────────────────────────────────────────────
     @app.middleware("http")
     async def inject_request_id(request: Request, call_next):
+        from apps.api.versioning import get_current_model_version, get_current_policy_version
+
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         response: Response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
-        response.headers["X-Model-Version"] = "v0.1.0"
-        response.headers["X-Policy-Version"] = "v1"
+        # Real values, not hardcoded literals — TRD §5's stated purpose is
+        # "reproducible against the exact model/policy that produced it,"
+        # which a static string can never satisfy. See apps/api/versioning.py.
+        response.headers["X-Model-Version"] = get_current_model_version()
+        response.headers["X-Policy-Version"] = await get_current_policy_version()
         return response
 
     # ─── Routes ───────────────────────────────────────────────────────────────
