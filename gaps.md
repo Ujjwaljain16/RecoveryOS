@@ -258,8 +258,18 @@ def execute(job):
    as "already handled, fetch existing."
 3. Provider Adapter calls must themselves be wrapped so a network-level retry (e.g. HTTP
    client auto-retry on timeout) doesn't cause the SAME logical job to call `provider.retry()`
-   twice even within one lock-held execution — pass a client-side idempotency header to
-   Razorpay's API too (their test-mode API supports this), don't rely only on your own lock.
+   twice even within one lock-held execution.
+   **Corrected during the pre-Phase-8 audit**: this originally said "pass a client-side
+   idempotency HEADER to Razorpay's API too (their test-mode API supports this)" — checked
+   directly against Razorpay's real docs and that's wrong for the Orders endpoint this adapter
+   calls: Razorpay's dedicated idempotency headers (`X-Payout-Idempotency`,
+   `X-Transfer-Idempotency`, `X-Refund-Idempotency`) exist only for Payouts/Transfers/Refunds,
+   not Orders. Orders' real idempotency mechanism is the `receipt` field — a repeated `receipt`
+   is rejected by Razorpay. `integrations/razorpay/adapter.py`'s `RazorpayTestAdapter.retry()`
+   sets `receipt=f"recovery_{payment_id}_{attempt_number}"` (attempt-scoped, not just
+   payment-scoped — an earlier version omitted `attempt_number` and would have collided across
+   legitimate distinct retry attempts, rejected as a false duplicate; fixed alongside this
+   correction).
 
 **Test (Phase 6, must be genuinely concurrent, not sequential-pretending-to-be-concurrent):**
 ```
@@ -269,9 +279,10 @@ test_two_real_threads_racing_same_idempotency_key_execute_provider_call_exactly_
 test_db_unique_constraint_backstop_rejects_duplicate_insert_even_if_lock_logic_is_bypassed() —
   deliberately bypass the lock in a test (call the raw upsert twice), assert the SECOND call
   raises IntegrityError and does not silently succeed
-test_http_level_retry_does_not_cause_double_provider_call() — simulate a network blip that
-  causes the HTTP client to auto-retry, assert Razorpay-side idempotency header prevents a
-  second real charge/action
+test_razorpay_receipt_differs_per_attempt_number() (tests/unit/test_razorpay_adapter.py) —
+  real replacement for the fictional header-based test above: two attempts for the same
+  payment must produce two different `receipt` values, proven by inspecting the constructed
+  request, not just asserting the function signature accepts attempt_number
 ```
 
 ---

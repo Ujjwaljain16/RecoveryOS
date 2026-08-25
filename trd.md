@@ -597,8 +597,17 @@ docker-compose (dev/demo):
   - prometheus + grafana
 
 Env separation:
-  ENV=demo   → SimulatorAdapter default, /v1/simulate/degrade enabled
-  ENV=staging → RazorpayTestAdapter, simulate endpoint disabled
+  ENV=demo    → /v1/simulate/degrade enabled
+  ENV=staging → /v1/simulate/degrade disabled
+
+Provider adapter selection (decided during the pre-Phase-8 audit, integrations/razorpay/
+adapter.py): deliberately NOT coupled to ENV. PAYMENT_PROVIDER_ADAPTER is its own explicit
+setting (default "simulator" regardless of ENV) — auto-switching a real external payment API
+on to whichever provider "staging" implies would mean someone setting ENV=staging for an
+unrelated reason starts hitting Razorpay's real test servers unexpectedly. Explicit-over-
+inferred matches this project's established config philosophy (action_costs' merchant-scoped
+overrides, the same reasoning). Set PAYMENT_PROVIDER_ADAPTER=razorpay_test explicitly when you
+want it, independent of ENV.
 ```
 
 CI (GitHub Actions): lint → unit tests (policy engine, EVI, anomaly z-score) → integration tests (full workflow against Postgres testcontainer) → adversarial suite → build images.
