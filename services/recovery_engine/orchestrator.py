@@ -22,6 +22,7 @@ is traceable back to the exact certified Phase 2 artifact that produced it.
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -316,7 +317,7 @@ async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
             ).scalar_one()
 
         idempotency_key = f"recovery:{payment_id}:{nba_result.chosen_action}:{attempt_number}"
-        stream_id = enqueue_recovery_job(
+        maybe_stream_id = enqueue_recovery_job(
             redis_client,
             payment_id=payment_id,
             decision_id=policy_decision_row.decision_id,
@@ -325,6 +326,19 @@ async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
             attempt_number=attempt_number,
             amount_paise=context.get("amount_paise") or 0,
         )
+        # enqueue_recovery_job calls redis_client.xadd(), which is a plain
+        # (synchronous-looking) call on a sync `redis.Redis` client but
+        # returns an unawaited coroutine on an async `redis.asyncio.Redis`
+        # client (services/pipeline/consumer.py's XREADGROUP-based consumer
+        # uses the latter). Awaiting only when awaitable lets this one
+        # publisher function serve both callers without silently dropping
+        # the enqueue (a coroutine that's never awaited never actually
+        # runs — this was caught by a real end-to-end test in Phase 7, not
+        # a hypothetical).
+        if inspect.isawaitable(maybe_stream_id):
+            stream_id = await maybe_stream_id
+        else:
+            stream_id = maybe_stream_id
         result["enqueued_stream_id"] = stream_id
         result["idempotency_key"] = idempotency_key
 

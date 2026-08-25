@@ -171,6 +171,45 @@ def _upsert_recovery(
     }
 
 
+def _write_ledger_and_audit(
+    conn: Connection, payment_id: str, decision_id: str, action_type: str, result: ProviderResult
+) -> None:
+    from services.pipeline.ledger import populate_ledger_and_audit_sync
+
+    candidate_row = conn.execute(
+        text(
+            "SELECT candidate_id, cost_paise, recovery_prob_bps FROM candidate_actions "
+            "WHERE payment_id = :pid AND action_type = :action ORDER BY created_at DESC LIMIT 1"
+        ),
+        {"pid": payment_id, "action": action_type},
+    ).mappings().first()
+
+    recovery_row = conn.execute(
+        text("SELECT recovery_id FROM recoveries WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"),
+        {"pid": payment_id},
+    ).first()
+
+    diagnosis_row = conn.execute(
+        text("SELECT diagnosis_id FROM diagnoses WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"),
+        {"pid": payment_id},
+    ).first()
+
+    populate_ledger_and_audit_sync(
+        conn,
+        payment_id=payment_id,
+        candidate_id=candidate_row["candidate_id"] if candidate_row else None,
+        decision_id=decision_id,
+        verdict="ALLOW",
+        chosen_action=action_type,
+        recovery_prob_bps=candidate_row["recovery_prob_bps"] if candidate_row else 0,
+        cost_paise=candidate_row["cost_paise"] if candidate_row else 0,
+        actual_recovery_paise=result.recovered_amount_paise,
+        recovery_id=recovery_row[0] if recovery_row else None,
+        diagnosis_id=diagnosis_row[0] if diagnosis_row else None,
+        outcome=result.outcome,
+    )
+
+
 def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[str, Any]:
     """
     One recovery job, fully processed through the TRD §4.2 state machine,
@@ -234,6 +273,13 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
             {"outcome": result.outcome, "recovered_amount_paise": result.recovered_amount_paise},
         )
         conn.commit()
+
+        if result.outcome in ("SUCCESS", "FAILED"):
+            # A real terminal outcome -- this consumer (not
+            # services/pipeline/consumer.py, which only handles the
+            # no-execution BLOCK/DO_NOTHING case) is the one place that
+            # writes recovery_ledger + audit_log for an executed job.
+            _write_ledger_and_audit(conn, payment_id, decision_id, action_type, result)
 
         return saved
 
