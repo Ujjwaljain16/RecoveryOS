@@ -43,6 +43,20 @@ class TestSettings:
         s = Settings()
         assert s.ai_diagnoser_timeout_seconds == 2.5
 
+    def test_cors_allowed_origins_defaults_to_dev_server(self):
+        """Task A4: CORS origin is config-driven, not hardcoded in main.py."""
+        from recoveryos.config import Settings
+
+        s = Settings()
+        assert s.cors_allowed_origins == "http://localhost:3000"
+
+    def test_cors_allowed_origins_is_env_overridable(self, monkeypatch):
+        monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://dashboard.example.com,https://app.example.com")
+        from recoveryos.config import Settings
+
+        s = Settings()
+        assert s.cors_allowed_origins == "https://dashboard.example.com,https://app.example.com"
+
     def test_settings_singleton_is_cached(self):
         from recoveryos.config import get_settings
 

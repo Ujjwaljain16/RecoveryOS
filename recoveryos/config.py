@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000)
     api_title: str = Field(default="RecoveryOS API")
     api_version: str = Field(default="v1")
+    # Comma-separated list of allowed CORS origins. Defaults to the Next.js
+    # dev server so local development keeps working with zero config, but
+    # is env-overridable — was hardcoded in apps/api/main.py until Task A4,
+    # silently breaking CORS for any dashboard deployed somewhere that
+    # isn't localhost with no code change required to notice.
+    cors_allowed_origins: str = Field(default="http://localhost:3000")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Observability
