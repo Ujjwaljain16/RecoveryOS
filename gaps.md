@@ -91,7 +91,11 @@ def get_action_cost(merchant_id: UUID, action_type: str) -> ActionCost:
 label these explicitly as "starting assumptions, tune from real data":**
 ```
 RETRY_NOW    cost=0,    friction_base=10
-RETRY_LATER  cost=0,    friction_base=0
+RETRY_LATER  cost=0,    friction_base=20 (updated by migration 0009 — see §C.1: a zero
+                                          friction made RETRY_LATER strictly cheaper than
+                                          RETRY_NOW with equal probability outside an anomaly,
+                                          so it won every payment in the Phase 5 sanity check
+                                          regardless of whether waiting genuinely helped)
 ALT_ROUTE    cost=200   (₹2, gateway fee estimate), friction_base=50
 REMINDER     cost=20    (₹0.20 SMS), friction_base=30
 ESCALATE     cost=15000 (₹150 labor-equivalent), friction_base=100
@@ -362,6 +366,93 @@ test_evi_no_rounding_drift_across_10000_summed_payments() — compute EVI for 10
 test_ledger_sum_matches_sum_of_individual_rows_exactly() — SUM(actual_recovery_paise) in SQL
   must exactly equal a Python-side sum of the same rows, zero tolerance, not approx-equal
 ```
+
+---
+
+### C.1 Timing-Adjusted Recovery Probability — Coverage Limits (found in Phase 5)
+
+**What was discovered:** building `services/recovery_engine/timing.py` (the mechanism behind
+`RETRY_LATER`/`ALT_ROUTE` beating `RETRY_NOW` on probability, not just cost), Phase 1/2's episode
+simulator turned out to have no data at the timescale that mechanism needs. Its retry-chain delay
+is `MIN_RETRY_DELAY_SEC=60` to `MAX_RETRY_DELAY_SEC=300` (1-5 minutes,
+`simulator/episodes/generator.py`) — nowhere near production's `retry_cooldown_hours=12` default.
+The one time-decay curve that DOES exist in the simulator (`LatentRecoverabilityFunction`'s
+customer-patience exponential decay, keyed on `attempt_number`) is explicitly latent ground truth —
+using it in production inference would be the exact non-circularity leak Phase 1/2 exists to
+prevent.
+
+**What was built instead:** the only genuinely real, non-latent, already-measured "is right now
+worse than normal" signal in the codebase is Phase 4's anomaly detector (`observed_rate` vs
+`baseline_rate` per bank, `services/risk_engine/anomaly.py`). `timing.py` penalizes `RETRY_NOW`'s
+base propensity by the ACTUAL measured success-rate ratio only during an active, sufficiently-
+sampled, HIGH-severity systemic anomaly (matching TRD §3.2's own threshold) — clamped to `[0,
+1.0]`, penalty only, never a boost. `RETRY_LATER`/`ALT_ROUTE` are left unadjusted under that same
+condition, since they route around/wait out the exact thing being measured.
+
+**Coverage limit — say this explicitly in any pitch/demo:** this mechanism only makes
+`RETRY_LATER` win on probability during an active SYSTEMIC anomaly (TRD §3.1's own headline
+example — "bank degradation, wait 12h, 73% recovery" — is inherently this case). PRD §32 Scenario
+D (an individual customer's non-systemic temporary timeout recovering after a wait) is still
+functionally unmodeled: outside a systemic anomaly, `RETRY_LATER` can only win the
+next-best-action selection on cost/friction, never on a calibrated probability improvement,
+because no such calibration data exists in Phase 1/2. If asked directly about the individual
+timeout case, the honest answer is "not modeled yet — would need retry-chain simulation at an
+hours scale, which Phase 1/2 doesn't generate," not an implied "yes, we know waiting helps in
+general."
+
+---
+
+### C.2 Phase 2's Certified LightGBM Was Actually Selected on a Contaminated Split
+
+**What was discovered:** re-auditing Phase 2 before building Phase 5's production adapter
+(prompted by an explicit request to be thorough rather than trust the certificate), the
+train/val/test splits were checked directly by set-comparing `episode_id` across the actual
+parquet files — not by reading `phase_2_certificate.json`'s summary.
+
+`simulator/dataset/builder.py` writes `train` and `val_temporal` as a genuine time-based split
+of ONE `generate_episodes()` call (safe — verified zero overlap). But `val_random` and
+`test_scenario` are each produced by a SEPARATE call to `build_simulator(seed=..., ...)`, which
+constructs a fresh `DeterministicIdGenerator`/`SimRng` re-seeded from index 0 every time.
+Episode generation replays its RNG stream deterministically, so the first N episodes of any two
+calls sharing a seed are byte-identical.
+
+Verified directly against the parquet files:
+```
+train vs val_random:        8,820 / 15,000 rows (58.8%) are verbatim duplicates of train rows
+test_random vs test_scenario: 8,739 / 15,000 rows (58.3%) duplicated (doesn't touch train, but
+                               means the "OOD scenario" split isn't an independent sample either)
+train vs val_temporal:        0% overlap (this split is fine)
+train vs test_random/test_temporal/test_scenario: 0% overlap (different seed, fine)
+```
+
+`models/recovery/train.py` uses `val_random` — 59% duplicated training rows — as the split it
+picks the "best model" on. The certified claim ("LightGBM beats LR by 0.0401 AUC, clears the
+>0.03 TRD §3.3 gate") was computed on that contaminated split.
+
+**The real number**, from `models/recovery/artifacts/eval_test_temporal.json` — the only split
+verified to have zero overlap with train:
+```
+LightGBM AUC = 0.8374  (95% CI: [0.8277, 0.8471])
+LR      AUC = 0.8378
+```
+LR is marginally *higher*, and LightGBM's own point estimate sits inside its 95% CI around LR's
+number — statistically indistinguishable, and LightGBM does not clear the >0.03 lift gate on
+real held-out data. Per TRD §3.3's own rule, **the gate fails and Logistic Regression is the
+correct certified default**, not LightGBM.
+
+**Fix applied:** `services/recovery_engine/propensity.py` (Phase 5) loads `model_lr.pkl` +
+`feature_transformer_v1.pkl`, not `model_lightgbm.txt`. No retraining — both artifacts already
+existed from Phase 2; this only changes which one production actually uses.
+`test_lgbm_does_not_beat_baseline_on_the_real_holdout_so_lr_stays_default` (tests/unit/test_propensity.py)
+locks this in: it fails loudly if the artifacts are ever regenerated in a way that reverses it.
+
+**Not yet fixed (flagged, not silently left implicit):** the root cause in
+`simulator/dataset/builder.py`/`run_episode_mode` (re-seeding the same seed across independent
+`generate_episodes()` calls) is still there — any FUTURE dataset regeneration for Phase 8's
+canonical eval run will hit the same duplication in `val_random`/whichever OOD split is generated
+the same way, unless the generation code is changed to draw an actual held-out subset from a
+single larger run instead of an independently re-seeded call. Worth fixing before Phase 8 trusts
+any split other than a genuine temporal one.
 
 ---
 
