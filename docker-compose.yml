@@ -117,6 +117,33 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # ─── Pipeline Orchestrator (Phase 7) ────────────────────────────────────────
+  # Consumes stream:risk_engine (published by event_processor) and drives
+  # each PAYMENT_FAILED payment through risk engine -> diagnosis -> recovery
+  # engine -> policy engine -> action queue, per TRD §1.4.
+  pipeline_orchestrator:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: recoveryos_pipeline_orchestrator
+    restart: always
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DIAGNOSER_DATABASE_URL: postgresql+asyncpg://diagnoser:${RECOVERYOS_DIAGNOSER_ROLE_PASSWORD}@postgres:5432/recoveryos
+      INFERENCE_DATABASE_URL: postgresql+asyncpg://inference:${RECOVERYOS_INFERENCE_ROLE_PASSWORD}@postgres:5432/recoveryos
+      REDIS_URL: redis://redis:6379/0
+      ENV: demo
+    command: ["python", "-m", "services.pipeline.consumer"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   # ─── Celery Worker ─────────────────────────────────────────────────────────
   worker:
     build:
