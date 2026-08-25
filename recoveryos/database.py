@@ -170,10 +170,21 @@ def advisory_lock(conn: Connection, key: str) -> Generator[None, None, None]:
     Blocks (does not fail) if another session already holds the same key —
     this is the intended behavior: a concurrent caller waits its turn rather
     than racing.
+
+    Robustness note: if the wrapped code raises after leaving the
+    connection's transaction in a FAILED state (e.g. an IntegrityError from
+    a bad write), Postgres refuses to run ANY further command — including
+    the unlock call itself — until the transaction is rolled back. Without
+    the rollback() below, the unlock call would itself raise
+    (InFailedSqlTransaction), masking the original exception's cleanup and
+    leaving the advisory lock held until the connection eventually closes
+    rather than released promptly. Rolling back first (safe regardless of
+    transaction state) ensures the unlock always actually runs.
     """
     lock_key = _advisory_lock_key(key)
     conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
     try:
         yield
     finally:
+        conn.rollback()
         conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})

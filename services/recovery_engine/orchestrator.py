@@ -217,6 +217,7 @@ async def build_decision(payment_id: str) -> tuple[NextBestActionResult, PolicyD
 
     context = {
         "merchant_id": payment_row["merchant_id"],
+        "amount_paise": payment_row["amount_paise"],
         "model_version": prediction.model_version,
         "feature_schema_version": prediction.feature_schema_version,
         "policy_config_id": policy_config_row.policy_config_id,
@@ -275,11 +276,21 @@ async def persist_decision(
     return candidate_rows, policy_decision_row
 
 
-async def decide_and_persist(payment_id: str) -> dict:
-    """Convenience entry point: full pipeline + persistence for one payment."""
+async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
+    """
+    Convenience entry point: full pipeline + persistence for one payment.
+
+    If `redis_client` is given and the verdict is ALLOW for an action that
+    actually executes (i.e. not DO_NOTHING — nothing to schedule for it),
+    enqueues a job onto stream:recovery_jobs for
+    workers/execution_worker.py — Phase 5's decision, Phase 6's execution,
+    one continuous path. Omit `redis_client` to decide without enqueueing
+    (e.g. tests that only care about the decision).
+    """
     nba_result, decision, context = await build_decision(payment_id)
     candidate_rows, policy_decision_row = await persist_decision(payment_id, nba_result, decision, context)
-    return {
+
+    result = {
         "payment_id": payment_id,
         "chosen_action": nba_result.chosen_action,
         "chosen_evi_paise": nba_result.chosen_evi_paise,
@@ -290,3 +301,31 @@ async def decide_and_persist(payment_id: str) -> dict:
         "decision_id": policy_decision_row.decision_id,
         "candidate_ids": [c.candidate_id for c in candidate_rows],
     }
+
+    if redis_client is not None and decision.verdict == "ALLOW" and nba_result.chosen_action != "DO_NOTHING":
+        from services.execution_engine.publisher import enqueue_recovery_job
+
+        async with get_app_session_factory()() as session:
+            attempt_number = (
+                await session.execute(
+                    text(
+                        "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM recoveries WHERE payment_id = :pid"
+                    ),
+                    {"pid": payment_id},
+                )
+            ).scalar_one()
+
+        idempotency_key = f"recovery:{payment_id}:{nba_result.chosen_action}:{attempt_number}"
+        stream_id = enqueue_recovery_job(
+            redis_client,
+            payment_id=payment_id,
+            decision_id=policy_decision_row.decision_id,
+            idempotency_key=idempotency_key,
+            action_type=nba_result.chosen_action,
+            attempt_number=attempt_number,
+            amount_paise=context.get("amount_paise") or 0,
+        )
+        result["enqueued_stream_id"] = stream_id
+        result["idempotency_key"] = idempotency_key
+
+    return result
