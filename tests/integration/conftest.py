@@ -42,6 +42,27 @@ def to_async_url(sync_url: str) -> str:
     return f"{driverless}+asyncpg://{rest}"
 
 
+def diagnoser_database_url(sync_url: str) -> str:
+    """
+    Real diagnoser-role DSN against the SAME testcontainer, using the actual
+    'diagnoser' login user (created by migrations/0002_db_roles.py with the
+    RECOVERYOS_DIAGNOSER_ROLE_PASSWORD set in tests/conftest.py's
+    migrated_db fixture) — not a superuser connection. This is what makes
+    test_diagnoser_role_has_no_write_access a real DB-permission check
+    rather than an app-level convention.
+    """
+    from sqlalchemy.engine import make_url
+
+    url = make_url(to_async_url(sync_url))
+    # render_as_string(hide_password=False): str(URL) masks the password by
+    # default (SQLAlchemy's repr-safety feature) — silently producing a DSN
+    # with the literal string "***" in it, which would make every connection
+    # attempt fail authentication instead of the test we actually want to run.
+    return url.set(
+        username="diagnoser", password="test-only-diagnoser-role-password"
+    ).render_as_string(hide_password=False)
+
+
 @pytest.fixture(scope="session")
 def redis_container():
     if RedisContainer is None:
@@ -64,6 +85,7 @@ def patch_settings(redis_url, migrated_db, monkeypatch):
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("DATABASE_URL", to_async_url(migrated_db))
     monkeypatch.setenv("DATABASE_URL_SYNC", migrated_db)
+    monkeypatch.setenv("DIAGNOSER_DATABASE_URL", diagnoser_database_url(migrated_db))
     monkeypatch.setenv("ENV", "test")
 
     from recoveryos.config import get_settings

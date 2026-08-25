@@ -288,6 +288,10 @@ class Diagnosis(Base):
     """
 
     __tablename__ = "diagnoses"
+    __table_args__ = (
+        Index("idx_diagnoses_payment", "payment_id", "created_at"),
+        Index("idx_diagnoses_cohort", "cohort_id"),
+    )
 
     diagnosis_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str | None] = mapped_column(
