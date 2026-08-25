@@ -9,9 +9,19 @@ everything except failures already known to be hopeless.
 
 Ground truth dependency: this reads simulator_latent_state.true_recovery_prob_bps
 (app_role — NOT diagnoser_role/inference_role, which correctly have zero
-access to it) to decide what the baseline WOULD have recovered, sampled
-stochastically exactly like SimulatorAdapter resolves a real retry
-(services/execution_engine's sibling in integrations/razorpay/adapter.py).
+access to it) to decide what the baseline WOULD have recovered.
+
+CRITICAL (TRD §7): the outcome dice-roll below calls
+integrations.razorpay.adapter.resolve_simulated_outcome() — the EXACT SAME
+function SimulatorAdapter.retry() calls to resolve a real executed retry.
+This is not an implementation detail: TRD §7's incremental-revenue number
+is only a valid comparison if RecoveryOS's actual outcomes and the
+baseline's counterfactual outcomes are resolved through one identical
+function, not two independently-written pieces of matching math that
+could silently drift apart the next time either one is touched. Do NOT
+inline `random.uniform(0, 10_000) < true_recovery_prob_bps` here again —
+import and call the shared resolver.
+
 For a genuinely live (non-synthetic) payment there is no latent ground
 truth to compare against — baseline_outcome stays NULL for those, which is
 architecturally correct: "what would the naive strategy have recovered"
@@ -21,11 +31,12 @@ ground truth exists at all.
 
 from __future__ import annotations
 
-import random
 import uuid
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from integrations.razorpay.adapter import resolve_simulated_outcome
 
 # Baseline heuristic — matches models/recovery/certificate.py's naive
 # baseline exactly: retry everything except PERMANENT failure_class or an
@@ -101,7 +112,7 @@ async def compute_and_persist_baseline_run(session: AsyncSession, payment_id: st
     if not would_retry:
         outcome, recovered_amount_paise = OUTCOME_NOT_ATTEMPTED, 0
     else:
-        succeeded = random.uniform(0, 10_000) < true_recovery_prob_bps
+        succeeded = resolve_simulated_outcome(true_recovery_prob_bps)
         outcome = OUTCOME_RECOVERED if succeeded else OUTCOME_NOT_RECOVERED
         recovered_amount_paise = payment_row["amount_paise"] if succeeded else 0
 

@@ -64,6 +64,23 @@ class PaymentProvider(Protocol):
     def retry(self, conn: Connection, payment_id: str, amount_paise: int) -> ProviderResult: ...
 
 
+def resolve_simulated_outcome(true_recovery_prob_bps: int) -> bool:
+    """
+    THE single dice-roll that resolves a simulated ground-truth recovery
+    probability into a real/counterfactual outcome. TRD §7's incremental-
+    revenue comparison is only apples-to-apples if RecoveryOS's actual
+    execution and the baseline strategy's counterfactual replay resolve
+    outcomes through the IDENTICAL function — not two call sites that
+    happen to run the same math today and silently drift the next time one
+    of them gets refactored. SimulatorAdapter.retry() (this file) and
+    services/pipeline/baseline.py's compute_and_persist_baseline_run() both
+    call this exact function object; a test
+    (tests/unit/test_resolve_simulated_outcome_shared.py) asserts that by
+    monkeypatching it once and observing both call sites change together.
+    """
+    return random.uniform(0, 10_000) < true_recovery_prob_bps
+
+
 class SimulatorAdapter:
     """
     Demo-mode provider: resolves a retry's outcome from
@@ -97,7 +114,7 @@ class SimulatorAdapter:
             return ProviderResult(outcome="PENDING", provider_ref=None, recovered_amount_paise=0)
 
         true_recovery_prob_bps = row[0]
-        succeeded = random.uniform(0, 10_000) < true_recovery_prob_bps
+        succeeded = resolve_simulated_outcome(true_recovery_prob_bps)
         return ProviderResult(
             outcome="SUCCESS" if succeeded else "FAILED",
             provider_ref=f"sim_{uuid.uuid4().hex[:16]}",
