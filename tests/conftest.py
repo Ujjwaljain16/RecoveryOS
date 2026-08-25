@@ -87,6 +87,7 @@ def migrated_db(db_url_sync: str):
     # protect, only a requirement to provide *something* non-empty.
     os.environ.setdefault("RECOVERYOS_APP_ROLE_PASSWORD", "test-only-app-role-password")
     os.environ.setdefault("RECOVERYOS_DIAGNOSER_ROLE_PASSWORD", "test-only-diagnoser-role-password")
+    os.environ.setdefault("RECOVERYOS_INFERENCE_ROLE_PASSWORD", "test-only-inference-role-password")
 
     # Clear the cached settings singleton so it re-reads the env
     from recoveryos.config import get_settings

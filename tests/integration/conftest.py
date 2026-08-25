@@ -63,6 +63,17 @@ def diagnoser_database_url(sync_url: str) -> str:
     ).render_as_string(hide_password=False)
 
 
+def inference_database_url(sync_url: str) -> str:
+    """Real inference-role DSN, same pattern as diagnoser_database_url() —
+    the 'inference' login user created by migrations/0008_inference_role.py."""
+    from sqlalchemy.engine import make_url
+
+    url = make_url(to_async_url(sync_url))
+    return url.set(
+        username="inference", password="test-only-inference-role-password"
+    ).render_as_string(hide_password=False)
+
+
 @pytest.fixture(scope="session")
 def redis_container():
     if RedisContainer is None:
@@ -86,6 +97,7 @@ def patch_settings(redis_url, migrated_db, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", to_async_url(migrated_db))
     monkeypatch.setenv("DATABASE_URL_SYNC", migrated_db)
     monkeypatch.setenv("DIAGNOSER_DATABASE_URL", diagnoser_database_url(migrated_db))
+    monkeypatch.setenv("INFERENCE_DATABASE_URL", inference_database_url(migrated_db))
     monkeypatch.setenv("ENV", "test")
 
     from recoveryos.config import get_settings
@@ -110,6 +122,8 @@ def patch_settings(redis_url, migrated_db, monkeypatch):
     _db_mod._app_session_factory = None
     _db_mod._diagnoser_engine = None
     _db_mod._diagnoser_session_factory = None
+    _db_mod._inference_engine = None
+    _db_mod._inference_session_factory = None
 
 
 @pytest_asyncio.fixture()

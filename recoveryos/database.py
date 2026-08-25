@@ -48,6 +48,10 @@ _app_session_factory = None
 _diagnoser_engine = None
 _diagnoser_session_factory = None
 
+# ─── Inference engine (inference_role — read-only, no ground_truth) ─────────
+_inference_engine = None
+_inference_session_factory = None
+
 
 def get_app_engine():
     global _app_engine
@@ -61,6 +65,13 @@ def get_diagnoser_engine():
     if _diagnoser_engine is None:
         _diagnoser_engine = _build_async_engine(get_settings().diagnoser_database_url)
     return _diagnoser_engine
+
+
+def get_inference_engine():
+    global _inference_engine
+    if _inference_engine is None:
+        _inference_engine = _build_async_engine(get_settings().inference_database_url)
+    return _inference_engine
 
 
 def get_app_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -85,6 +96,17 @@ def get_diagnoser_session_factory() -> async_sessionmaker[AsyncSession]:
     return _diagnoser_session_factory
 
 
+def get_inference_session_factory() -> async_sessionmaker[AsyncSession]:
+    global _inference_session_factory
+    if _inference_session_factory is None:
+        _inference_session_factory = async_sessionmaker(
+            bind=get_inference_engine(),
+            expire_on_commit=False,
+            autoflush=False,
+        )
+    return _inference_session_factory
+
+
 async def get_app_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency — yields an app_role session."""
     async with get_app_session_factory()() as session:
@@ -94,6 +116,12 @@ async def get_app_session() -> AsyncGenerator[AsyncSession, None]:
 async def get_diagnoser_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency — yields a diagnoser_role session (read-only, no ground_truth)."""
     async with get_diagnoser_session_factory()() as session:
+        yield session
+
+
+async def get_inference_session() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency — yields an inference_role session (read-only, no ground_truth)."""
+    async with get_inference_session_factory()() as session:
         yield session
 
 

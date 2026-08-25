@@ -71,6 +71,14 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://diagnoser:CHANGE_ME@localhost:5432/recoveryos",
         description="Restricted DSN for the AI Diagnoser — no access to ground_truth columns. Set via env/.env.",
     )
+    # NOTE: login user is "inference" (inference_role is NOLOGIN, granted to
+    # it — migrations/versions/0008_inference_role.py). Same restrictions as
+    # diagnoser_database_url: zero access to ground_truth_recoverable or
+    # simulator_latent_state.
+    inference_database_url: str = Field(
+        default="postgresql+asyncpg://inference:CHANGE_ME@localhost:5432/recoveryos",
+        description="Restricted DSN for the recovery propensity model's feature reads. Set via env/.env.",
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Auth (Task 4 — API key per merchant)
