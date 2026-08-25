@@ -146,6 +146,21 @@ class Settings(BaseSettings):
     anomaly_min_sample_size: int = Field(default=30)
     anomaly_bucket_minutes: int = Field(default=15)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Payment provider (Phase 6 — integrations/razorpay/adapter.py)
+    # ─────────────────────────────────────────────────────────────────────────
+    # 'simulator' | 'razorpay_test' — the ONE line that swaps providers.
+    # get_provider_adapter() reads only this field; no other code path
+    # branches on env/is_demo for adapter selection (that would make the
+    # swap NOT config-only — see test_provider_adapter_swap_is_config_only).
+    payment_provider_adapter: str = Field(
+        default="simulator",
+        description="Which PaymentProvider implementation execution_worker uses. Set via env/.env.",
+    )
+    razorpay_key_id: str = Field(default="", description="Razorpay TEST-mode key id.")
+    razorpay_key_secret: str = Field(default="", description="Razorpay TEST-mode key secret.")
+    razorpay_base_url: str = Field(default="https://api.razorpay.com/v1")
+
     @property
     def is_demo(self) -> bool:
         return self.env == AppEnvironment.DEMO
