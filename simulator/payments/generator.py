@@ -83,6 +83,27 @@ class PaymentGenerator:
         self.latent_function = latent_function
         self.dist_sampler = PaymentDistributionSampler(rng)
 
+    def _sample_bank(self, timestamp: datetime) -> str:
+        """
+        Bank selection, consulting any active scenario's volume-concentration
+        bias first (duck-typed `bank_concentration_bias` hook -- see
+        BankDegradationScenario) before falling back to the calibrated
+        overall market-share distribution. Checked BEFORE the normal sampler
+        so a real degradation window's bank gets its realistic share of this
+        run's traffic, not a diluted 1/N slice.
+        """
+        for scenario in self.scenarios:
+            bias_fn = getattr(scenario, "bank_concentration_bias", None)
+            if bias_fn is None:
+                continue
+            bias = bias_fn(timestamp)
+            if bias is None:
+                continue
+            target_bank, concentration = bias
+            if self.rng.uniform("payments") < concentration:
+                return target_bank
+        return self.dist_sampler.sample_bank()
+
     def generate_batch(self, count: int, simulation_id: str) -> GeneratedBatchResult:
         payments: list[SimulatedPaymentRecord] = []
         events: list[SimulatedEventRecord] = []
@@ -113,7 +134,7 @@ class PaymentGenerator:
 
             # 2. Sample method, bank, amount
             method = self.dist_sampler.sample_method()
-            bank = self.dist_sampler.sample_bank()
+            bank = self._sample_bank(txn_time)
             amount_paise = self.dist_sampler.sample_amount_paise(merchant, method)
 
             context = PaymentContext(

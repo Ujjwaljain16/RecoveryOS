@@ -51,11 +51,38 @@ class BankDegradationScenario:
         spike_rate: float = 0.18,
         window_start: datetime | None = None,
         window_duration_minutes: int = 1440, # 24h default so it covers full simulation
+        concentration_bias: float = 0.85,
     ):
         self.target_bank = target_bank
         self.spike_rate = spike_rate
         self.window_start = window_start
         self.window_duration = timedelta(minutes=window_duration_minutes)
+        # Real bank degradations are observed against that bank's own actual
+        # transaction volume, not a uniform 1/N share of total simulated
+        # throughput (this simulator's overall arrival rate is far below a
+        # real merchant network's, so an even bank split under-samples any
+        # one bank's per-15-minute-bucket volume well below TRD §3.2's
+        # anomaly_min_sample_size). While the window is active, bias bank
+        # selection toward target_bank (see bank_concentration_bias) so a
+        # run's density for that bank approximates its real volume closely
+        # enough for the detector's documented default bucket size to
+        # actually resolve a signal. This does not touch spike_rate/failure
+        # behavior at all -- it only concentrates WHICH bank gets sampled.
+        self.concentration_bias = concentration_bias
+
+    def bank_concentration_bias(self, timestamp: datetime) -> tuple[str, float] | None:
+        """
+        Optional hook PaymentGenerator consults before sampling a payment's
+        bank (duck-typed, not part of ScenarioModifier -- most scenarios
+        don't target a specific bank/window and have no reason to implement
+        it). Returns (target_bank, bias_probability) while this scenario's
+        window is active, else None.
+        """
+        if self.window_start is None:
+            return None
+        if not (self.window_start <= timestamp <= self.window_start + self.window_duration):
+            return None
+        return (self.target_bank, self.concentration_bias)
 
     def applies_to(self, context: PaymentContext) -> bool:
         if context.bank != self.target_bank:

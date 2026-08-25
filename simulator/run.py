@@ -10,7 +10,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -79,8 +79,14 @@ def build_simulator(
         BankDegradationScenario(
             target_bank=sc_conf.get("degradation_bank", "HDFC"),
             spike_rate=sc_conf.get("degradation_rate", 0.18),
-            window_start=clock.get_time(),
+            # Phase 4: offset the window start so a run can cover real trailing
+            # history before the spike (the TRD §3.2 baseline is 7-day trailing
+            # same-hour — with window_start always == sim start, as this was
+            # before, there is *never* any prior history to baseline against).
+            # Default 0 keeps existing behavior/CLI callers unchanged.
+            window_start=clock.get_time() + timedelta(hours=sc_conf.get("degradation_start_hours", 0)),
             window_duration_minutes=sc_conf.get("degradation_minutes", 180),
+            concentration_bias=sc_conf.get("degradation_concentration_bias", 0.85),
         ),
         MultiRailOutageScenario(
             affected_banks=sc_conf.get("outage_banks", ["ICICI", "SBI"]),
@@ -212,6 +218,15 @@ def save_to_database(
                 Event(
                     event_id=e.event_id,
                     payment_id=e.payment_id,
+                    # idempotency_key is NOT NULL + UNIQUE(payment_id, idempotency_key)
+                    # (migration 0005). Simulator-generated events are never retried by
+                    # a real client, so there's no client-supplied key to use — fall
+                    # back to the event's own id, same convention the real ingest path
+                    # uses when a caller omits one (apps/api/routers/events.py). Each
+                    # event_id is already unique, so this always satisfies the
+                    # constraint. Without this, --output db fails outright on the
+                    # first events batch with a NOT NULL violation.
+                    idempotency_key=e.event_id,
                     event_type=e.event_type,
                     payload=e.payload,
                     occurred_at=e.occurred_at,
