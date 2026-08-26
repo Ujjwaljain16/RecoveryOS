@@ -42,6 +42,11 @@ async def _mock_llm_raw_response(root_cause: str, confidence: float) -> dict:
 
 
 async def _diagnose_with_mocked_llm(monkeypatch, diagnosis_input, root_cause, confidence):
+    # Pinned to 'openai' regardless of the ambient .env's AI_DIAGNOSER_PROVIDER
+    # (defaults to 'gemini' for local/docker runs) -- this test exercises the
+    # provider-agnostic guard logic via whichever call_fn diagnose_with_llm()
+    # dispatches to, and must not silently stop mocking the right seam.
+    monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
     from recoveryos.config import get_settings
 
@@ -50,7 +55,7 @@ async def _diagnose_with_mocked_llm(monkeypatch, diagnosis_input, root_cause, co
     async def _fake_call_llm(_diagnosis_input, _model, _api_key):
         return await _mock_llm_raw_response(root_cause, confidence)
 
-    monkeypatch.setattr(llm_diagnoser_module, "_call_llm", _fake_call_llm)
+    monkeypatch.setattr(llm_diagnoser_module, "_call_llm_openai", _fake_call_llm)
 
     output, reason = await diagnose_with_llm(diagnosis_input)
     get_settings.cache_clear()

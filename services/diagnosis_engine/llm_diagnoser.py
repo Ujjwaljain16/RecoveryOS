@@ -84,7 +84,7 @@ def _build_user_payload(diagnosis_input: DiagnosisInput) -> dict:
     return diagnosis_input.model_dump(mode="json")
 
 
-async def _call_llm(diagnosis_input: DiagnosisInput, model: str, api_key: str) -> dict:
+async def _call_llm_openai(diagnosis_input: DiagnosisInput, model: str, api_key: str) -> dict:
     # Imported lazily so importing this module (e.g. for the fallback-only
     # test suite) never requires the `openai` package to even be installed,
     # let alone configured.
@@ -106,6 +106,57 @@ async def _call_llm(diagnosis_input: DiagnosisInput, model: str, api_key: str) -
     return json.loads(content)
 
 
+# Gemini's responseSchema is a trimmed OpenAPI subset -- no
+# `additionalProperties` keyword (Gemini ignores/rejects it in some SDK
+# versions). Same shape otherwise, so schema drift between providers isn't
+# possible: this is built from _RESPONSE_JSON_SCHEMA, not maintained by hand.
+def _gemini_response_schema() -> dict:
+    def _strip(node):
+        if isinstance(node, dict):
+            return {
+                k: _strip(v) for k, v in node.items() if k != "additionalProperties"
+            }
+        if isinstance(node, list):
+            return [_strip(v) for v in node]
+        return node
+
+    return _strip(_RESPONSE_JSON_SCHEMA)
+
+
+async def _call_llm_gemini(diagnosis_input: DiagnosisInput, model: str, api_key: str) -> dict:
+    # Raw REST, not the google-generativeai SDK -- httpx is already a
+    # project dependency (pyproject.toml), and this is the only call this
+    # module makes; pulling in a whole extra SDK for one POST would be the
+    # wrong tradeoff. Endpoint/shape per Gemini's generateContent API.
+    import httpx
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    )
+    body = {
+        "systemInstruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": json.dumps(_build_user_payload(diagnosis_input))}],
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": _gemini_response_schema(),
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url, params={"key": api_key}, json=body, timeout=None  # outer asyncio.wait_for owns the timeout
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return json.loads(text)
+
+
 async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisOutput | None, str]:
     """
     Attempt a real AI diagnosis. Returns (output, reason) — on success,
@@ -123,18 +174,35 @@ async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisO
     the diagnosis.
     """
     settings = get_settings()
-    if not settings.openai_api_key:
-        logger.info("[Diagnoser] No OPENAI_API_KEY configured -- skipping LLM path")
-        return None, "ai_diagnoser_not_configured"
+    provider = settings.ai_diagnoser_provider
+    if provider == "gemini":
+        api_key = settings.gemini_api_key
+        model = settings.ai_diagnoser_gemini_model
+        call_fn = _call_llm_gemini
+        missing_key_reason = "ai_diagnoser_not_configured_gemini"
+        timeout_seconds = settings.ai_diagnoser_gemini_timeout_seconds
+    elif provider == "openai":
+        api_key = settings.openai_api_key
+        model = settings.ai_diagnoser_model
+        call_fn = _call_llm_openai
+        missing_key_reason = "ai_diagnoser_not_configured_openai"
+        timeout_seconds = settings.ai_diagnoser_timeout_seconds
+    else:
+        logger.warning("[Diagnoser] Unknown ai_diagnoser_provider=%r -- skipping LLM path", provider)
+        return None, "ai_diagnoser_unknown_provider"
+
+    if not api_key:
+        logger.info("[Diagnoser] No API key configured for provider=%r -- skipping LLM path", provider)
+        return None, missing_key_reason
 
     try:
         raw = await asyncio.wait_for(
-            _call_llm(diagnosis_input, settings.ai_diagnoser_model, settings.openai_api_key),
-            timeout=settings.ai_diagnoser_timeout_seconds,
+            call_fn(diagnosis_input, model, api_key),
+            timeout=timeout_seconds,
         )
     except TimeoutError:
         logger.warning(
-            "[Diagnoser] LLM call timed out after %.1fs", settings.ai_diagnoser_timeout_seconds
+            "[Diagnoser] LLM call timed out after %.1fs", timeout_seconds
         )
         return None, "ai_diagnoser_timeout"
     except Exception as exc:  # network error, API error, anything the SDK raises
@@ -160,7 +228,7 @@ async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisO
             confidence=confidence,
             evidence=evidence,
             cohort_id=None,
-            model_version=f"{MODEL_VERSION_PREFIX}{settings.ai_diagnoser_model}",
+            model_version=f"{MODEL_VERSION_PREFIX}{provider}-{model}",
             is_fallback=False,
         )
         return output, ""

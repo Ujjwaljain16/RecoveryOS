@@ -1,0 +1,16 @@
+# Priority-0 multi-seed baseline override -- pins the diagnoser to the
+# 'openai' provider with a guaranteed-invalid key, so every seed's run falls
+# back to the deterministic diagnoser exactly like the original Phase 8
+# canonical run did (no real Gemini/OpenAI key ever exercised). This keeps
+# the seed-variance study apples-to-apples: LLM availability must not be a
+# confound in a run whose whole point is measuring seed-to-seed variance in
+# the SAME configuration Phase 8 already reported against.
+#
+# Used only via: docker compose -f docker-compose.yml -f docker-compose.override.baseline.yml up -d --build
+# Not used by the normal `docker compose up` (Gemini stays live there).
+services:
+  pipeline_orchestrator:
+    environment:
+      AI_DIAGNOSER_PROVIDER: openai
+      OPENAI_API_KEY: sk-placeholder
+      GEMINI_API_KEY: ""

@@ -112,12 +112,33 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # LLM / AI
     # ─────────────────────────────────────────────────────────────────────────
-    openai_api_key: str = Field(default="", description="API key for LLM provider.")
+    openai_api_key: str = Field(default="", description="API key for the OpenAI provider.")
+    gemini_api_key: str = Field(default="", description="API key for the Gemini provider.")
+    ai_diagnoser_provider: str = Field(
+        default="openai",
+        description=(
+            "Which LLM provider diagnose_with_llm() calls: 'openai' or 'gemini'. Both share "
+            "the exact same TRD §9 boundary (typed input, schema-constrained output, Pydantic "
+            "re-validation, apply_adversarial_guards) -- this only selects which API is called."
+        ),
+    )
     ai_diagnoser_timeout_seconds: float = Field(
         default=2.5,
         description="Hard timeout for AI Diagnoser (TRD §8). Triggers deterministic fallback.",
     )
+    ai_diagnoser_gemini_timeout_seconds: float = Field(
+        default=4.0,
+        description="Gemini-specific timeout -- free-tier flash-lite's observed cold-start "
+        "latency runs higher than OpenAI's typical response time; tested live at 2.5s and saw "
+        "3/6 calls time out even though every completed call was correct, so this is slightly "
+        "more generous rather than treating slow-but-eventually-correct responses as failures.",
+    )
     ai_diagnoser_model: str = Field(default="gpt-4o-mini")
+    ai_diagnoser_gemini_model: str = Field(
+        default="gemini-2.5-flash-lite",
+        description="Gemini model id when ai_diagnoser_provider='gemini' -- flash-lite chosen "
+        "deliberately for free-tier quota conservation over the heavier flash/pro variants.",
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Policy defaults (can be overridden per merchant in policy_configs table)

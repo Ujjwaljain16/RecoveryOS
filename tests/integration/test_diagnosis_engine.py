@@ -127,6 +127,7 @@ async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, m
     the correct evidence trail, exactly as TRD §4.2's state machine specifies
     (DIAGNOSING --(AI timeout)--> FALLBACK_DIAGNOSIS).
     """
+    monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "openai")  # pin regardless of .env's default
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
     monkeypatch.setenv("AI_DIAGNOSER_TIMEOUT_SECONDS", "0.2")
     from recoveryos.config import get_settings
@@ -137,7 +138,7 @@ async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, m
         await asyncio.sleep(5.0)  # much longer than the 0.2s timeout above
         raise AssertionError("should never complete — the timeout must fire first")
 
-    monkeypatch.setattr(llm_diagnoser_module, "_call_llm", _hanging_call_llm)
+    monkeypatch.setattr(llm_diagnoser_module, "_call_llm_openai", _hanging_call_llm)
 
     merchant_id = str(uuid.uuid4())
     customer_id = str(uuid.uuid4())
