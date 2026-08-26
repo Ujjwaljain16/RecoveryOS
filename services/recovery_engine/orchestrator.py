@@ -48,7 +48,7 @@ from services.recovery_engine.propensity import (
     build_propensity_context,
     predict_recovery_probability,
 )
-from services.recovery_engine.timing import AnomalyContext
+from services.recovery_engine.timing import AnomalyContext, compute_retry_delay
 from services.risk_engine.anomaly import is_cohort_suppressed
 
 # inference_role's allow-listed payment columns (matches
@@ -285,6 +285,7 @@ async def build_decision(
         "model_version": prediction.model_version,
         "feature_schema_version": prediction.feature_schema_version,
         "policy_config_id": policy_config_row.policy_config_id,
+        "retry_cooldown_hours": policy_config_row.retry_cooldown_hours,
         "is_high_severity_anomaly": is_high_severity_anomaly,
         "blocking_rule": next((e["rule"] for e in decision.rule_trace if not e["passed"]), None),
     }
@@ -393,17 +394,29 @@ async def persist_decision(
 
 
 async def decide_and_persist(
-    payment_id: str, redis_client=None, source_event_id: str | None = None
+    payment_id: str,
+    redis_client=None,
+    source_event_id: str | None = None,
+    diagnosis_id: str | None = None,
 ) -> dict:
     """
     Convenience entry point: full pipeline + persistence for one payment.
 
-    If `redis_client` is given and the verdict is ALLOW for an action that
-    actually executes (i.e. not DO_NOTHING — nothing to schedule for it),
-    enqueues a job onto stream:recovery_jobs for
-    workers/execution_worker.py — Phase 5's decision, Phase 6's execution,
-    one continuous path. Omit `redis_client` to decide without enqueueing
-    (e.g. tests that only care about the decision).
+    Three outcomes for the verdict/action pair:
+      - ALLOW + RETRY_LATER: no execution job is enqueued at all. A
+        scheduled_reevaluations row (Task REPLAN1) is written instead, with
+        a real future scheduled_for computed by
+        services.recovery_engine.timing.compute_retry_delay(). This is the
+        continuous-replanning path -- workers/retry_scheduler.py re-runs
+        the FULL decision from scratch once that time arrives.
+      - ALLOW + any other executing action (not DO_NOTHING): if
+        `redis_client` is given, enqueues a job onto stream:recovery_jobs
+        for workers/execution_worker.py -- Phase 5's decision, Phase 6's
+        execution, one continuous path. Omit `redis_client` to decide
+        without enqueueing (e.g. tests that only care about the decision).
+      - Anything else (BLOCK/ESCALATE, or ALLOW + DO_NOTHING): nothing is
+        enqueued or scheduled; the caller (services/pipeline/consumer.py)
+        writes the terminal ledger/audit row itself.
     """
     nba_result, decision, context = await build_decision(payment_id)
     candidate_rows, policy_decision_row = await persist_decision(
@@ -421,6 +434,30 @@ async def decide_and_persist(
         "decision_id": policy_decision_row.decision_id,
         "candidate_ids": [c.candidate_id for c in candidate_rows],
     }
+
+    if decision.verdict == "ALLOW" and nba_result.chosen_action == "RETRY_LATER":
+        # Task REPLAN1: RETRY_LATER no longer enqueues an immediate
+        # execution job (that was the pre-existing bug -- scheduled_for
+        # was always now(), so RETRY_LATER executed identically to
+        # RETRY_NOW). Instead, write a real deferred re-evaluation --
+        # workers/retry_scheduler.py re-runs the FULL decision at that
+        # future time, not a replay of this stale one.
+        from services.recovery_engine.scheduling import schedule_reevaluation
+
+        delay = compute_retry_delay(
+            is_high_severity_anomaly=context["is_high_severity_anomaly"],
+            retry_cooldown_hours=context["retry_cooldown_hours"],
+        )
+        reevaluation_id = await schedule_reevaluation(
+            payment_id=payment_id,
+            decision_id=policy_decision_row.decision_id,
+            diagnosis_id=diagnosis_id,
+            source_event_id=source_event_id,
+            scheduled_for=clock.utcnow() + delay,
+        )
+        result["scheduled_reevaluation_id"] = reevaluation_id
+        result["scheduled_for"] = (clock.utcnow() + delay).isoformat()
+        return result
 
     if (
         redis_client is not None

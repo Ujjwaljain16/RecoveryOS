@@ -671,6 +671,48 @@ class RawWebhookEvent(Base):
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
 
 
+class ScheduledReevaluation(Base):
+    """
+    Task REPLAN1 -- the real deferred-execution mechanism for RETRY_LATER.
+    A row here means "re-evaluate this payment from scratch at
+    scheduled_for" -- NOT "execute this specific action then." Kept
+    separate from `recoveries` (see migration 0017's docstring) so a
+    not-yet-fired schedule can never be double-counted as an attempt that
+    already happened.
+    """
+
+    __tablename__ = "scheduled_reevaluations"
+    __table_args__ = (
+        Index("idx_scheduled_reevaluations_due", "status", "scheduled_for"),
+        UniqueConstraint(
+            "payment_id", "source_event_id", name="uq_scheduled_reevaluations_payment_event"
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'FIRED', 'CANCELLED')",
+            name="ck_scheduled_reevaluations_status",
+        ),
+    )
+
+    reevaluation_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    payment_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("payments.payment_id"), nullable=False
+    )
+    decision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("policy_decisions.decision_id"), nullable=False
+    )
+    diagnosis_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("diagnoses.diagnosis_id"), nullable=True
+    )
+    source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    scheduled_for: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="PENDING")
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    fired_source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
 class RecoveryLedger(Base):
     """
     Financial ground truth per payment — the table the evaluation harness queries.

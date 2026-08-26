@@ -40,8 +40,25 @@ services/policy_engine.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 BPS_SCALE = 10_000
+
+# Task REPLAN1 -- how long to wait before re-evaluating a RETRY_LATER
+# decision. Two grounded cases, same honesty discipline as this module's
+# own COVERAGE LIMIT above (never a guessed decay curve):
+#
+#   - Deferred because of an active high-severity systemic anomaly: wait
+#     the SAME 30-minute re-evaluation window services/risk_engine/
+#     anomaly.py's is_cohort_suppressed() already uses to decide whether an
+#     anomaly reading is still "fresh" -- reusing an existing, already-
+#     justified constant, not inventing a new one just for this.
+#   - Deferred for any other reason (cost/friction, no active anomaly):
+#     wait the platform's own configured retry_cooldown_hours -- the same
+#     number CooldownRule already uses to gate a next attempt, so a
+#     RETRY_LATER decision waits exactly as long as the policy engine
+#     would have required anyway.
+ANOMALY_REEVALUATION_MINUTES = 30
 
 # Actions that route around (or wait out) the exact bank condition an active
 # systemic anomaly measures — these are NOT penalized when RETRY_NOW is.
@@ -139,3 +156,18 @@ def expected_recovery_prob_bps(
     if penalty_bps >= BPS_SCALE:
         return base_prob_bps
     return (base_prob_bps * penalty_bps) // BPS_SCALE
+
+
+def compute_retry_delay(
+    is_high_severity_anomaly: bool,
+    retry_cooldown_hours: int,
+) -> timedelta:
+    """
+    How long to wait before re-evaluating a RETRY_LATER decision (Task
+    REPLAN1 -- the continuous-replanning scheduler). Pure function, no I/O.
+    See the module-level constant's comment for why these two specific
+    durations, not an invented curve.
+    """
+    if is_high_severity_anomaly:
+        return timedelta(minutes=ANOMALY_REEVALUATION_MINUTES)
+    return timedelta(hours=retry_cooldown_hours)

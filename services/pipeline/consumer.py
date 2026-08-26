@@ -132,7 +132,7 @@ async def process_payment_failure(
     diagnosis_id = diagnosis.diagnosis_id if diagnosis is not None else None
 
     result = await decide_and_persist(
-        payment_id, redis_client=redis, source_event_id=source_event_id
+        payment_id, redis_client=redis, source_event_id=source_event_id, diagnosis_id=diagnosis_id
     )
 
     if result["verdict"] != "ALLOW" or result["chosen_action"] == "DO_NOTHING":

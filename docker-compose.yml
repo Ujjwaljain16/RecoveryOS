@@ -164,6 +164,34 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # ─── Retry Scheduler (Task REPLAN1) ────────────────────────────────────────
+  # Polls scheduled_reevaluations for RETRY_LATER decisions whose deferred
+  # time has arrived and re-runs the full diagnose -> decide pipeline for
+  # them from scratch. Needs the same diagnoser/inference DB roles as
+  # pipeline_orchestrator since it re-enters services.pipeline.consumer.
+  retry_scheduler:
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    container_name: recoveryos_retry_scheduler
+    restart: always
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DIAGNOSER_DATABASE_URL: postgresql+asyncpg://diagnoser:${RECOVERYOS_DIAGNOSER_ROLE_PASSWORD}@postgres:5432/recoveryos
+      INFERENCE_DATABASE_URL: postgresql+asyncpg://inference:${RECOVERYOS_INFERENCE_ROLE_PASSWORD}@postgres:5432/recoveryos
+      REDIS_URL: redis://redis:6379/0
+      ENV: demo
+    command: ["python", "-m", "workers.retry_scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   # ─── Prometheus ────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.55.0

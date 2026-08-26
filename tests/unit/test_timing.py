@@ -4,7 +4,14 @@ Unit tests for services/recovery_engine/timing.py — pure functions, no DB.
 
 from __future__ import annotations
 
-from services.recovery_engine.timing import AnomalyContext, expected_recovery_prob_bps
+from datetime import timedelta
+
+from services.recovery_engine.timing import (
+    ANOMALY_REEVALUATION_MINUTES,
+    AnomalyContext,
+    compute_retry_delay,
+    expected_recovery_prob_bps,
+)
 
 HIGH_ANOMALY = AnomalyContext(
     severity="high", is_anomaly=True, observed_rate=0.18, baseline_rate=0.03
@@ -82,3 +89,22 @@ def test_full_penalty_when_bank_completely_down():
         severity="high", is_anomaly=True, observed_rate=1.0, baseline_rate=0.03
     )
     assert expected_recovery_prob_bps(8200, "RETRY_NOW", total_outage) == 0
+
+
+def test_compute_retry_delay_uses_anomaly_window_during_high_severity():
+    """A high-severity anomaly re-evaluates soon (the same 30-minute window
+    already used by is_cohort_suppressed) rather than waiting out the
+    merchant's full retry_cooldown_hours -- the anomaly may well have
+    cleared by then."""
+    delay = compute_retry_delay(is_high_severity_anomaly=True, retry_cooldown_hours=24)
+    assert delay == timedelta(minutes=ANOMALY_REEVALUATION_MINUTES)
+
+
+def test_compute_retry_delay_uses_merchant_cooldown_otherwise():
+    delay = compute_retry_delay(is_high_severity_anomaly=False, retry_cooldown_hours=6)
+    assert delay == timedelta(hours=6)
+
+
+def test_compute_retry_delay_ignores_cooldown_hours_during_high_severity():
+    delay = compute_retry_delay(is_high_severity_anomaly=True, retry_cooldown_hours=1)
+    assert delay == timedelta(minutes=ANOMALY_REEVALUATION_MINUTES)
