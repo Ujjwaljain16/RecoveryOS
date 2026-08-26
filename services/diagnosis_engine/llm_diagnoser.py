@@ -31,6 +31,7 @@ import logging
 from pydantic import ValidationError
 
 from recoveryos.config import get_settings
+from services.diagnosis_engine.guards import apply_adversarial_guards
 from services.diagnosis_engine.schemas import DiagnosisInput, DiagnosisOutput, Evidence, RootCause
 
 logger = logging.getLogger(__name__)
@@ -142,9 +143,21 @@ async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisO
 
     try:
         evidence = [Evidence(**e) for e in raw["evidence"]]
+        root_cause = RootCause(raw["root_cause"])
+        confidence = float(raw["confidence"])
+        # Task S2, pre-Phase-8 audit: PRD §37's adversarial guards (missing
+        # bank -> confidence cap, conflicting bank signals -> override to
+        # CONFLICTING_SIGNALS) used to run only for the fallback path,
+        # despite guards.py's own docstring claiming uniform application.
+        # The LLM is instructed via the system prompt to behave conservatively
+        # in these cases, but that's a soft instruction, not a guarantee --
+        # this makes it a hard one, identically for both paths.
+        root_cause, confidence, evidence = apply_adversarial_guards(
+            diagnosis_input, root_cause, confidence, evidence
+        )
         output = DiagnosisOutput(
-            root_cause=RootCause(raw["root_cause"]),
-            confidence=float(raw["confidence"]),
+            root_cause=root_cause,
+            confidence=confidence,
             evidence=evidence,
             cohort_id=None,
             model_version=f"{MODEL_VERSION_PREFIX}{settings.ai_diagnoser_model}",

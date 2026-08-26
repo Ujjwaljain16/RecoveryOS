@@ -244,6 +244,36 @@ class Event(Base):
     payment: Mapped[Payment] = relationship(back_populates="events")
 
 
+class EventPublication(Base):
+    """
+    Marks that an Event's downstream publish (stream:risk_engine) has
+    actually succeeded — deliberately a SEPARATE table from `events`, not a
+    column on it (Task S4, pre-Phase-8 audit): `events` has UPDATE/DELETE
+    revoked from app_role (migrations/0002_db_roles.py's APPEND_ONLY_TABLES,
+    TRD §9's immutability guarantee), so a mutable published_at column on
+    that table couldn't ever be written by the role that needs to write it.
+    This table is INSERT-only by construction instead — one row per
+    event_id, ever, marking "published" as a fact that gets recorded once,
+    never a status field that gets flipped.
+
+    Decouples "was this Event row newly inserted" (insert_event_idempotent's
+    is_new) from "has it actually been published yet" — before this existed,
+    a publish failure after a successful Event commit meant every retry
+    found is_new=False and silently skipped the publish forever.
+    """
+
+    __tablename__ = "event_publications"
+
+    event_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("events.event_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # RISK & ANOMALY
 # ═══════════════════════════════════════════════════════════════════════════════

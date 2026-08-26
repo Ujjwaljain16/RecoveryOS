@@ -48,6 +48,7 @@ from services.recovery_engine.propensity import (
     predict_recovery_probability,
 )
 from services.recovery_engine.timing import AnomalyContext
+from services.risk_engine.anomaly import is_cohort_suppressed
 
 # inference_role's allow-listed payment columns (matches
 # migrations/0008_inference_role.py's grant exactly).
@@ -60,10 +61,6 @@ _PAYMENT_SAFE_COLUMNS = (
 # action_costs' merchant_id-IS-NULL sentinel pattern, but policy_configs has
 # no merchant_id column, so a deterministic id is the equivalent mechanism.
 PLATFORM_DEFAULT_POLICY_CONFIG_ID = "00000000-0000-0000-0000-000000000001"
-
-# High-severity anomaly re-evaluation window — matches
-# services/risk_engine/anomaly.py:is_cohort_suppressed's own default.
-SUPPRESSION_WINDOW_MINUTES = 30
 
 
 async def _get_or_create_default_policy_config(session: AsyncSession) -> PolicyConfig:
@@ -86,31 +83,68 @@ async def _resolve_policy_config(session: AsyncSession, merchant_id: str) -> Pol
 
 
 async def _fetch_anomaly_context(session: AsyncSession, bank: str | None) -> AnomalyContext | None:
-    """Latest anomaly_windows row for this bank, if any — real Phase 4 data,
-    no fabrication. None if no window has ever been computed for this bank."""
+    """
+    Whether a FRESH, active, high-severity anomaly currently applies to this
+    bank — via is_cohort_suppressed() (services/risk_engine/anomaly.py),
+    the freshness-bounded helper built specifically to feed this decision
+    (Task S3, pre-Phase-8 audit; previously dead code with zero callers).
+
+    Every downstream consumer of the returned AnomalyContext
+    (services/policy_engine/rules.py:SystemicSuppressionRule,
+    services/recovery_engine/timing.py, services/recovery_engine/evi.py's
+    risk_penalty_paise) only ever branches on severity == "high" and
+    is_anomaly — a "low"/"medium"/"insufficient_data" reading has
+    identical effect to None everywhere it's consumed, so returning None
+    whenever there's no fresh HIGH-severity window is exactly equivalent,
+    not an approximation.
+
+    The previous version took the single most-recent anomaly_windows row
+    for this bank with NO freshness bound at all — a high-severity window
+    computed hours ago (anomaly detection is documented as "a single
+    callable batch pass, not a standing service", i.e. not guaranteed to
+    re-run on any schedule) would still read as "currently anomalous" even
+    long after the underlying condition resolved, incorrectly suppressing
+    RETRY_NOW based on stale data.
+    """
     if bank is None:
         return None
+
+    suppression = await is_cohort_suppressed(session, bank=bank)
+    if suppression is None:
+        return None
+
+    # is_cohort_suppressed() only returns the fields needed to know THAT a
+    # window is fresh/active; observed_rate/baseline_rate (needed for
+    # timing.py's probability-penalty ratio) come from that exact same
+    # window, looked up by its own (scope_type, scope_entity, time_bucket) —
+    # guaranteed to exist since is_cohort_suppressed just read it.
     row = (
         (
             await session.execute(
                 text(
-                    "SELECT severity, is_anomaly, observed_rate, baseline_rate "
-                    "FROM anomaly_windows WHERE scope_type = 'bank' AND scope_entity = :bank "
-                    "ORDER BY time_bucket DESC LIMIT 1"
+                    "SELECT observed_rate, baseline_rate FROM anomaly_windows "
+                    "WHERE scope_type = :scope_type AND scope_entity = :scope_entity "
+                    "AND time_bucket = :time_bucket"
                 ),
-                {"bank": bank},
+                {
+                    "scope_type": suppression.scope_type,
+                    "scope_entity": suppression.scope_entity,
+                    "time_bucket": suppression.time_bucket,
+                },
             )
         )
         .mappings()
         .first()
     )
-    if row is None:
-        return None
     return AnomalyContext(
-        severity=row["severity"] or "insufficient_data",
-        is_anomaly=bool(row["is_anomaly"]),
-        observed_rate=float(row["observed_rate"]) if row["observed_rate"] is not None else None,
-        baseline_rate=float(row["baseline_rate"]) if row["baseline_rate"] is not None else None,
+        severity="high",
+        is_anomaly=True,
+        observed_rate=(
+            float(row["observed_rate"]) if row and row["observed_rate"] is not None else None
+        ),
+        baseline_rate=(
+            float(row["baseline_rate"]) if row and row["baseline_rate"] is not None else None
+        ),
     )
 
 

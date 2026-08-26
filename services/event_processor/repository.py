@@ -23,10 +23,11 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from recoveryos.models import Event, Payment
+from recoveryos.models import Event, EventPublication, Payment
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ async def upsert_payment(session: AsyncSession, msg: dict[str, Any]) -> None:
 async def insert_event_idempotent(
     session: AsyncSession,
     msg: dict[str, Any],
-) -> bool:
+) -> tuple[str, bool]:
     """
     Insert an Event row, idempotent on the CLIENT-supplied idempotency_key
     (falling back to the server-minted event_id when the client sent none —
@@ -87,8 +88,15 @@ async def insert_event_idempotent(
     accidentally reused across two different payments doesn't cause the
     second payment's real event to be silently dropped.
 
-    Returns True if a new row was inserted, False if this is a duplicate.
-    The caller uses this to decide whether to publish downstream.
+    Returns (resolved_event_id, is_new). is_new is True if this exact
+    (payment_id, idempotency_key) hadn't been seen before — informational
+    only now (Task S4, pre-Phase-8 audit): the CALLER's publish decision
+    must be based on event_publications, not on is_new, since a publish can
+    legitimately still be pending for an event that was already inserted on
+    a prior, failed attempt. resolved_event_id is the WINNING row's real
+    event_id — msg["event_id"] itself is only correct when is_new is True;
+    on a duplicate, the row that actually exists may have a different
+    event_id from an earlier POST of the same idempotency_key.
     """
     event_id = msg["event_id"]
     idempotency_key = msg.get("idempotency_key") or event_id
@@ -118,13 +126,41 @@ async def insert_event_idempotent(
         .returning(Event.event_id)
     )
     result = await session.execute(stmt)
-    inserted = result.first() is not None
+    row = result.first()
 
-    if not inserted:
-        logger.info(
-            "[Repo] Duplicate event skipped: idempotency_key=%s (event_id=%s)",
-            idempotency_key,
-            event_id,
+    if row is not None:
+        return row[0], True
+
+    logger.info(
+        "[Repo] Duplicate event skipped: idempotency_key=%s (event_id=%s)",
+        idempotency_key,
+        event_id,
+    )
+    existing = await session.execute(
+        select(Event.event_id).where(
+            Event.payment_id == msg["payment_id"], Event.idempotency_key == idempotency_key
         )
+    )
+    return existing.scalar_one(), False
 
-    return inserted
+
+async def is_event_published(session: AsyncSession, event_id: str) -> bool:
+    """Has this event's downstream publish (stream:risk_engine) actually
+    succeeded before? See EventPublication's docstring (recoveryos/models.py)
+    for why this is a separate INSERT-only table, not a column on events."""
+    result = await session.execute(
+        select(EventPublication.event_id).where(EventPublication.event_id == event_id)
+    )
+    return result.first() is not None
+
+
+async def mark_event_published(session: AsyncSession, event_id: str) -> None:
+    """Record that event_id's downstream publish just succeeded. INSERT
+    only — event_publications is never updated, mirroring events' own
+    append-only discipline."""
+    stmt = (
+        pg_insert(EventPublication)
+        .values(event_id=event_id)
+        .on_conflict_do_nothing(index_elements=["event_id"])
+    )
+    await session.execute(stmt)
