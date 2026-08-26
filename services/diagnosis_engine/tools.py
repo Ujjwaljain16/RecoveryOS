@@ -82,33 +82,44 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
 
 
 async def get_customer_payment_history(
-    session: AsyncSession, customer_id: str, limit: int = 10
+    session: AsyncSession, payment_id: str, limit: int = 10
 ) -> list[dict]:
+    """
+    Takes payment_id, not customer_id -- resolves the owning customer
+    server-side and never surfaces the customer_id itself to the caller
+    (the LLM investigator never sees it, same PII-minimization principle
+    DiagnosisInput's own docstring states: "even an opaque id is more
+    identity than this layer needs").
+    """
     rows = (
         await session.execute(
             text(
                 "SELECT payment_id, amount_paise, method, bank, status, failure_code, "
-                "created_at FROM payments WHERE customer_id = :cid "
+                "created_at FROM payments WHERE customer_id = "
+                "(SELECT customer_id FROM payments WHERE payment_id = :pid) "
                 "ORDER BY created_at DESC LIMIT :limit"
             ),
-            {"cid": customer_id, "limit": limit},
+            {"pid": payment_id, "limit": limit},
         )
     ).mappings().all()
     return [dict(r) for r in rows]
 
 
 async def get_customer_recovery_history(
-    session: AsyncSession, customer_id: str, limit: int = 10
+    session: AsyncSession, payment_id: str, limit: int = 10
 ) -> list[dict]:
+    """Same payment_id-in, customer_id-never-surfaced pattern as
+    get_customer_payment_history()."""
     rows = (
         await session.execute(
             text(
                 "SELECT r.recovery_id, r.payment_id, r.action_type, r.outcome, "
                 "r.attempt_number, r.executed_at FROM recoveries r "
                 "JOIN payments p ON p.payment_id = r.payment_id "
-                "WHERE p.customer_id = :cid ORDER BY r.executed_at DESC LIMIT :limit"
+                "WHERE p.customer_id = (SELECT customer_id FROM payments WHERE payment_id = :pid) "
+                "ORDER BY r.executed_at DESC LIMIT :limit"
             ),
-            {"cid": customer_id, "limit": limit},
+            {"pid": payment_id, "limit": limit},
         )
     ).mappings().all()
     return [dict(r) for r in rows]

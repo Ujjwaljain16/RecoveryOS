@@ -155,28 +155,71 @@ def _attach_cohort_if_systemic(
     )
 
 
-async def diagnose(payment_id: str) -> DiagnosisOutput | None:
+async def diagnose(payment_id: str) -> tuple[DiagnosisOutput, "InvestigationResult | None"] | None:
     """
-    Full diagnosis pipeline for one payment: read (diagnoser_role) -> LLM
-    attempt with hard timeout -> deterministic fallback if needed -> uniform
+    Full diagnosis pipeline for one payment: read (diagnoser_role) ->
+    investigative multi-round loop (Task AGENT1, gemini only) OR single-call
+    LLM attempt (openai) -> deterministic fallback if needed -> uniform
     cohort attachment. Does NOT persist — diagnoser_role can't write
     anywhere, so persistence is always a separate app_role step
-    (persist_diagnosis).
+    (persist_diagnosis / persist_investigation).
+
+    Returns (output, investigation) -- investigation is non-None only when
+    the investigative path actually ran and succeeded (gemini configured,
+    completed without error); every other path (single-call LLM, fallback)
+    returns investigation=None, exactly as before this function grew a
+    second return value.
+
+    The diagnoser_session is kept OPEN for the full investigation, not just
+    the initial read -- investigate()'s tools (services/diagnosis_engine/
+    tools.py) issue their own additional diagnoser_role queries mid-loop.
     """
+    from recoveryos.config import get_settings
+    from services.diagnosis_engine.investigator import investigate
+
+    settings = get_settings()
+
     async with get_diagnoser_session_factory()() as diagnoser_session:
         diagnosis_input = await build_diagnosis_input(diagnoser_session, payment_id)
+        if diagnosis_input is None:
+            logger.warning(
+                "[Diagnoser] payment_id=%s not found (or not visible under diagnoser_role)",
+                payment_id,
+            )
+            return None
 
-    if diagnosis_input is None:
-        logger.warning(
-            "[Diagnoser] payment_id=%s not found (or not visible under diagnoser_role)", payment_id
-        )
-        return None
+        investigation = None
+        output = None
+        failure_reason = "ai_diagnoser_not_configured"
 
-    output, failure_reason = await diagnose_with_llm(diagnosis_input)
-    if output is None:
-        output = diagnose_fallback(diagnosis_input, reason=failure_reason)
+        if settings.ai_diagnoser_provider == "gemini" and settings.gemini_api_key:
+            investigation = await investigate(
+                diagnosis_input,
+                diagnoser_session,
+                model=settings.ai_diagnoser_gemini_model,
+                api_key=settings.gemini_api_key,
+                provider="gemini",
+                round_timeout_seconds=settings.ai_diagnoser_gemini_timeout_seconds,
+            )
+            if investigation is not None:
+                output = DiagnosisOutput(
+                    root_cause=investigation.selected_cause,
+                    confidence=investigation.confidence,
+                    evidence=investigation.evidence,
+                    cohort_id=None,
+                    model_version=f"investigator-gemini-{settings.ai_diagnoser_gemini_model}",
+                    is_fallback=False,
+                )
+            else:
+                failure_reason = "ai_investigator_failed"
 
-    return _attach_cohort_if_systemic(diagnosis_input, output)
+        if output is None and settings.ai_diagnoser_provider != "gemini":
+            output, failure_reason = await diagnose_with_llm(diagnosis_input)
+
+        if output is None:
+            output = diagnose_fallback(diagnosis_input, reason=failure_reason)
+
+    return _attach_cohort_if_systemic(diagnosis_input, output), investigation
 
 
 async def persist_diagnosis(
@@ -239,8 +282,64 @@ async def diagnose_and_persist(
 ) -> Diagnosis | None:
     """Convenience entry point: full pipeline + persistence in one call —
     what a real Risk Engine consumer would call per failed payment."""
-    output = await diagnose(payment_id)
-    if output is None:
+    result = await diagnose(payment_id)
+    if result is None:
         return None
+    output, investigation = result
     async with get_app_session_factory()() as app_session:
-        return await persist_diagnosis(app_session, payment_id, output, source_event_id)
+        row = await persist_diagnosis(app_session, payment_id, output, source_event_id)
+        if investigation is not None:
+            await persist_investigation(app_session, row.diagnosis_id, investigation)
+        return row
+
+
+async def persist_investigation(
+    app_session: AsyncSession, diagnosis_id: str, investigation
+) -> None:
+    """
+    Writes diagnosis_hypotheses + investigation_steps (migration 0015).
+    app_role only, same reason as persist_diagnosis. Best-effort: if this
+    diagnosis_id already has hypotheses/steps rows (a redelivery of an
+    already-persisted diagnosis, per persist_diagnosis's own ON CONFLICT
+    DO NOTHING dedup), skip re-inserting rather than risk a duplicate
+    investigation trace for the same diagnosis.
+    """
+    from recoveryos.models import DiagnosisHypothesis, InvestigationStep
+
+    existing = (
+        await app_session.execute(
+            select(DiagnosisHypothesis.hypothesis_id).where(
+                DiagnosisHypothesis.diagnosis_id == diagnosis_id
+            )
+        )
+    ).first()
+    if existing is not None:
+        return
+
+    for h in investigation.hypotheses:
+        app_session.add(
+            DiagnosisHypothesis(
+                diagnosis_id=diagnosis_id,
+                cause=h.cause,
+                support_score=h.support_score,
+                contradict_score=h.contradict_score,
+                evidence_count=h.evidence_count,
+                unresolved_questions=h.unresolved_questions,
+                is_selected=(h.cause == investigation.selected_cause.value),
+            )
+        )
+    for s in investigation.steps:
+        app_session.add(
+            InvestigationStep(
+                diagnosis_id=diagnosis_id,
+                step_number=s.step_number,
+                tool_name=s.tool_name,
+                tool_inputs=s.tool_inputs,
+                tool_output_summary=s.tool_output_summary,
+                expected_uncertainty_reduction=s.expected_uncertainty_reduction,
+                tool_cost=s.tool_cost,
+                latency_ms=s.latency_ms,
+                investigation_score=s.investigation_score,
+            )
+        )
+    await app_session.commit()

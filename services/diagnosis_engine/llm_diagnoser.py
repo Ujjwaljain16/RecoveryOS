@@ -107,54 +107,25 @@ async def _call_llm_openai(diagnosis_input: DiagnosisInput, model: str, api_key:
 
 
 # Gemini's responseSchema is a trimmed OpenAPI subset -- no
-# `additionalProperties` keyword (Gemini ignores/rejects it in some SDK
-# versions). Same shape otherwise, so schema drift between providers isn't
-# possible: this is built from _RESPONSE_JSON_SCHEMA, not maintained by hand.
+# `additionalProperties` keyword. Built from _RESPONSE_JSON_SCHEMA via the
+# shared strip helper, not maintained by hand, so schema drift between
+# providers isn't possible.
 def _gemini_response_schema() -> dict:
-    def _strip(node):
-        if isinstance(node, dict):
-            return {
-                k: _strip(v) for k, v in node.items() if k != "additionalProperties"
-            }
-        if isinstance(node, list):
-            return [_strip(v) for v in node]
-        return node
+    from services.diagnosis_engine.llm_client import strip_additional_properties
 
-    return _strip(_RESPONSE_JSON_SCHEMA)
+    return strip_additional_properties(_RESPONSE_JSON_SCHEMA)
 
 
 async def _call_llm_gemini(diagnosis_input: DiagnosisInput, model: str, api_key: str) -> dict:
-    # Raw REST, not the google-generativeai SDK -- httpx is already a
-    # project dependency (pyproject.toml), and this is the only call this
-    # module makes; pulling in a whole extra SDK for one POST would be the
-    # wrong tradeoff. Endpoint/shape per Gemini's generateContent API.
-    import httpx
+    from services.diagnosis_engine.llm_client import gemini_generate_json
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    return await gemini_generate_json(
+        system_prompt=_SYSTEM_PROMPT,
+        user_content=_build_user_payload(diagnosis_input),
+        response_schema=_gemini_response_schema(),
+        model=model,
+        api_key=api_key,
     )
-    body = {
-        "systemInstruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": json.dumps(_build_user_payload(diagnosis_input))}],
-            }
-        ],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": _gemini_response_schema(),
-        },
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            url, params={"key": api_key}, json=body, timeout=None  # outer asyncio.wait_for owns the timeout
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
 
 
 async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisOutput | None, str]:

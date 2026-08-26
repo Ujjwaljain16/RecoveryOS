@@ -147,7 +147,8 @@ async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, m
         migrated_db, merchant_id, customer_id, bank="HDFC", failure_code="TIMEOUT"
     )
 
-    output = await diagnose(payment_id)
+    output, investigation = await diagnose(payment_id)
+    assert investigation is None  # openai path never runs the investigator
 
     print(f"\n[test_diagnoser_timeout_falls_back] output={output!r}")
 
@@ -205,7 +206,7 @@ async def test_systemic_degradation_produces_cohort_diagnosis(migrated_db, monke
         migrated_db, merchant_id, customer_id, bank=bank, failure_code="TIMEOUT"
     )
 
-    output = await diagnose(payment_id)
+    output, _investigation = await diagnose(payment_id)
 
     print(f"\n[test_systemic_degradation_produces_cohort_diagnosis] output={output!r}")
 

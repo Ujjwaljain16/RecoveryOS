@@ -30,7 +30,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -367,6 +367,12 @@ class Diagnosis(Base):
     is_fallback: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )  # added per gaps.md §A.3
+    # CONFIDENT|LIKELY|AMBIGUOUS|INSUFFICIENT_EVIDENCE|CONFLICTING_SIGNALS|ESCALATE --
+    # the investigative diagnoser's honest qualitative confidence (Task AGENT1,
+    # agent-design review point 1: don't let a float pretend to be a
+    # calibrated probability). NULL for single-call/fallback diagnoses,
+    # which only ever produce the numeric `confidence` above.
+    confidence_band: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
@@ -374,6 +380,93 @@ class Diagnosis(Base):
     # Relationships
     payment: Mapped[Payment | None] = relationship(back_populates="diagnoses")
     audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="diagnosis")
+    hypotheses: Mapped[list[DiagnosisHypothesis]] = relationship(back_populates="diagnosis")
+    investigation_steps: Mapped[list[InvestigationStep]] = relationship(back_populates="diagnosis")
+
+
+class DiagnosisHypothesis(Base):
+    """One candidate root cause considered during an investigative
+    diagnosis (Task AGENT1) -- not just the winner. support_score/
+    contradict_score/evidence_count are plain integers the investigation
+    loop increments as tool results come in, deliberately NOT a
+    probability (agent-design review point 1)."""
+
+    __tablename__ = "diagnosis_hypotheses"
+    __table_args__ = (Index("idx_diagnosis_hypotheses_diagnosis", "diagnosis_id"),)
+
+    hypothesis_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    diagnosis_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("diagnoses.diagnosis_id"), nullable=False
+    )
+    cause: Mapped[str] = mapped_column(Text, nullable=False)
+    support_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    contradict_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unresolved_questions: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
+    is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+    diagnosis: Mapped[Diagnosis] = relationship(back_populates="hypotheses")
+
+
+class InvestigationStep(Base):
+    """One tool call made during an investigative diagnosis, with the
+    InvestigationScore that justified choosing it (Task AGENT1, agent-
+    design review points 2/3). expected_uncertainty_reduction is an
+    LLM-ESTIMATED score, not true entropy math -- tool_cost/latency_ms
+    come from the ToolRegistry's own declared, real constants."""
+
+    __tablename__ = "investigation_steps"
+    __table_args__ = (
+        Index("idx_investigation_steps_diagnosis", "diagnosis_id"),
+        UniqueConstraint("diagnosis_id", "step_number"),
+    )
+
+    step_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    diagnosis_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("diagnoses.diagnosis_id"), nullable=False
+    )
+    step_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_name: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_inputs: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    tool_output_summary: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    expected_uncertainty_reduction: Mapped[float] = mapped_column(Numeric(6, 3), nullable=False)
+    tool_cost: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    investigation_score: Mapped[float] = mapped_column(Numeric(8, 3), nullable=False)
+    called_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+    diagnosis: Mapped[Diagnosis] = relationship(back_populates="investigation_steps")
+
+
+class DiagnosisOutcome(Base):
+    """Closes the loop (Task AGENT1, agent-design review point 4): one row
+    per diagnosis, written once a terminal outcome exists. diagnosis_correct
+    is nullable and ONLY ever populated in the simulator/offline-eval
+    context (ground truth via app_role, same as Phase 8's AI-eval) -- a
+    real production case has no ground truth to check the diagnosis
+    against, only whether the chosen action worked (action_effective)."""
+
+    __tablename__ = "diagnosis_outcomes"
+
+    outcome_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    diagnosis_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("diagnoses.diagnosis_id"), nullable=False, unique=True
+    )
+    chosen_action: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    diagnosis_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    action_effective: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    counterfactual_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -426,6 +519,13 @@ class CandidateAction(Base):
     friction_penalty_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     risk_penalty_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     model_version: Mapped[str] = mapped_column(Text, nullable=False)
+    # The recovery strategist's own confidence that THIS action's expected
+    # value will actually be realized -- separate from diagnosis confidence
+    # (Task AGENT1: "we're highly confident this is systemic degradation,
+    # but not confident retrying immediately has positive expected value"
+    # is a real, distinct signal from how sure the diagnosis was). NULL
+    # until the recovery strategist is wired to populate it.
+    action_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

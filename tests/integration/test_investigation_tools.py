@@ -110,7 +110,7 @@ async def test_get_customer_payment_history_real_diagnoser_connection(migrated_d
     payment_id, _, customer_id = await _seed(migrated_db)
     session_factory = get_diagnoser_session_factory()
     async with session_factory() as session:
-        history = await get_customer_payment_history(session, customer_id)
+        history = await get_customer_payment_history(session, payment_id)
 
     assert len(history) == 4  # 3 successes + the failed one under test
     assert all("payment_id" in row for row in history)
@@ -122,7 +122,7 @@ async def test_get_customer_recovery_history_real_diagnoser_connection(migrated_
     payment_id, _, customer_id = await _seed(migrated_db)
     session_factory = get_diagnoser_session_factory()
     async with session_factory() as session:
-        history = await get_customer_recovery_history(session, customer_id)
+        history = await get_customer_recovery_history(session, payment_id)
 
     assert len(history) == 1
     assert history[0]["outcome"] == "FAILED"
