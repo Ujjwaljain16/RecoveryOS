@@ -23,7 +23,6 @@ RUN pip install --no-cache-dir \
     asyncpg \
     psycopg2-binary \
     alembic \
-    "celery[redis]" \
     redis \
     prometheus-client \
     httpx \

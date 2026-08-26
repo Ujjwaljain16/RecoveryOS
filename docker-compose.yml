@@ -77,8 +77,6 @@ services:
       DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
       ENV: demo
     ports:
       - "8000:8000"
@@ -143,34 +141,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-
-  # ─── Celery Worker ─────────────────────────────────────────────────────────
-  worker:
-    build:
-      context: .
-      dockerfile: workers/Dockerfile
-    container_name: recoveryos_worker
-    restart: always
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
-      DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      ENV: demo
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A workers.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # ─── Execution Worker (Phase 6) ────────────────────────────────────────────
   execution_worker:

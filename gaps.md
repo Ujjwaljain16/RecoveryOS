@@ -526,6 +526,31 @@ own copy, so there's exactly one number, not three.
 
 ---
 
+### C.4 Celery Removed — Redis Streams Was the Real Action Queue All Along
+
+**What was discovered:** `trd.md`'s architecture diagram named the action queue as *"Redis + RQ
+/ Celery, delayed jobs"* — one of two options, never a mandate. `workers/celery_app.py` and
+`workers/tasks.py` were an early attempt at that component using Celery specifically; the team
+correctly built a Redis Streams consumer instead (`workers/execution_worker.py`'s
+`XREADGROUP`/`XAUTOCLAIM` pattern, the same one `services/event_processor/consumer.py` and
+`services/pipeline/consumer.py` use), matching this project's established resilience mechanism
+rather than inventing a second one. The Celery scaffold was never removed — its one task
+(`execute_recovery`) was a permanent stub that always returned `{"outcome": "PENDING", "scaffold":
+True}`, nothing anywhere ever called it (`.delay()`/`.apply_async()`: zero call sites), and yet
+`docker-compose.yml`'s `worker` service ran it as a real, health-checked, `restart: always`
+container in every deployment — a fully running container that did nothing.
+
+**Fix applied (Task W1, pre-Phase-8 audit):** deleted `workers/celery_app.py` and
+`workers/tasks.py`; removed the `worker` service from `docker-compose.yml` and the now-dead
+`CELERY_BROKER_URL`/`CELERY_RESULT_BACKEND` env vars from every service that had them (`api` had
+them too, unused); removed the matching settings from `recoveryos/config.py`,
+`.env`/`.env.example`, and the `celery` pip dependency from CI and `workers/Dockerfile`;
+`workers/Dockerfile`'s default `CMD` now runs `execution_worker.py` (the one real thing left in
+that directory) instead of a Celery invocation nothing used. No behavior changed for the live
+system — this was pure removal of dead-but-deployed infrastructure.
+
+---
+
 ## Summary — what changed in the build plan
 
 | Item | Phase to update | New tables/files |

@@ -345,9 +345,9 @@ async def run_anomaly_detection(
     computes and persists an anomaly window for each.
 
     This is a single callable batch pass, not a standing service — wiring it
-    into a scheduler (Celery beat, a cron-style loop, or the event_processor
-    consumer loop) is a deployment concern for a later phase, out of scope
-    for this task's explicit deliverable ("writes to anomaly_windows").
+    into a scheduler (a cron-style loop, or the event_processor consumer
+    loop) is a deployment concern for a later phase, out of scope for this
+    task's explicit deliverable ("writes to anomaly_windows").
     Pass `session` to reuse an existing app_role session (e.g. in tests);
     otherwise a fresh one is opened and closed here.
     """

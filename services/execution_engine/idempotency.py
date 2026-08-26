@@ -4,7 +4,7 @@ Execution Engine — Idempotent Execution Wrapper
 This is the ONE thing this task builds today: the lock-before-check pattern
 that's supposed to guarantee a financial action (e.g. "retry this payment
 via the provider") executes at most once per idempotency_key, even under
-genuinely concurrent callers (two Celery workers, a retried Redis message,
+genuinely concurrent callers (two worker processes, a retried Redis message,
 a duplicated Postgres advisory-lock consumer, etc).
 
 It does NOT build execution logic (deciding what to retry, calling

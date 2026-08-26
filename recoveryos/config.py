@@ -108,12 +108,6 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         description="Redis DSN for job queue and stream buffering.",
     )
-    celery_broker_url: str = Field(
-        default="redis://localhost:6379/0",
-    )
-    celery_result_backend: str = Field(
-        default="redis://localhost:6379/1",
-    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # LLM / AI

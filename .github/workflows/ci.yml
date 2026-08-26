@@ -95,7 +95,7 @@ jobs:
             pydantic pydantic-settings \
             sqlalchemy asyncpg psycopg2-binary \
             alembic fastapi uvicorn httpx \
-            celery redis structlog prometheus-client \
+            redis structlog prometheus-client \
             pyyaml pandas scikit-learn
 
       - name: Run unit tests
@@ -144,7 +144,7 @@ jobs:
             pydantic pydantic-settings \
             sqlalchemy asyncpg psycopg2-binary \
             alembic fastapi uvicorn httpx aiohttp \
-            celery redis structlog prometheus-client \
+            redis structlog prometheus-client \
             pandas scikit-learn pyyaml \
             "testcontainers[postgres,redis]"
 

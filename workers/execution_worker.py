@@ -12,10 +12,10 @@ sync Postgres): services.execution_engine.idempotency.execute_with_idempotency
 and recoveryos.database.advisory_lock both require holding ONE Connection
 across the whole check-then-act-then-save sequence (see their docstrings)
 — mixing that with an async DB session would mean threading an event loop
-through a plain context manager for no real benefit. This system already
-processes one job at a time by policy (worker_prefetch_multiplier=1,
-workers/celery_app.py) — there is no throughput reason for this path to be
-async.
+through a plain context manager for no real benefit. This worker's own
+`while True: xreadgroup(...)` main loop already processes one job at a time
+by construction (single-threaded, no concurrent task dispatch) — there is
+no throughput reason for this path to be async.
 
 Recovery workflow states (TRD §4.2), each a real `events` row:
     SCHEDULED -> EXECUTING -> VERIFYING -> (SUCCEEDED | FAILED)
