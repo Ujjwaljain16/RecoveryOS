@@ -54,6 +54,11 @@ models/**/*.joblib
 models/**/*.bin
 *.csv
 *.parquet
+# Phase 8 evaluation's raw export -- deliberately tracked so the headline
+# number is re-derivable from a flat file, not just trusted from a
+# dashboard (tests/evaluation/report.md's whole point).
+!tests/evaluation/artifacts/phase8_payment_outcomes.csv
+!tests/evaluation/artifacts/phase8_payment_outcomes.parquet
 
 # ─── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/settings.json
