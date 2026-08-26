@@ -637,6 +637,40 @@ class Recovery(Base):
     audit_logs: Mapped[list[AuditLog]] = relationship(back_populates="recovery")
 
 
+class RawWebhookEvent(Base):
+    """
+    Task WEBHOOK1 -- the verbatim record of every inbound Razorpay webhook,
+    signature-verified or not (an unverified one is still stored, as
+    evidence of a rejected/forged delivery attempt, never silently
+    discarded). idempotency_key is SHA-256 of the raw body bytes -- Razorpay
+    webhooks carry no universal unique event-id field, so content-hash is
+    the real dedup key (a genuine redelivery of the same event hashes
+    identically). matched_recovery_id links this event to the
+    RazorpayTestAdapter-created order it resolves, via recoveries.provider_ref
+    (the real order id) -- reconciliation, not a fresh payment-identity
+    mapping (see migration 0016's docstring for the exact scope boundary).
+    """
+
+    __tablename__ = "raw_webhook_events"
+    __table_args__ = (Index("idx_raw_webhook_events_matched_recovery", "matched_recovery_id"),)
+
+    webhook_event_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    event_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    headers: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    signature_verified: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    matched_recovery_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("recoveries.recovery_id"), nullable=True
+    )
+    reconciliation_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+
+
 class RecoveryLedger(Base):
     """
     Financial ground truth per payment — the table the evaluation harness queries.

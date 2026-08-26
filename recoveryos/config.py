@@ -193,6 +193,12 @@ class Settings(BaseSettings):
         default=10.0,
         description="HTTP timeout for Razorpay API calls. Matches ai_diagnoser_timeout_seconds' pattern — was a bare hardcoded 10 in adapter.py.",
     )
+    razorpay_webhook_secret: str = Field(
+        default="",
+        description="Webhook secret configured in the Razorpay dashboard for this endpoint's "
+        "HMAC-SHA256 signature (Task WEBHOOK1). Distinct from razorpay_key_secret (the API key "
+        "secret) -- Razorpay issues a separate secret specifically for webhook signing.",
+    )
 
     @property
     def is_demo(self) -> bool:
