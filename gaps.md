@@ -551,6 +551,26 @@ system — this was pure removal of dead-but-deployed infrastructure.
 
 ---
 
+### C.5 PRD §31 Says "5 Payment Methods," Code Has Always Had 4
+
+**What was discovered:** verifying the canonical Phase 8 dataset's actual distribution
+(`docs/phase8_canonical_run.md`) surfaced that `payments` only ever has 4 distinct `method`
+values (`upi`, `card`, `netbanking`, `wallet` — `simulator/payments/distributions.py::
+PAYMENT_METHODS`), while PRD §31's entity list literally states *"5 payment methods."* This is a
+pre-existing Phase 1 PRD-vs-code mismatch, the same class as the TRD-vs-code drifts found and
+corrected in the `apps/` audit — except there, the doc was updated to match a deliberate
+engineering decision; here, there's no evidence a 5th method was ever cut on purpose, it's simply
+never been implemented.
+
+**Not fixed:** adding a 5th payment method mid-Phase-8 would touch calibration weights, the
+propensity model's trained feature space (`method` is a categorical feature — a new unseen
+category has no calibrated weight and no training signal), and every downstream file that hardcodes
+`["upi", "card", "netbanking", "wallet"]`. Exactly the kind of change that should happen in its own
+deliberate pass, not as a side effect of generating an eval dataset. Left exactly as found — this
+entry exists so the next person who notices the same mismatch doesn't have to rediscover it.
+
+---
+
 ## Summary — what changed in the build plan
 
 | Item | Phase to update | New tables/files |

@@ -85,9 +85,40 @@ All 5 `ObservedFailureClass` values represented, including the ambiguity-injecte
   ceiling and above the 0.52 non-triviality floor.
 - `test_deterministic_seed_reproducibility` (seed=42, n=1000, re-run independently): `is_identical=True`, `diff_count=0` — byte-identical, confirming this seed/config genuinely reproduces.
 
+## Addendum — regeneration after a bridge-test cleanup mistake
+
+The dataset above was regenerated once, after the original copy was corrupted by an operator
+error during the S4 bridge test (see below). Everything in the sections above is unchanged
+content-wise — same seed, same command, same stats, byte-identical — but the **real wall-clock
+generation timestamp is now `2026-08-26T06:54:xx Z`, not `2026-08-26T06:42:07Z`**, and the
+`code commit` provenance line no longer strictly matches (no new commit was made; the DB was
+simply rebuilt against the same commit `9353ec3`).
+
+What happened: before the full ~966-payment live-pipeline publish, a small-scale bridge test
+published 8 synthetic `PAYMENT_FAILED` events for 8 real canonical failed payments to
+`stream:payment_failed`, to prove `event_processor`/`pipeline_orchestrator`/S1 dedup/S4 dedup
+all behave correctly end-to-end (they did — see the session report). Cleaning up the bridge
+test's side effects afterward, a cleanup script deleted `events` rows by `payment_id` instead of
+`event_id`, which wrongly deleted 16 of the *original* canonical `PAYMENT_CREATED`/
+`PAYMENT_FAILED` event rows for those 8 payments (`events` count dropped from 20,000 to 19,984),
+not just the 8 synthetic bridge-test rows.
+
+Rather than attempt a surgical restoration (no reliable mapping back to the exact original
+deterministic event rows without re-deriving the full generation sequence), the entire dataset
+was wiped and regenerated from scratch: `docker compose down -v` → `docker compose up -d
+postgres redis` → `alembic upgrade head` (0001-0014 reapplied) → the identical `simulator.run`
+command above. The regenerated data is confirmed byte-identical to the original (same counts:
+10,000 payments / 950 failed / 391 recoverable / 20,000 events / 10,000 latent records), and
+`test_ground_truth_not_derivable_from_visible_features` and
+`test_deterministic_seed_reproducibility` were both re-run against this new copy and passed
+again. All decisioning tables (`diagnoses`, `candidate_actions`, `policy_decisions`,
+`recoveries`, `recovery_ledger`, `audit_log`, `event_publications`) are confirmed empty in the
+regenerated copy — the bridge test's decisioning side effects did not survive the wipe either.
+
 ## Standing instruction
 
-**This exact dataset (`simulation_id=b5345e16-0670-5c0f-bc83-c449e1f4a576`, generated
-`2026-08-26T06:42:07Z`) is what every subsequent Phase 8 step runs against. No swapping mid-phase
-— if this database needs to be regenerated for any reason, this file must be regenerated
-alongside it, not edited in place.**
+**This exact dataset (`simulation_id=b5345e16-0670-5c0f-bc83-c449e1f4a576`, content
+byte-identical to the original `2026-08-26T06:42:07Z` generation, physically regenerated at
+`2026-08-26T06:54:xx Z` per the addendum above) is what every subsequent Phase 8 step runs
+against. No further swapping mid-phase — if this database needs to be regenerated again for any
+reason, this file must be updated alongside it, not edited in place without a record.**
