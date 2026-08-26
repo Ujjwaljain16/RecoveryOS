@@ -227,6 +227,7 @@ async def persist_diagnosis(
     payment_id: str,
     output: DiagnosisOutput,
     source_event_id: str | None = None,
+    confidence_band: str | None = None,
 ) -> Diagnosis:
     """
     Write the Diagnosis row. MUST run on an app_role session —
@@ -243,6 +244,11 @@ async def persist_diagnosis(
     invocation) pass None, which never collides with anything (Postgres
     treats every NULL as distinct), so every existing caller keeps behaving
     exactly as before this change.
+
+    confidence_band (Task AGENT1): the investigative loop's qualitative
+    confidence label (CONFIDENT|LIKELY|...) -- None for every non-
+    investigative path (single-call LLM, fallback), which only ever
+    produce the numeric `confidence` above.
     """
     stmt = (
         pg_insert(Diagnosis)
@@ -253,6 +259,7 @@ async def persist_diagnosis(
             cohort_id=output.cohort_id,
             root_cause=output.root_cause.value,
             confidence=output.confidence,
+            confidence_band=confidence_band,
             evidence=[e.model_dump() for e in output.evidence],
             model_version=output.model_version,
             is_fallback=output.is_fallback,
@@ -287,7 +294,10 @@ async def diagnose_and_persist(
         return None
     output, investigation = result
     async with get_app_session_factory()() as app_session:
-        row = await persist_diagnosis(app_session, payment_id, output, source_event_id)
+        confidence_band = investigation.confidence_band if investigation is not None else None
+        row = await persist_diagnosis(
+            app_session, payment_id, output, source_event_id, confidence_band=confidence_band
+        )
         if investigation is not None:
             await persist_investigation(app_session, row.diagnosis_id, investigation)
         return row

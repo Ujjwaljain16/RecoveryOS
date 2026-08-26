@@ -80,8 +80,15 @@ _ROUND_SCHEMA = {
             },
         },
         "action": {"type": "string", "enum": ["call_tool", "finalize"]},
-        "tool_name": {"type": "string", "enum": list(TOOL_REGISTRY.keys()) + [""]},
-        "tool_inputs": {"type": "object"},
+        # Not in `required` -- genuinely optional (omitted/null when
+        # action=finalize), not an empty-string enum member. Gemini's
+        # schema validator rejects an empty string inside an `enum` list
+        # outright ("cannot be empty"), so a real "no tool" sentinel had to
+        # be represented by absence, not a fake extra enum value.
+        "tool_name": {"type": "string", "enum": list(TOOL_REGISTRY.keys())},
+        # No tool_inputs field: every tool's arguments are server-derived
+        # from diagnosis_input (_derive_tool_inputs), not supplied by the
+        # model -- the investigator only ever chooses WHICH tool runs.
         "expected_uncertainty_reduction": {"type": "number", "minimum": 0.0, "maximum": 10.0},
         "reasoning": {"type": "string"},
     },
@@ -115,8 +122,9 @@ _ROUND_SYSTEM_PROMPT = (
     "whether to gather more evidence or finalize. "
     "support_score/contradict_score are small integer counts of how much evidence backs "
     "or contradicts each hypothesis -- NOT a probability, and must never be reported as one. "
-    "If you choose action=call_tool, name exactly one tool from the provided registry, "
-    "give its exact required inputs, and estimate expected_uncertainty_reduction (0-10): "
+    "If you choose action=call_tool, name exactly one tool from the provided registry "
+    "(its arguments are supplied automatically -- you only choose which tool runs) and "
+    "estimate expected_uncertainty_reduction (0-10): "
     "how much this specific tool call would help distinguish between your current "
     "hypotheses, if it truly is your best estimate -- an honest low score is fine and "
     "expected when no remaining tool would help much. "
@@ -165,13 +173,48 @@ class InvestigationResult:
     steps: list[InvestigationStep] = field(default_factory=list)
 
 
+def _derive_tool_inputs(tool_name: str, diagnosis_input: DiagnosisInput) -> dict:
+    """
+    Every tool in TOOL_REGISTRY takes either payment_id or (bank, method) --
+    both already known from diagnosis_input. Server-derives them rather
+    than trusting the LLM to echo them back correctly: a live test showed
+    the model choosing the right tool but omitting/mis-naming required
+    arguments, which is exactly the class of error this sidesteps
+    entirely. The investigator chooses WHICH tool runs; it never controls
+    what arguments that tool actually receives.
+    """
+    if tool_name in ("get_customer_payment_history", "get_customer_recovery_history",
+                     "get_payment_attempt_history", "get_intervention_history"):
+        return {"payment_id": diagnosis_input.payment_id}
+    if tool_name in ("get_cohort_failure_rate", "get_recent_anomalies"):
+        return {"bank": diagnosis_input.bank, "method": diagnosis_input.method}
+    return {}
+
+
+def _json_safe(value):
+    """tools.py's query results carry native asyncpg/SQLAlchemy types
+    (uuid.UUID, datetime, Decimal) straight out of .mappings() -- none of
+    those are JSON-serializable, and a live test hit exactly this: a real
+    tool call succeeded, then the next round's prompt-building crashed on
+    json.dumps(). Recursively stringifies anything json.dumps can't handle
+    natively."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def _summarize_tool_output(output) -> dict | list:
     """Truncate a tool's raw result before it re-enters the next round's
     prompt -- keeps the payload small and avoids re-feeding an entire
-    history table back to the model verbatim."""
-    if isinstance(output, list):
-        return output[:5]
-    return output
+    history table back to the model verbatim. Also makes it JSON-safe
+    (see _json_safe) since it's about to be embedded in the next round's
+    prompt payload."""
+    truncated = output[:5] if isinstance(output, list) else output
+    return _json_safe(truncated)
 
 
 async def investigate(
@@ -271,7 +314,7 @@ async def _run_investigation(
         latency_penalty = spec.latency_ms_estimate / 1000.0
         investigation_score = expected_gain - spec.tool_cost - latency_penalty
 
-        tool_inputs = raw.get("tool_inputs") or {}
+        tool_inputs = _derive_tool_inputs(tool_name, diagnosis_input)
         t0 = time.monotonic()
         tool_output = await call_tool(diagnoser_session, tool_name, **tool_inputs)
         latency_ms = int((time.monotonic() - t0) * 1000)

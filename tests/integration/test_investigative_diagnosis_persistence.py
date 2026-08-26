@@ -132,6 +132,7 @@ async def test_diagnose_and_persist_writes_hypotheses_and_investigation_steps(
 
     assert diagnosis is not None
     assert diagnosis.root_cause == "systemic_degradation"
+    assert diagnosis.confidence_band == "LIKELY"
 
     import sqlalchemy as sa
     from recoveryos.config import get_settings as _gs
