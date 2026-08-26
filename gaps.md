@@ -477,6 +477,55 @@ larger generation run (instead of an independently re-seeded call) before anyone
 
 ---
 
+### C.3 Calibration YAML's `applies_to` Bindings Are Only Partially Wired
+
+**What was discovered:** `simulator/calibration/parameters.yaml` documents itself as the single
+source of truth for the simulator's distribution constants — each parameter carries an explicit
+`applies_to:` field naming the exact code location it's meant to replace. Checking every binding
+against the actual code (pre-Phase-8 audit, `simulator/` pass):
+
+- Method-mix weights (`upi/card/netbanking/wallet_transaction_share`) — genuinely wired via
+  `simulator/payments/distributions.py::PaymentDistributionSampler`. Correct.
+- `amount_lognormal_sigma` / `upi_amount_median_paise` — loaded into
+  `PaymentDistributionSampler.__init__` (`self._amount_sigma = calib.amount_lognormal_sigma`) and
+  then never read again. `sample_amount_paise()` uses its own hardcoded per-method `mu_adj`/`sigma`
+  pairs instead. Dead code sitting next to live code — not a bug affecting anything, since nothing
+  currently reads the loaded values either way.
+- `baseline_failure_rate` (0.028, sourced from real NPCI technical-decline-rate data) — its
+  `applies_to` names `scenarios.py::NormalFailureScenario.baseline_failure_rate`, but
+  `simulator/run.py`'s actual construction uses `sc_conf.get("normal_rate", 0.03)`, a hardcoded
+  0.03 that never calls `load_calibration()`. The same bare `0.03` is *also* independently
+  hardcoded as an inline floor in `episodes/generator.py` (two places) and `payments/generator.py`
+  — none of these four call sites reads the calibration file.
+- `fixed_retry_cost_paise` / `variable_retry_cost_rate` / `recovery_margin` — `applies_to` names
+  `episodes/models.py`'s three constants of the same names, which are hardcoded module-level
+  values (100, 0.001, 0.15) that happen to match the YAML today but never call
+  `load_calibration()`. A **third** independent copy of the same three numbers exists in
+  `models/recovery/evaluate.py`, also uncalibrated.
+
+**Why this isn't fixed now:** every mismatch above is a coincidental match, not an active bug —
+the hardcoded values and the calibration file agree today. But touching any of these call sites
+to actually wire them up would change the numbers the canonical dataset generates (0.03 → 0.028
+alone shifts the aggregate failure rate), which means regenerating and re-validating the entire
+Phase 8 eval dataset right when it should be getting locked down instead. Not worth that risk for
+a hygiene fix with zero current behavioral impact.
+
+**When it WOULD matter:** the moment anyone updates `parameters.yaml` expecting the change to
+propagate — it won't, silently, for `baseline_failure_rate` and the three retry-economics
+constants. Also matters if `models/recovery/evaluate.py`'s copy and `episodes/models.py`'s copy
+are ever edited independently and drift apart from each other, since nothing enforces they stay
+equal.
+
+**Fix, when it's safe to touch (after Phase 8's canonical run is finalized and locked in, not
+before):** make `NormalFailureScenario`'s default and `episodes/models.py`'s three constants
+actual reads of `load_calibration()` instead of hardcoded literals; either delete
+`amount_lognormal_sigma`/`upi_amount_median_paise` from the YAML (if the per-method formula in
+`distributions.py::sample_amount_paise` is the real intended design) or wire them in properly (if
+it isn't); and point `models/recovery/evaluate.py` at the same calibration source instead of its
+own copy, so there's exactly one number, not three.
+
+---
+
 ## Summary — what changed in the build plan
 
 | Item | Phase to update | New tables/files |

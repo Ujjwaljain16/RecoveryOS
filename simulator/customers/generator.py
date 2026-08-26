@@ -67,19 +67,33 @@ class CustomerGenerator:
             else:
                 ltv_paise = self.rng.randint("customers", 0, 50_000)
 
-            # Baseline opt-out probability (4%)
-            is_opted_out = self.rng.uniform("customers") < self.opt_out_baseline_rate
-            opted_out_at = (
-                self.base_time - timedelta(days=self.rng.randint("customers", 1, 30))
-                if is_opted_out
-                else None
-            )
-
-            # Customer creation timestamp (returning customers created earlier)
+            # Customer creation timestamp (returning customers created earlier).
+            # Computed BEFORE opted_out_at (Task SIM1, pre-Phase-8 audit):
+            # opted_out_at must be constrained to fall within this customer's
+            # actual tenure, so the tenure window needs to exist first.
             if is_returning:
                 created_at = self.base_time - timedelta(days=self.rng.randint("customers", 10, 180))
             else:
                 created_at = self.base_time - timedelta(days=self.rng.randint("customers", 0, 5))
+
+            # Baseline opt-out probability (4%). opted_out_at is drawn from
+            # this customer's own tenure window (created_at, base_time] --
+            # never before created_at. The previous version drew opted_out_at
+            # and created_at independently, which could place an opt-out
+            # timestamp before the customer's own creation timestamp (a
+            # temporally impossible record: opting out before existing).
+            # Zero-tenure customers (created_at == base_time, possible for a
+            # "new" customer when the 0-5 day draw lands on 0) have no window
+            # to have opted out in yet, so they're simply not opted out this
+            # run -- realistic, not a special case: you can't opt out of
+            # something in the same instant you signed up.
+            is_opted_out = self.rng.uniform("customers") < self.opt_out_baseline_rate
+            opted_out_at = None
+            if is_opted_out:
+                tenure_seconds = int((self.base_time - created_at).total_seconds())
+                if tenure_seconds > 0:
+                    offset_seconds = self.rng.randint("customers", 1, tenure_seconds)
+                    opted_out_at = created_at + timedelta(seconds=offset_seconds)
 
             # Latent unobserved traits
             latent_patience = max(0.05, min(0.95, self.rng.gauss("latent", mu=0.5, sigma=0.15)))
