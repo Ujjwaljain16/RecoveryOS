@@ -10,6 +10,7 @@ from __future__ import annotations
 from services.recovery_engine.next_best_action import (
     ACTION_TYPES,
     CandidateActionResult,
+    compute_action_confidence,
     select_next_best_action,
 )
 
@@ -144,3 +145,73 @@ def test_result_carries_full_candidate_set_for_audit():
     assert len(result.all_candidates) == 6
     assert {c.action_type for c in result.all_candidates} == set(ACTION_TYPES)
     assert result.propensity_probability_bps == 8000
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# compute_action_confidence — Task AGENT1, deterministic EVI-margin score
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_action_confidence_high_when_winner_dominates():
+    candidates = _all_six(
+        RETRY_NOW=1000, RETRY_LATER=100, ALT_ROUTE=50, REMINDER=10, ESCALATE=-100, DO_NOTHING=0
+    )
+    confidence = compute_action_confidence("RETRY_NOW", candidates)
+    assert confidence == 0.90
+
+
+def test_action_confidence_low_when_margin_is_thin():
+    candidates = _all_six(
+        RETRY_NOW=105, RETRY_LATER=100, ALT_ROUTE=50, REMINDER=10, ESCALATE=-100, DO_NOTHING=0
+    )
+    confidence = compute_action_confidence("RETRY_NOW", candidates)
+    assert confidence == 0.30  # margin_ratio ~0.048, under every higher band
+
+
+def test_action_confidence_medium_band():
+    # margin_ratio = (130-100)/130 = 0.2308 -- lands in the [0.20, 0.5) band
+    candidates = _all_six(
+        RETRY_NOW=130, RETRY_LATER=100, ALT_ROUTE=50, REMINDER=10, ESCALATE=-100, DO_NOTHING=0
+    )
+    assert compute_action_confidence("RETRY_NOW", candidates) == 0.70
+
+
+def test_action_confidence_low_medium_band():
+    # margin_ratio = (110-100)/110 = 0.0909 -- lands in the [0.05, 0.20) band
+    candidates = _all_six(
+        RETRY_NOW=110, RETRY_LATER=100, ALT_ROUTE=50, REMINDER=10, ESCALATE=-100, DO_NOTHING=0
+    )
+    assert compute_action_confidence("RETRY_NOW", candidates) == 0.50
+
+
+def test_action_confidence_bounded_when_winner_has_no_real_competition():
+    """Only one candidate has a sane EVI; the rest are deeply negative --
+    still bounded by the same bands, not automatically 1.0 just because
+    nothing else came close."""
+    candidates = _all_six(
+        RETRY_NOW=500, RETRY_LATER=-999999, ALT_ROUTE=-999999, REMINDER=-999999,
+        ESCALATE=-999999, DO_NOTHING=-999999,
+    )
+    confidence = compute_action_confidence("RETRY_NOW", candidates)
+    assert confidence == 0.90
+    assert confidence <= 1.0
+
+
+def test_action_confidence_never_exceeds_one_or_drops_below_point_three():
+    import itertools
+
+    evis = [-500, -50, -5, 0, 5, 50, 500, 5000]
+    for combo in itertools.product(evis, repeat=2):
+        candidates = _all_six(RETRY_NOW=combo[0], RETRY_LATER=combo[1])
+        confidence = compute_action_confidence("RETRY_NOW", candidates)
+        assert 0.30 <= confidence <= 0.90
+
+
+def test_select_next_best_action_result_carries_action_confidence():
+    candidates = _all_six(
+        RETRY_NOW=500, RETRY_LATER=200, ALT_ROUTE=100, REMINDER=50, ESCALATE=10, DO_NOTHING=0
+    )
+    result = select_next_best_action(
+        candidates, min_expected_value_paise=0, propensity_probability_bps=8000
+    )
+    assert result.action_confidence == compute_action_confidence("RETRY_NOW", candidates)

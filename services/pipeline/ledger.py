@@ -20,6 +20,7 @@ underlying connection types differ, not because the logic does.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 
@@ -90,6 +91,39 @@ def build_audit_summary(
     if outcome is not None:
         return f"Payment {payment_id}: action={chosen_action}, policy={verdict}, outcome={outcome}"
     return f"Payment {payment_id}: action={chosen_action}, policy={verdict}, no execution attempted"
+
+
+# Task AGENT1, agent-design review point 4 -- the SAME mapping Phase 8's
+# AI-eval used (docs/phase8_ai_evaluation.md) between the simulator's
+# hidden ground-truth failure type and the diagnoser's RootCause vocabulary.
+# Duplicated here (not imported from a shared module) deliberately kept as
+# a single small literal so this file's only dependency stays app_role SQL
+# text() -- no import of services.diagnosis_engine from services.pipeline.
+_TRUE_FAILURE_TYPE_TO_ROOT_CAUSE = {
+    "PERMANENT_INVALID_CREDS": "permanent_failure",
+    "PERMANENT_EXPIRED_INSTRUMENT": "permanent_failure",
+    "PERMANENT_ACCOUNT_CLOSED": "permanent_failure",
+    "CUSTOMER_INSUFFICIENT_FUNDS": "customer_specific",
+    "BANK_DEGRADATION_FAIL": "temporary_bank_degradation",
+    "MULTI_RAIL_OUTAGE_FAIL": "systemic_degradation",
+    "TEMPORARY_GATEWAY_TIMEOUT": "temporary_bank_degradation",
+    "TRANSIENT_NETWORK_DROP": "temporary_bank_degradation",
+}
+
+
+def _derive_outcome_fields(
+    *, verdict: str, actual_recovery_paise: int, outcome: str | None
+) -> tuple[str, bool | None]:
+    """
+    observed_outcome, action_effective. action_effective is None (not
+    applicable) when no execution was ever attempted (BLOCK/ESCALATE, or
+    an ALLOW that chose DO_NOTHING) -- only meaningful when an action
+    actually ran and either did or didn't recover money.
+    """
+    observed_outcome = outcome if outcome is not None else verdict
+    if verdict != "ALLOW" or outcome is None:
+        return observed_outcome, None
+    return observed_outcome, actual_recovery_paise > 0
 
 
 # ─── Async writer (services/pipeline/consumer.py) ──────────────────────────
@@ -204,7 +238,90 @@ async def populate_ledger_and_audit_async(
                 text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
                 {"status": RECOVERED_STATUS, "pid": payment_id},
             )
+        if diagnosis_id is not None:
+            await _record_diagnosis_outcome_async(
+                session,
+                diagnosis_id=diagnosis_id,
+                payment_id=payment_id,
+                verdict=verdict,
+                chosen_action=chosen_action,
+                outcome=outcome,
+                actual_recovery_paise=entry.actual_recovery_paise,
+                baseline_amount=baseline_amount,
+                incremental_recovery_paise=entry.incremental_recovery_paise,
+            )
     await session.commit()
+
+
+async def _record_diagnosis_outcome_async(
+    session,
+    *,
+    diagnosis_id: str,
+    payment_id: str,
+    verdict: str,
+    chosen_action: str,
+    outcome: str | None,
+    actual_recovery_paise: int,
+    baseline_amount: int | None,
+    incremental_recovery_paise: int,
+) -> None:
+    """
+    Task AGENT1 point 4 -- closes the diagnosis-to-outcome loop. One row
+    per diagnosis_id (unique constraint, migration 0015); a redelivery that
+    reaches this same ledger write a second time is already blocked by
+    ledger_row_inserted above, so this only ever runs once per diagnosis.
+
+    diagnosis_correct is populated ONLY when simulator_latent_state ground
+    truth exists for this payment (app_role has it; this session already
+    is app_role) -- NULL for a genuinely live payment, which has no ground
+    truth to check the diagnosis against. action_effective is the only
+    thing ever answerable in production (see _derive_outcome_fields).
+    """
+    from sqlalchemy import text
+
+    observed_outcome, action_effective = _derive_outcome_fields(
+        verdict=verdict, actual_recovery_paise=actual_recovery_paise, outcome=outcome
+    )
+
+    diagnosis_correct = None
+    row = (
+        await session.execute(
+            text(
+                "SELECT d.root_cause, l.true_failure_type FROM diagnoses d "
+                "LEFT JOIN simulator_latent_state l ON l.payment_id = d.payment_id "
+                "WHERE d.diagnosis_id = :did"
+            ),
+            {"did": diagnosis_id},
+        )
+    ).mappings().first()
+    if row is not None and row["true_failure_type"] is not None:
+        expected = _TRUE_FAILURE_TYPE_TO_ROOT_CAUSE.get(row["true_failure_type"])
+        diagnosis_correct = expected is not None and expected == row["root_cause"]
+
+    await session.execute(
+        text(
+            "INSERT INTO diagnosis_outcomes "
+            "(outcome_id, diagnosis_id, chosen_action, observed_outcome, diagnosis_correct, "
+            "action_effective, counterfactual_result) "
+            "VALUES (:oid, :did, :action, :observed, :correct, :effective, :counterfactual) "
+            "ON CONFLICT (diagnosis_id) DO NOTHING"
+        ),
+        {
+            "oid": str(uuid.uuid4()),
+            "did": diagnosis_id,
+            "action": chosen_action,
+            "observed": observed_outcome,
+            "correct": diagnosis_correct,
+            "effective": action_effective,
+            "counterfactual": json.dumps(
+                {
+                    "actual_recovery_paise": actual_recovery_paise,
+                    "baseline_recovery_paise": baseline_amount or 0,
+                    "incremental_recovery_paise": incremental_recovery_paise,
+                }
+            ),
+        },
+    )
 
 
 # ─── Sync writer (workers/execution_worker.py) ─────────────────────────────
@@ -312,4 +429,78 @@ def populate_ledger_and_audit_sync(
                 text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
                 {"status": RECOVERED_STATUS, "pid": payment_id},
             )
+        if diagnosis_id is not None:
+            _record_diagnosis_outcome_sync(
+                conn,
+                diagnosis_id=diagnosis_id,
+                payment_id=payment_id,
+                verdict=verdict,
+                chosen_action=chosen_action,
+                outcome=outcome,
+                actual_recovery_paise=entry.actual_recovery_paise,
+                baseline_amount=baseline_amount,
+                incremental_recovery_paise=entry.incremental_recovery_paise,
+            )
     conn.commit()
+
+
+def _record_diagnosis_outcome_sync(
+    conn,
+    *,
+    diagnosis_id: str,
+    payment_id: str,
+    verdict: str,
+    chosen_action: str,
+    outcome: str | None,
+    actual_recovery_paise: int,
+    baseline_amount: int | None,
+    incremental_recovery_paise: int,
+) -> None:
+    """Sync mirror of _record_diagnosis_outcome_async -- see its docstring."""
+    from sqlalchemy import text
+
+    observed_outcome, action_effective = _derive_outcome_fields(
+        verdict=verdict, actual_recovery_paise=actual_recovery_paise, outcome=outcome
+    )
+
+    diagnosis_correct = None
+    row = (
+        conn.execute(
+            text(
+                "SELECT d.root_cause, l.true_failure_type FROM diagnoses d "
+                "LEFT JOIN simulator_latent_state l ON l.payment_id = d.payment_id "
+                "WHERE d.diagnosis_id = :did"
+            ),
+            {"did": diagnosis_id},
+        )
+        .mappings()
+        .first()
+    )
+    if row is not None and row["true_failure_type"] is not None:
+        expected = _TRUE_FAILURE_TYPE_TO_ROOT_CAUSE.get(row["true_failure_type"])
+        diagnosis_correct = expected is not None and expected == row["root_cause"]
+
+    conn.execute(
+        text(
+            "INSERT INTO diagnosis_outcomes "
+            "(outcome_id, diagnosis_id, chosen_action, observed_outcome, diagnosis_correct, "
+            "action_effective, counterfactual_result) "
+            "VALUES (:oid, :did, :action, :observed, :correct, :effective, :counterfactual) "
+            "ON CONFLICT (diagnosis_id) DO NOTHING"
+        ),
+        {
+            "oid": str(uuid.uuid4()),
+            "did": diagnosis_id,
+            "action": chosen_action,
+            "observed": observed_outcome,
+            "correct": diagnosis_correct,
+            "effective": action_effective,
+            "counterfactual": json.dumps(
+                {
+                    "actual_recovery_paise": actual_recovery_paise,
+                    "baseline_recovery_paise": baseline_amount or 0,
+                    "incremental_recovery_paise": incremental_recovery_paise,
+                }
+            ),
+        },
+    )

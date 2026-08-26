@@ -328,6 +328,15 @@ async def persist_decision(
                     friction_penalty_paise=candidate.friction_penalty_paise,
                     risk_penalty_paise=candidate.risk_penalty_paise,
                     model_version=context["model_version"],
+                    # Only the CHOSEN action gets a real action_confidence
+                    # (Task AGENT1) -- the other 5 candidates were never
+                    # acted on, so "how confident are we in this action"
+                    # doesn't apply to them.
+                    action_confidence=(
+                        nba_result.action_confidence
+                        if candidate.action_type == nba_result.chosen_action
+                        else None
+                    ),
                 )
                 .on_conflict_do_nothing(
                     index_elements=["payment_id", "source_event_id", "action_type"]

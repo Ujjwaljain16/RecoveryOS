@@ -68,6 +68,38 @@ class NextBestActionResult:
     all_candidates: tuple[CandidateActionResult, ...]
     propensity_probability_bps: int
     cleared_floor: bool
+    action_confidence: float
+
+
+def compute_action_confidence(
+    chosen_action: str, candidates: tuple[CandidateActionResult, ...]
+) -> float:
+    """
+    Task AGENT1 -- deterministic, EVI-margin-based confidence that the
+    CHOSEN action is genuinely the best one, separate from (and computed
+    completely independently of) diagnosis confidence. Not a probability:
+    a disclosed heuristic bucketing of "how much better is the winner than
+    its closest real competitor," same philosophy as the investigative
+    diagnoser's confidence_band (point 1 of the agent-design review) --
+    honest qualitative bands, not a fake-calibrated float. No LLM call:
+    this is exactly the kind of decision EVI's own deterministic economics
+    should answer, not a language model's guess.
+    """
+    chosen = next(c for c in candidates if c.action_type == chosen_action)
+    other_evis = [c.expected_value_paise for c in candidates if c.action_type != chosen_action]
+    runner_up_evi = max(other_evis) if other_evis else chosen.expected_value_paise
+
+    denom = max(abs(chosen.expected_value_paise), abs(runner_up_evi), 1)
+    margin_ratio = (chosen.expected_value_paise - runner_up_evi) / denom
+    margin_ratio = max(0.0, min(1.0, margin_ratio))
+
+    if margin_ratio >= 0.5:
+        return 0.90
+    if margin_ratio >= 0.20:
+        return 0.70
+    if margin_ratio >= 0.05:
+        return 0.50
+    return 0.30
 
 
 async def generate_candidate_actions(
@@ -136,4 +168,5 @@ def select_next_best_action(
         all_candidates=candidates,
         propensity_probability_bps=propensity_probability_bps,
         cleared_floor=cleared_floor,
+        action_confidence=compute_action_confidence(chosen.action_type, candidates),
     )
