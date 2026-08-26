@@ -298,6 +298,12 @@ class Diagnosis(Base):
     __table_args__ = (
         Index("idx_diagnoses_payment", "payment_id", "created_at"),
         Index("idx_diagnoses_cohort", "cohort_id"),
+        # Dedup per triggering event, not per payment -- a payment can
+        # legitimately have multiple diagnoses across multiple real retry
+        # attempts. NULL source_event_id (no event context, e.g. direct
+        # calls/tests) never collides with anything, by Postgres's normal
+        # NULL-is-distinct semantics. migrations/0013, Task S1.
+        UniqueConstraint("payment_id", "source_event_id", name="uq_diagnoses_payment_event"),
     )
 
     diagnosis_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -306,6 +312,13 @@ class Diagnosis(Base):
         ForeignKey("payments.payment_id"),
         nullable=True,
     )
+    # The stream:risk_engine message (services/event_processor/publisher.py's
+    # source_event_id) that triggered this decision cycle -- NULL if this
+    # diagnosis wasn't produced by the pipeline consumer (tests, direct
+    # calls). Threaded through by services/pipeline/consumer.py so a
+    # redelivered message can't create a duplicate diagnosis for the SAME
+    # triggering event (migrations/0013, Task S1).
+    source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     cohort_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), nullable=True
     )  # NULL if isolated, set if systemic
@@ -346,6 +359,19 @@ class CandidateAction(Base):
     """
 
     __tablename__ = "candidate_actions"
+    __table_args__ = (
+        # One row per (payment, triggering event, action_type) -- 6 action
+        # types are scored per decision cycle, so action_type must be part
+        # of the key. NULL source_event_id never collides (see Diagnosis's
+        # equivalent constraint for the full reasoning). migrations/0013,
+        # Task S1.
+        UniqueConstraint(
+            "payment_id",
+            "source_event_id",
+            "action_type",
+            name="uq_candidate_actions_payment_event_action",
+        ),
+    )
 
     candidate_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
@@ -353,6 +379,9 @@ class CandidateAction(Base):
         ForeignKey("payments.payment_id"),
         nullable=False,
     )
+    # Triggering stream:risk_engine message's source_event_id -- see
+    # Diagnosis.source_event_id's comment for the full reasoning.
+    source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     # RETRY_NOW|RETRY_LATER|ALT_ROUTE|REMINDER|ESCALATE|DO_NOTHING
     action_type: Mapped[str] = mapped_column(Text, nullable=False)
     # Integer basis points (0-10000); 82.00% = 8200 — NO float
@@ -381,6 +410,12 @@ class PolicyDecision(Base):
     """
 
     __tablename__ = "policy_decisions"
+    __table_args__ = (
+        # One decision per (payment, triggering event) -- NULL source_event_id
+        # never collides (see Diagnosis's equivalent constraint for the full
+        # reasoning). migrations/0013, Task S1.
+        UniqueConstraint("payment_id", "source_event_id", name="uq_policy_decisions_payment_event"),
+    )
 
     decision_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(
@@ -388,6 +423,9 @@ class PolicyDecision(Base):
         ForeignKey("payments.payment_id"),
         nullable=False,
     )
+    # Triggering stream:risk_engine message's source_event_id -- see
+    # Diagnosis.source_event_id's comment for the full reasoning.
+    source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     candidate_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("candidate_actions.candidate_id"),
@@ -474,6 +512,13 @@ class RecoveryLedger(Base):
     """
 
     __tablename__ = "recovery_ledger"
+    __table_args__ = (
+        # One terminal ledger entry per payment (a payment reaches ONE
+        # terminal state) -- the physical backstop against a redelivered
+        # pipeline message double-writing this table and inflating TRD §7's
+        # SUM()-based incremental-revenue number. migrations/0013, Task S1.
+        UniqueConstraint("payment_id", name="uq_recovery_ledger_payment"),
+    )
 
     ledger_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     payment_id: Mapped[str] = mapped_column(

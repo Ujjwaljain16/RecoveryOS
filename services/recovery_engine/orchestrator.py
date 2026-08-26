@@ -26,7 +26,8 @@ import inspect
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoveryos.database import (
@@ -260,49 +261,96 @@ async def persist_decision(
     nba_result: NextBestActionResult,
     decision: PolicyDecisionResult,
     context: dict,
+    source_event_id: str | None = None,
 ) -> tuple[list[CandidateAction], PolicyDecision]:
     """
     Persist ALL 6 candidate_actions rows + ONE policy_decision row (pointing
     at the CHOSEN candidate's row) with the full rule_trace. app_role
     session — the only role with write access to these tables.
+
+    source_event_id (Task S1, pre-Phase-8 audit): the triggering
+    stream:risk_engine message's id, threaded through by
+    services/pipeline/consumer.py. Deduped via migrations/0013's UNIQUE
+    constraints — a redelivered message for the SAME triggering event (e.g.
+    the pipeline consumer's xack call failing right after a fully
+    successful run) returns the already-persisted rows instead of inserting
+    duplicates. None (no event context — tests, direct invocation) never
+    collides with anything, so every existing caller is unaffected.
     """
     async with get_app_session_factory()() as session:
         candidate_rows: list[CandidateAction] = []
         chosen_row: CandidateAction | None = None
         for candidate in nba_result.all_candidates:
-            row = CandidateAction(
-                candidate_id=str(uuid.uuid4()),
-                payment_id=payment_id,
-                action_type=candidate.action_type,
-                recovery_prob_bps=candidate.recovery_prob_bps,
-                expected_value_paise=candidate.expected_value_paise,
-                cost_paise=candidate.cost_paise,
-                friction_penalty_paise=candidate.friction_penalty_paise,
-                risk_penalty_paise=candidate.risk_penalty_paise,
-                model_version=context["model_version"],
+            stmt = (
+                pg_insert(CandidateAction)
+                .values(
+                    candidate_id=str(uuid.uuid4()),
+                    payment_id=payment_id,
+                    source_event_id=source_event_id,
+                    action_type=candidate.action_type,
+                    recovery_prob_bps=candidate.recovery_prob_bps,
+                    expected_value_paise=candidate.expected_value_paise,
+                    cost_paise=candidate.cost_paise,
+                    friction_penalty_paise=candidate.friction_penalty_paise,
+                    risk_penalty_paise=candidate.risk_penalty_paise,
+                    model_version=context["model_version"],
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["payment_id", "source_event_id", "action_type"]
+                )
+                .returning(CandidateAction)
             )
-            session.add(row)
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                # Redelivery of the same triggering event -- this exact
+                # (payment_id, source_event_id, action_type) row already
+                # exists from the first attempt.
+                row = (
+                    await session.execute(
+                        select(CandidateAction).where(
+                            CandidateAction.payment_id == payment_id,
+                            CandidateAction.source_event_id == source_event_id,
+                            CandidateAction.action_type == candidate.action_type,
+                        )
+                    )
+                ).scalar_one()
             candidate_rows.append(row)
             if candidate.action_type == nba_result.chosen_action:
                 chosen_row = row
-        await session.flush()
 
         assert chosen_row is not None
-        policy_decision_row = PolicyDecision(
-            decision_id=str(uuid.uuid4()),
-            payment_id=payment_id,
-            candidate_id=chosen_row.candidate_id,
-            policy_config_id=context["policy_config_id"],
-            verdict=decision.verdict,
-            rule_trace=list(decision.rule_trace),
+        policy_stmt = (
+            pg_insert(PolicyDecision)
+            .values(
+                decision_id=str(uuid.uuid4()),
+                payment_id=payment_id,
+                source_event_id=source_event_id,
+                candidate_id=chosen_row.candidate_id,
+                policy_config_id=context["policy_config_id"],
+                verdict=decision.verdict,
+                rule_trace=list(decision.rule_trace),
+            )
+            .on_conflict_do_nothing(index_elements=["payment_id", "source_event_id"])
+            .returning(PolicyDecision)
         )
-        session.add(policy_decision_row)
+        policy_decision_row = (await session.execute(policy_stmt)).scalar_one_or_none()
+        if policy_decision_row is None:
+            policy_decision_row = (
+                await session.execute(
+                    select(PolicyDecision).where(
+                        PolicyDecision.payment_id == payment_id,
+                        PolicyDecision.source_event_id == source_event_id,
+                    )
+                )
+            ).scalar_one()
         await session.commit()
 
     return candidate_rows, policy_decision_row
 
 
-async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
+async def decide_and_persist(
+    payment_id: str, redis_client=None, source_event_id: str | None = None
+) -> dict:
     """
     Convenience entry point: full pipeline + persistence for one payment.
 
@@ -315,7 +363,7 @@ async def decide_and_persist(payment_id: str, redis_client=None) -> dict:
     """
     nba_result, decision, context = await build_decision(payment_id)
     candidate_rows, policy_decision_row = await persist_decision(
-        payment_id, nba_result, decision, context
+        payment_id, nba_result, decision, context, source_event_id
     )
 
     result = {

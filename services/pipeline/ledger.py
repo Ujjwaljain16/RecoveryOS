@@ -128,7 +128,22 @@ async def populate_ledger_and_audit_async(
         baseline_outcome=baseline_outcome,
     )
 
-    await session.execute(
+    # ON CONFLICT (payment_id) DO NOTHING, not DO UPDATE (Task S1, pre-Phase-8
+    # audit): a redelivered pipeline message (e.g. the xack call itself
+    # failing right after this exact commit) reprocesses the payment from
+    # scratch and would otherwise insert a second row here. The FIRST
+    # computed entry is authoritative -- compute_and_persist_baseline_run()
+    # is itself idempotent (returns the existing baseline_runs row rather
+    # than recomputing), amount_paise is immutable, and nothing else acts on
+    # this payment between the two attempts, so a later redelivery's numbers
+    # are expected to be identical, not "newer" -- there is no legitimate
+    # case where the second attempt's figures should overwrite the first's.
+    # RETURNING lets us know whether this attempt actually won, so the
+    # audit_log write below (which is NOT itself deduped -- audit_log is an
+    # explicit append-only history, gaps.md's own append-only invariant)
+    # doesn't record a redundant "new outcome" entry for a write that didn't
+    # actually happen.
+    result = await session.execute(
         text(
             """
             INSERT INTO recovery_ledger
@@ -138,6 +153,8 @@ async def populate_ledger_and_audit_async(
             VALUES
                 (:ledger_id, :pid, :revenue_at_risk, :expected_recovery, :actual_recovery,
                  :baseline_outcome, :incremental, :intervention_cost, :net_recovery)
+            ON CONFLICT (payment_id) DO NOTHING
+            RETURNING ledger_id
             """
         ),
         {
@@ -152,23 +169,25 @@ async def populate_ledger_and_audit_async(
             "net_recovery": entry.net_recovery_paise,
         },
     )
+    ledger_row_inserted = result.first() is not None
 
-    await session.execute(
-        text(
-            "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
-            "decision_id, recovery_id, summary) "
-            "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
-        ),
-        {
-            "aid": str(uuid.uuid4()),
-            "pid": payment_id,
-            "did": diagnosis_id,
-            "cid": candidate_id,
-            "decid": decision_id,
-            "rid": recovery_id,
-            "summary": build_audit_summary(payment_id, chosen_action, verdict, outcome),
-        },
-    )
+    if ledger_row_inserted:
+        await session.execute(
+            text(
+                "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
+                "decision_id, recovery_id, summary) "
+                "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
+            ),
+            {
+                "aid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": diagnosis_id,
+                "cid": candidate_id,
+                "decid": decision_id,
+                "rid": recovery_id,
+                "summary": build_audit_summary(payment_id, chosen_action, verdict, outcome),
+            },
+        )
     await session.commit()
 
 
@@ -220,7 +239,14 @@ def populate_ledger_and_audit_sync(
         baseline_outcome=baseline_outcome,
     )
 
-    conn.execute(
+    # ON CONFLICT DO NOTHING for the same reason as the async writer above
+    # (Task S1) -- this path is already protected in practice by
+    # execute_with_idempotency's advisory-lock + recoveries-table check
+    # (a redelivered execution job finds its result already recorded and
+    # never re-enters action_fn at all), but the table-level constraint
+    # applies regardless of which writer hits it, so this must not crash
+    # with an IntegrityError if it's ever reached twice for the same payment.
+    result = conn.execute(
         text(
             """
             INSERT INTO recovery_ledger
@@ -230,6 +256,8 @@ def populate_ledger_and_audit_sync(
             VALUES
                 (:ledger_id, :pid, :revenue_at_risk, :expected_recovery, :actual_recovery,
                  :baseline_outcome, :incremental, :intervention_cost, :net_recovery)
+            ON CONFLICT (payment_id) DO NOTHING
+            RETURNING ledger_id
             """
         ),
         {
@@ -244,21 +272,23 @@ def populate_ledger_and_audit_sync(
             "net_recovery": entry.net_recovery_paise,
         },
     )
+    ledger_row_inserted = result.first() is not None
 
-    conn.execute(
-        text(
-            "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
-            "decision_id, recovery_id, summary) "
-            "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
-        ),
-        {
-            "aid": str(uuid.uuid4()),
-            "pid": payment_id,
-            "did": diagnosis_id,
-            "cid": candidate_id,
-            "decid": decision_id,
-            "rid": recovery_id,
-            "summary": build_audit_summary(payment_id, chosen_action, verdict, outcome),
-        },
-    )
+    if ledger_row_inserted:
+        conn.execute(
+            text(
+                "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
+                "decision_id, recovery_id, summary) "
+                "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
+            ),
+            {
+                "aid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": diagnosis_id,
+                "cid": candidate_id,
+                "decid": decision_id,
+                "rid": recovery_id,
+                "summary": build_audit_summary(payment_id, chosen_action, verdict, outcome),
+            },
+        )
     conn.commit()

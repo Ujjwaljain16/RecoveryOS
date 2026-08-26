@@ -94,13 +94,24 @@ async def _fetch_chosen_candidate(
     return dict(row) if row else None
 
 
-async def process_payment_failure(payment_id: str, bank: str | None, redis: aioredis.Redis) -> None:
+async def process_payment_failure(
+    payment_id: str, bank: str | None, redis: aioredis.Redis, source_event_id: str | None = None
+) -> None:
     """
     One full decision chain for one failed payment. Raises on genuine
     infrastructure failure (DB unreachable, etc.) so the caller leaves the
     stream message pending for retry -- does NOT raise merely because the
     AI Diagnoser was unavailable, since diagnose_and_persist already
     resolves that internally via the deterministic fallback (Phase 4).
+
+    source_event_id (Task S1, pre-Phase-8 audit): the triggering
+    stream:risk_engine message's own source_event_id (see
+    services/event_processor/publisher.py), threaded through to
+    diagnose_and_persist/decide_and_persist so a message redelivered after
+    this function already fully succeeded once (e.g. the xack call itself
+    failing right after a successful run, per _process_batch below) writes
+    into the SAME diagnosis/candidate_actions/policy_decision rows instead
+    of creating duplicates -- see migrations/0013's UNIQUE constraints.
     """
     from recoveryos.database import get_app_session_factory
     from services.pipeline.baseline import compute_and_persist_baseline_run
@@ -117,10 +128,12 @@ async def process_payment_failure(payment_id: str, bank: str | None, redis: aior
     # diagnose_and_persist opens its own diagnoser_role + app_role sessions
     # internally -- never raises merely because the LLM is unreachable/
     # times out (that's exactly what the fallback path is for).
-    diagnosis = await diagnose_and_persist(payment_id)
+    diagnosis = await diagnose_and_persist(payment_id, source_event_id)
     diagnosis_id = diagnosis.diagnosis_id if diagnosis is not None else None
 
-    result = await decide_and_persist(payment_id, redis_client=redis)
+    result = await decide_and_persist(
+        payment_id, redis_client=redis, source_event_id=source_event_id
+    )
 
     if result["verdict"] != "ALLOW" or result["chosen_action"] == "DO_NOTHING":
         # No execution job was enqueued for this payment -- this IS the
@@ -158,7 +171,12 @@ async def _process_batch(redis: aioredis.Redis, messages: list[tuple[str, dict[s
             await redis.xack(STREAM_NAME, GROUP_NAME, stream_msg_id)
             continue
         try:
-            await process_payment_failure(raw_msg["payment_id"], raw_msg.get("bank") or None, redis)
+            await process_payment_failure(
+                raw_msg["payment_id"],
+                raw_msg.get("bank") or None,
+                redis,
+                source_event_id=raw_msg.get("source_event_id") or None,
+            )
             await redis.xack(STREAM_NAME, GROUP_NAME, stream_msg_id)
         except Exception:
             logger.exception(

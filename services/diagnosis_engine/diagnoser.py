@@ -18,7 +18,8 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoveryos.database import get_app_session_factory, get_diagnoser_session_factory
@@ -179,34 +180,67 @@ async def diagnose(payment_id: str) -> DiagnosisOutput | None:
 
 
 async def persist_diagnosis(
-    app_session: AsyncSession, payment_id: str, output: DiagnosisOutput
+    app_session: AsyncSession,
+    payment_id: str,
+    output: DiagnosisOutput,
+    source_event_id: str | None = None,
 ) -> Diagnosis:
     """
     Write the Diagnosis row. MUST run on an app_role session —
     diagnoser_role has zero INSERT grant on `diagnoses` (or anywhere else),
     confirmed by test_diagnoser_role_has_no_write_access. This is the only
     function in the whole diagnosis pipeline that writes anything.
+
+    source_event_id (Task S1, pre-Phase-8 audit): the triggering
+    stream:risk_engine message's id, threaded through by
+    services/pipeline/consumer.py. Deduped via the (payment_id,
+    source_event_id) UNIQUE constraint (migrations/0013) — a redelivered
+    message for the SAME triggering event returns the existing row instead
+    of inserting a duplicate. Callers with no event context (tests, direct
+    invocation) pass None, which never collides with anything (Postgres
+    treats every NULL as distinct), so every existing caller keeps behaving
+    exactly as before this change.
     """
-    diagnosis = Diagnosis(
-        diagnosis_id=str(uuid.uuid4()),
-        payment_id=payment_id,
-        cohort_id=output.cohort_id,
-        root_cause=output.root_cause.value,
-        confidence=output.confidence,
-        evidence=[e.model_dump() for e in output.evidence],
-        model_version=output.model_version,
-        is_fallback=output.is_fallback,
+    stmt = (
+        pg_insert(Diagnosis)
+        .values(
+            diagnosis_id=str(uuid.uuid4()),
+            payment_id=payment_id,
+            source_event_id=source_event_id,
+            cohort_id=output.cohort_id,
+            root_cause=output.root_cause.value,
+            confidence=output.confidence,
+            evidence=[e.model_dump() for e in output.evidence],
+            model_version=output.model_version,
+            is_fallback=output.is_fallback,
+        )
+        .on_conflict_do_nothing(index_elements=["payment_id", "source_event_id"])
+        .returning(Diagnosis)
     )
-    app_session.add(diagnosis)
+    row = (await app_session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        # Duplicate for this (payment_id, source_event_id) -- a redelivery
+        # of the same triggering event. Return the existing row rather than
+        # silently discarding the caller's reference to "the" diagnosis.
+        row = (
+            await app_session.execute(
+                select(Diagnosis).where(
+                    Diagnosis.payment_id == payment_id,
+                    Diagnosis.source_event_id == source_event_id,
+                )
+            )
+        ).scalar_one()
     await app_session.commit()
-    return diagnosis
+    return row
 
 
-async def diagnose_and_persist(payment_id: str) -> Diagnosis | None:
+async def diagnose_and_persist(
+    payment_id: str, source_event_id: str | None = None
+) -> Diagnosis | None:
     """Convenience entry point: full pipeline + persistence in one call —
     what a real Risk Engine consumer would call per failed payment."""
     output = await diagnose(payment_id)
     if output is None:
         return None
     async with get_app_session_factory()() as app_session:
-        return await persist_diagnosis(app_session, payment_id, output)
+        return await persist_diagnosis(app_session, payment_id, output, source_event_id)
