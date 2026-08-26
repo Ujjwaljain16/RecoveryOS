@@ -13,20 +13,32 @@ from datetime import UTC, datetime, timedelta
 
 from services.policy_engine.evaluate import evaluate
 from services.policy_engine.rules import (
+    NPCI_AUTOPAY_MAX_ATTEMPTS,
+    RBI_EMANDATE_AFA_THRESHOLD_PAISE,
     RULES,
     AmountLimitRule,
+    AutopayExecutionWindowRule,
     CandidateContext,
     CooldownRule,
     EligibilityRule,
+    EMandateRetryComplianceRule,
     MinExpectedValueRule,
     OptOutRule,
     PaymentContext,
     PolicyConfigContext,
+    QuietHoursComplianceRule,
     RetryLimitRule,
     SystemicSuppressionRule,
 )
 
-NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=UTC)
+# 09:30 IST (04:00 UTC) — deliberately outside BOTH NPCI's Autopay peak
+# windows (10:00-13:00, 17:00-21:30 IST) and TRAI's quiet hours
+# (21:00-09:00 IST), so the ~30 existing tests below that don't care about
+# time-of-day compliance (cooldown/amount/retry-limit logic) don't
+# accidentally trip the new EMandateRetryComplianceRule/
+# AutopayExecutionWindowRule/QuietHoursComplianceRule (Task COMPLIANCE1) —
+# those are tested with their own deliberately-chosen fixtures below.
+NOW = datetime(2026, 8, 25, 4, 0, 0, tzinfo=UTC)
 
 
 def _payment(**overrides) -> PaymentContext:
@@ -49,6 +61,14 @@ def _candidate(**overrides) -> CandidateContext:
     defaults = {"action_type": "RETRY_NOW", "expected_value_paise": 1_000}
     defaults.update(overrides)
     return CandidateContext(**defaults)
+
+
+def _at_ist(hour: int, minute: int = 0) -> datetime:
+    """A UTC datetime on NOW's date whose IST (UTC+5:30) clock time is
+    exactly hour:minute -- for the 3 real-regulatory-compliance rules
+    below, which reason in IST wall-clock time."""
+    ist_naive = datetime(2026, 8, 25, hour, minute, 0)
+    return (ist_naive - timedelta(hours=5, minutes=30)).replace(tzinfo=UTC)
 
 
 def _policy_config(**overrides) -> PolicyConfigContext:
@@ -366,15 +386,16 @@ def test_retry_limit_failure_produces_escalate_verdict_not_block():
 
 
 def test_trace_stops_exactly_at_the_failing_rule_middle_of_the_chain():
-    """SystemicSuppressionRule is rule #6 — the trace must contain exactly
-    6 entries (the 5 that passed plus the failing one), not all 7."""
+    """SystemicSuppressionRule is rule #9 in the current 10-rule chain
+    (Task COMPLIANCE1 added 3 rules before it) — the trace must contain
+    exactly 9 entries (the 8 that passed plus the failing one), not all 10."""
     result = evaluate(
         _payment(is_high_severity_anomaly=True),
         _candidate(action_type="RETRY_NOW", expected_value_paise=1_000),
         _policy_config(),
     )
     assert result.verdict == "BLOCK"
-    assert len(result.rule_trace) == 6
+    assert len(result.rule_trace) == 9
     assert result.rule_trace[-1]["rule"] == "SystemicSuppressionRule"
 
 
@@ -447,3 +468,217 @@ def test_policy_engine_p99_latency_under_10ms():
     p99_ms = durations[int(len(durations) * 0.99)] * 1000
     print(f"\n[policy_engine p99] {p99_ms:.4f} ms over 10,000 calls")
     assert p99_ms < 10.0, f"p99={p99_ms:.4f}ms exceeds the 10ms target"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# EMandateRetryComplianceRule — real RBI/NPCI regulatory ceilings
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_emandate_pass_case_well_within_attempt_and_amount_limits():
+    result = EMandateRetryComplianceRule().check(
+        _payment(attempt_number=1, amount_paise=100_000),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+def test_emandate_attempt_exactly_at_npci_cap_passes():
+    result = EMandateRetryComplianceRule().check(
+        _payment(attempt_number=NPCI_AUTOPAY_MAX_ATTEMPTS),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+def test_emandate_attempt_one_over_npci_cap_fails():
+    result = EMandateRetryComplianceRule().check(
+        _payment(attempt_number=NPCI_AUTOPAY_MAX_ATTEMPTS + 1),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is False
+
+
+def test_emandate_amount_exactly_at_rbi_afa_threshold_passes():
+    result = EMandateRetryComplianceRule().check(
+        _payment(amount_paise=RBI_EMANDATE_AFA_THRESHOLD_PAISE),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+def test_emandate_amount_one_paise_over_rbi_afa_threshold_fails():
+    result = EMandateRetryComplianceRule().check(
+        _payment(amount_paise=RBI_EMANDATE_AFA_THRESHOLD_PAISE + 1),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is False
+
+
+def test_emandate_failure_escalates_not_blocks():
+    assert EMandateRetryComplianceRule().escalates_on_fail is True
+
+
+def test_emandate_does_not_apply_to_non_retry_now_actions():
+    """A RETRY_LATER/ALT_ROUTE/etc. candidate is not a silent auto-debit --
+    the e-mandate rules don't apply to it at all, regardless of amount."""
+    result = EMandateRetryComplianceRule().check(
+        _payment(amount_paise=RBI_EMANDATE_AFA_THRESHOLD_PAISE * 10, attempt_number=99),
+        _candidate(action_type="RETRY_LATER"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# AutopayExecutionWindowRule — NPCI's real non-peak execution windows
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_autopay_window_passes_before_10am_ist():
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(7, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_autopay_window_fails_at_11am_ist_peak():
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(11, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_autopay_window_passes_at_1pm_ist_boundary():
+    """13:00 IST is the exact START of the 13:00-17:00 non-peak window."""
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(13, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_autopay_window_fails_at_5pm_ist_boundary():
+    """17:00 IST is the exact START of the second peak window."""
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(17, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_autopay_window_passes_at_930pm_ist_boundary():
+    """21:30 IST is the exact END of the second peak window."""
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(21, 30)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_autopay_window_fails_at_6pm_ist_peak():
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(18, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_autopay_window_passes_at_10pm_ist_after_hours():
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(22, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_autopay_window_does_not_apply_to_non_retry_now_actions():
+    result = AutopayExecutionWindowRule().check(
+        _payment(now=_at_ist(11, 0)), _candidate(action_type="ALT_ROUTE"), _policy_config()
+    )
+    assert result.passed is True
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# QuietHoursComplianceRule — TRAI's real quiet-hours rule
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_quiet_hours_passes_at_930am_ist_default():
+    result = QuietHoursComplianceRule().check(
+        _payment(), _candidate(action_type="REMINDER"), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_quiet_hours_fails_at_10pm_ist():
+    result = QuietHoursComplianceRule().check(
+        _payment(now=_at_ist(22, 0)), _candidate(action_type="REMINDER"), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_quiet_hours_fails_at_3am_ist():
+    result = QuietHoursComplianceRule().check(
+        _payment(now=_at_ist(3, 0)), _candidate(action_type="REMINDER"), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_quiet_hours_passes_exactly_at_9am_ist_boundary():
+    """09:00 IST is the exact END of TRAI's quiet-hours window."""
+    result = QuietHoursComplianceRule().check(
+        _payment(now=_at_ist(9, 0)), _candidate(action_type="REMINDER"), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_quiet_hours_fails_exactly_at_9pm_ist_boundary():
+    """21:00 IST is the exact START of TRAI's quiet-hours window."""
+    result = QuietHoursComplianceRule().check(
+        _payment(now=_at_ist(21, 0)), _candidate(action_type="REMINDER"), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_quiet_hours_does_not_apply_to_non_reminder_actions():
+    result = QuietHoursComplianceRule().check(
+        _payment(now=_at_ist(3, 0)), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is True
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# End-to-end via evaluate() — the compliance rules actually block a
+# real decision, not just their own isolated .check() calls
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_evaluate_escalates_when_emandate_attempt_cap_exceeded():
+    result = evaluate(
+        _payment(attempt_number=NPCI_AUTOPAY_MAX_ATTEMPTS + 1),
+        _candidate(action_type="RETRY_NOW", expected_value_paise=1_000),
+        _policy_config(max_retries=99),  # merchant's OWN policy would allow this -- regulation overrides it
+    )
+    assert result.verdict == "ESCALATE"
+    assert result.rule_trace[-1]["rule"] == "EMandateRetryComplianceRule"
+
+
+def test_evaluate_blocks_retry_now_during_npci_peak_window():
+    result = evaluate(
+        _payment(now=_at_ist(11, 0)),
+        _candidate(action_type="RETRY_NOW", expected_value_paise=1_000),
+        _policy_config(),
+    )
+    assert result.verdict == "BLOCK"
+    assert result.rule_trace[-1]["rule"] == "AutopayExecutionWindowRule"
+
+
+def test_evaluate_blocks_reminder_during_trai_quiet_hours():
+    result = evaluate(
+        _payment(now=_at_ist(22, 0)),
+        _candidate(action_type="REMINDER", expected_value_paise=1_000),
+        _policy_config(),
+    )
+    assert result.verdict == "BLOCK"
+    assert result.rule_trace[-1]["rule"] == "QuietHoursComplianceRule"

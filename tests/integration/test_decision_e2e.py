@@ -1,7 +1,8 @@
 """
 End-to-end decision test (steering directive §15): a real failed payment
 in Postgres -> Phase 2 certified propensity model -> EVI -> 6 candidate
-actions -> 7-rule policy engine -> final decision -> persisted
+actions -> 10-rule policy engine (7 original + 3 real regulatory
+compliance rules, Task COMPLIANCE1) -> final decision -> persisted
 candidate_actions + policy_decisions with full rule_trace. Real Postgres,
 real model artifact, zero mocks.
 """
@@ -124,3 +125,39 @@ async def test_decision_is_deterministic_for_the_same_payment(migrated_db):
     assert nba1.chosen_action == nba2.chosen_action
     assert nba1.chosen_evi_paise == nba2.chosen_evi_paise
     assert decision1.verdict == decision2.verdict
+
+
+@pytest.mark.asyncio
+async def test_real_pipeline_blocks_retry_now_during_npci_peak_window(migrated_db, monkeypatch):
+    """
+    Task COMPLIANCE1's AutopayExecutionWindowRule, proven through the REAL
+    orchestrator.build_decision() path (real Postgres, real propensity
+    model, real EVI), not just the pure-rule unit tests -- confirms
+    services/recovery_engine/orchestrator.py actually wires payment.now
+    from recoveryos.clock.utcnow() (not a bare datetime.now(UTC) the test
+    can't control) through to the policy engine.
+    """
+    import recoveryos.clock as clock_module
+
+    real_utcnow = clock_module.utcnow
+    peak_ist_11am = datetime(2026, 8, 25, 5, 30, 0, tzinfo=UTC)  # 11:00 IST -- inside NPCI's peak window
+    clock_module.utcnow = lambda: peak_ist_11am
+    try:
+        merchant_id = str(uuid.uuid4())
+        customer_id = str(uuid.uuid4())
+        await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
+        payment_id = await _insert_failed_payment(migrated_db, merchant_id, customer_id)
+
+        from services.recovery_engine.orchestrator import build_decision
+
+        nba_result, decision, _ = await build_decision(payment_id)
+    finally:
+        clock_module.utcnow = real_utcnow
+
+    if nba_result.chosen_action != "RETRY_NOW":
+        pytest.skip(
+            f"chosen_action={nba_result.chosen_action!r}, not RETRY_NOW -- the execution-window "
+            f"rule only applies to RETRY_NOW, nothing to assert for this payment's EVI scores"
+        )
+    assert decision.verdict == "BLOCK"
+    assert decision.rule_trace[-1]["rule"] == "AutopayExecutionWindowRule"

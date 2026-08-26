@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine
@@ -48,6 +49,34 @@ def _no_real_llm_calls_by_default():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pinned_clock_for_determinism():
+    """
+    Task COMPLIANCE1's AutopayExecutionWindowRule/QuietHoursComplianceRule
+    are the first policy rules whose PASS/FAIL outcome depends on the
+    actual current IST hour, not just elapsed time. Left at the mercy of
+    real wall-clock time (services/recovery_engine/orchestrator.py's own
+    utcnow() call), roughly 31% of any given day falls inside NPCI's peak
+    windows -- a test asserting an ALLOW+RETRY_NOW verdict would
+    non-deterministically start failing depending on what real time it
+    happened to run at. Pins recoveryos.clock.utcnow() to a fixed,
+    deliberately-safe moment (09:30 IST -- outside every peak/quiet window
+    this session's rules check) for the whole test session, the same
+    fixed time tests/unit/test_policy_engine.py's own NOW constant uses.
+    Tests that specifically want to exercise real time-of-day behavior
+    construct their own PaymentContext(now=...) directly (see
+    tests/unit/test_policy_engine.py's compliance-rule tests), which never
+    goes through this seam at all.
+    """
+    import recoveryos.clock as clock_module
+
+    real_utcnow = clock_module.utcnow
+    safe_time = datetime(2026, 8, 25, 4, 0, 0, tzinfo=UTC)  # 09:30 IST
+    clock_module.utcnow = lambda: safe_time
+    yield
+    clock_module.utcnow = real_utcnow
 
 
 # ─── Session-scoped container ──────────────────────────────────────────────────

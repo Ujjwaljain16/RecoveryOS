@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recoveryos import clock
 from recoveryos.database import (
     get_app_session_factory,
     get_inference_session_factory,
@@ -246,7 +247,7 @@ async def build_decision(
     )
 
     is_expired = payment_row["failed_at"] is not None and (
-        datetime.now(UTC) - payment_row["failed_at"] > timedelta(days=7)
+        clock.utcnow() - payment_row["failed_at"] > timedelta(days=7)
     )
     is_high_severity_anomaly = bool(
         anomaly_context is not None
@@ -262,7 +263,7 @@ async def build_decision(
         last_attempt_at=last_attempt_at,
         attempt_number=attempt_number,
         amount_paise=payment_row["amount_paise"],
-        now=datetime.now(UTC),
+        now=clock.utcnow(),
         is_high_severity_anomaly=is_high_severity_anomaly,
     )
     candidate_ctx = CandidateContext(

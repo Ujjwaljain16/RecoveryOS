@@ -1,7 +1,8 @@
 """
 Policy Engine rule DSL — TRD §3.4, gaps.md §B.3.
 
-ALL 7 rules are pure functions of already-hydrated dataclasses. Zero I/O:
+ALL rules (10, as of Task COMPLIANCE1 — 7 original + 3 real regulatory
+compliance rules) are pure functions of already-hydrated dataclasses. Zero I/O:
 no db, no sqlalchemy, no redis, no requests, no httpx import anywhere in
 this file — enforced both by convention here AND by
 test_policy_engine_module_has_zero_forbidden_imports (AST-parses this exact
@@ -15,7 +16,7 @@ just a docstring warning.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,137 @@ class AmountLimitRule(PolicyRule):
         )
 
 
+# ─── Real regulatory compliance rules (Task COMPLIANCE1) ────────────────────
+# Distinct from RetryLimitRule/AmountLimitRule above, which are RecoveryOS's
+# own configurable internal risk policy (a merchant's policy_config can set
+# max_retries/max_amount_paise to whatever it wants). These three are HARD,
+# non-negotiable regulatory ceilings that apply regardless of policy_config
+# — cited to the actual RBI/NPCI/TRAI rule, not invented thresholds.
+#
+# IST = UTC+5:30, computed here rather than stored on PaymentContext: `now`
+# is already a real, caller-supplied datetime (gaps.md §B.3's purity
+# discipline — no rule reads wall-clock time itself), timezone conversion
+# from it is still a pure function of that input.
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+# RBI Digital Payments — E-Mandate Framework, 2026 (circular
+# RBI/DPSS/2026-27/396, dated 2026-04-21, consolidating the e-mandate AFA
+# rules first introduced 2019 and revised since): recurring transactions
+# may be processed WITHOUT Additional Factor of Authentication only up to
+# Rs 15,000 per transaction. A silent auto-debit retry (RETRY_NOW) above
+# this threshold is not AFA-exempt and cannot proceed unattended.
+RBI_EMANDATE_AFA_THRESHOLD_PAISE = 1_500_000  # Rs 15,000
+
+# NPCI's UPI Autopay mandate retry rules, effective 2025-08-01: a maximum
+# of 4 total attempts per mandate per billing cycle (1 original execution +
+# 3 retries) — a real regulatory ceiling on top of (and generally stricter
+# than) whatever a merchant's own policy_config.max_retries allows.
+NPCI_AUTOPAY_MAX_ATTEMPTS = 4
+
+# NPCI's UPI Autopay non-peak execution windows, effective 2025-08-01:
+# autopay debits are permitted only before 10:00, between 13:00-17:00, and
+# after 21:30 IST — (start_hour, start_minute, end_hour, end_minute) peak
+# windows where execution is NOT permitted.
+NPCI_AUTOPAY_PEAK_WINDOWS_IST = (
+    (10, 0, 13, 0),
+    (17, 0, 21, 30),
+)
+
+# TRAI's Telecom Commercial Communications Customer Preference Regulations
+# (TCCCPR), 2018, as amended February 2025: no promotional/commercial voice
+# call or SMS between 21:00 and 09:00 IST, regardless of DND registration.
+TRAI_QUIET_HOURS_START_IST = 21
+TRAI_QUIET_HOURS_END_IST = 9
+
+
+def _to_ist(now: datetime) -> datetime:
+    return now.astimezone(UTC) + IST_OFFSET
+
+
+class EMandateRetryComplianceRule(PolicyRule):
+    """
+    RBI/NPCI e-mandate regulations (real, cited above) -- applies only to
+    RETRY_NOW, the silent auto-debit-retry action a real UPI Autopay/NACH
+    mandate retry corresponds to. escalates_on_fail=True: exceeding a
+    REGULATORY ceiling (not an internal risk preference) should stop and
+    route to a human/compliance review, same semantics as RetryLimitRule's
+    own internal cap.
+    """
+
+    name = "EMandateRetryComplianceRule"
+    escalates_on_fail = True
+
+    def check(self, payment, candidate, policy_config) -> RuleResult:
+        if candidate.action_type != "RETRY_NOW":
+            return RuleResult(True, "not a RETRY_NOW action — e-mandate rules don't apply")
+        if payment.attempt_number > NPCI_AUTOPAY_MAX_ATTEMPTS:
+            return RuleResult(
+                False,
+                f"attempt_number={payment.attempt_number} exceeds NPCI's regulatory cap of "
+                f"{NPCI_AUTOPAY_MAX_ATTEMPTS} attempts per mandate per cycle "
+                f"(1 original + 3 retries, effective 2025-08-01)",
+            )
+        if payment.amount_paise > RBI_EMANDATE_AFA_THRESHOLD_PAISE:
+            return RuleResult(
+                False,
+                f"amount_paise={payment.amount_paise} exceeds the RBI e-mandate AFA-exempt "
+                f"threshold of {RBI_EMANDATE_AFA_THRESHOLD_PAISE} paise (Rs 15,000, RBI/DPSS/"
+                f"2026-27/396) — a silent RETRY_NOW auto-debit above this threshold requires "
+                f"Additional Factor of Authentication and cannot proceed unattended",
+            )
+        return RuleResult(True, "within NPCI's attempt cap and RBI's AFA-exempt threshold")
+
+
+class AutopayExecutionWindowRule(PolicyRule):
+    """NPCI's UPI Autopay non-peak execution window (real, cited above,
+    effective 2025-08-01) — RETRY_NOW may execute only before 10:00,
+    between 13:00-17:00, or after 21:30 IST."""
+
+    name = "AutopayExecutionWindowRule"
+
+    def check(self, payment, candidate, policy_config) -> RuleResult:
+        if candidate.action_type != "RETRY_NOW":
+            return RuleResult(True, "not a RETRY_NOW action — execution-window rule doesn't apply")
+        ist_now = _to_ist(payment.now)
+        minutes = ist_now.hour * 60 + ist_now.minute
+        in_peak = any(
+            (start_h * 60 + start_m) <= minutes < (end_h * 60 + end_m)
+            for start_h, start_m, end_h, end_m in NPCI_AUTOPAY_PEAK_WINDOWS_IST
+        )
+        if in_peak:
+            return RuleResult(
+                False,
+                f"now={ist_now.strftime('%H:%M')} IST falls inside an NPCI peak window — UPI "
+                f"Autopay execution (effective 2025-08-01) is permitted only before 10:00, "
+                f"13:00-17:00, or after 21:30 IST",
+            )
+        return RuleResult(
+            True, f"now={ist_now.strftime('%H:%M')} IST is within a non-peak execution window"
+        )
+
+
+class QuietHoursComplianceRule(PolicyRule):
+    """TRAI TCCCPR quiet-hours rule (real, cited above): no promotional/
+    commercial communication between 21:00 and 09:00 IST. Applies to
+    REMINDER, the only customer-contact action in this system."""
+
+    name = "QuietHoursComplianceRule"
+
+    def check(self, payment, candidate, policy_config) -> RuleResult:
+        if candidate.action_type != "REMINDER":
+            return RuleResult(True, "not a REMINDER action — quiet-hours rule doesn't apply")
+        ist_now = _to_ist(payment.now)
+        in_quiet_hours = ist_now.hour >= TRAI_QUIET_HOURS_START_IST or ist_now.hour < TRAI_QUIET_HOURS_END_IST
+        if in_quiet_hours:
+            return RuleResult(
+                False,
+                f"now={ist_now.strftime('%H:%M')} IST is within TRAI's mandated quiet hours "
+                f"({TRAI_QUIET_HOURS_START_IST:02d}:00-{TRAI_QUIET_HOURS_END_IST:02d}:00) — "
+                f"commercial communication is prohibited in this window",
+            )
+        return RuleResult(True, f"now={ist_now.strftime('%H:%M')} IST is outside TRAI's quiet hours")
+
+
 class SystemicSuppressionRule(PolicyRule):
     """If cohort is SYSTEMIC (high-severity anomaly active) and
     action == RETRY_NOW -> BLOCK, suggest RETRY_LATER."""
@@ -209,6 +341,9 @@ RULES: tuple[PolicyRule, ...] = (
     CooldownRule(),
     RetryLimitRule(),
     AmountLimitRule(),
+    EMandateRetryComplianceRule(),
+    AutopayExecutionWindowRule(),
+    QuietHoursComplianceRule(),
     SystemicSuppressionRule(),
     MinExpectedValueRule(),
 )
