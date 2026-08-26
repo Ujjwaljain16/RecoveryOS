@@ -84,7 +84,12 @@ All 8 tests for scenarios 1–3 re-run and pass (output captured this session). 
 had **no existing test** (confirmed by search — neither is implemented anywhere in `tests/`),
 so both were proven directly against the live containers and canonical data instead.
 
-### Scenario 4 — FAIL, confirmed live
+### Scenario 4 — FAIL, confirmed live at the time of this evaluation; FIXED as Task E1
+
+**Update:** fixed immediately after this evaluation, per this session's own stop condition ("this
+is the one finding non-negotiable to fix before a judge looks closely at the system's safety
+claims"). The original finding below is left as originally written — this is what the evaluation
+found, not what the system does today. See the fix description immediately after.
 
 Picked a real payment from the canonical run that RecoveryOS had already successfully recovered
 (`recoveries.outcome = 'SUCCESS'`). Published a **genuinely new** `PAYMENT_FAILED` event (fresh
@@ -106,8 +111,28 @@ duplicate/resent failure event arriving *after* 12 hours for an already-successf
 payment would sail straight through `CooldownRule` (elapsed ≥ 12h) with no other rule checking
 `recovery_ledger`/`recoveries` for a prior terminal `SUCCESS` — it would reach `ALLOW` and
 genuinely re-execute a recovery attempt (a real duplicate customer contact / retry charge
-attempt) on a payment that no longer needs it. Reported as found, not fixed — this is a real gap,
-not a hypothetical one, and it's a policy-rule gap, not a naming/labeling gap.
+attempt) on a payment that no longer needs it. Reported as found, not fixed at the time — this
+was a real gap, not a hypothetical one, and it was a policy-rule gap, not a naming/labeling gap.
+
+**Fix (Task E1):** `services/pipeline/ledger.py` now sets `payments.status = 'recovered'` on a
+real `SUCCESS` outcome (both the async consumer-path writer and the sync execution-worker
+writer), guarded so it only fires on the winning write of `recovery_ledger`'s `ON CONFLICT DO
+NOTHING` (no redundant updates on redelivery). `EligibilityRule` — already first in `RULES`,
+already ordered before `CooldownRule` — was extended to explicitly BLOCK with reason "payment
+already successfully recovered" whenever `status == 'recovered'`, independent of elapsed time or
+attempt count. The bug was never a missing rule; it was that nothing ever wrote the status
+transition `EligibilityRule` needed to act on.
+
+Re-proved live against the running containers with a fresh synthetic payment (guaranteed
+`SUCCESS` via `true_recovery_prob_bps=10000`, kept separate from the canonical dataset): a
+second, genuinely new event published >13h after the recovery now produces `verdict=BLOCK` with
+a single-entry `rule_trace` —  `EligibilityRule: "payment already successfully recovered"` — the
+trace never even reaches `CooldownRule`. `recoveries` row count stayed at exactly 1. Two
+dedicated regression tests lock this in:
+`tests/integration/test_scenario4_already_recovered.py::test_already_recovered_payment_blocked_even_immediately_after_recovery`
+(within the cooldown window, proving `EligibilityRule` — not incidental `CooldownRule` overlap —
+is what fires) and `::test_scenario4_repro_duplicate_event_past_cooldown_window_now_blocks_correctly`
+(the exact original repro, past the 12h window). Full test suite (237 tests) green.
 
 ### Scenario 5 — PASS, proven live at real scale
 

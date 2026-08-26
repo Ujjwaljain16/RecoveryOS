@@ -98,6 +98,18 @@ def test_eligibility_fails_when_status_created_not_yet_failed():
     assert result.passed is False
 
 
+def test_eligibility_fails_with_specific_reason_when_already_recovered():
+    """Task E1 (Phase 8 Scenario 4 fix): status='recovered' must BLOCK with
+    a reason naming the real cause, distinct from the generic 'not failed'
+    message any other non-failed status gets -- this is what the
+    integration test asserts against in policy_decisions.rule_trace."""
+    result = EligibilityRule().check(
+        _payment(status="recovered", is_expired=False), _candidate(), _policy_config()
+    )
+    assert result.passed is False
+    assert "already successfully recovered" in result.reason
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 2. OptOutRule — customer.opted_out_at is None
 # ═══════════════════════════════════════════════════════════════════════

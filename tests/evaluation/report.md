@@ -128,7 +128,7 @@ Full detail, including the exact (judgment-call, explicitly documented) mappings
 | 1 | Missing information | PASS |
 | 2 | Conflicting information | **PASS — including direct re-confirmation that S2's guard fires on the real LLM-response path**, not just the fallback path |
 | 3 | Systemic degradation | PASS |
-| 4 | Previously recovered payment | **FAIL — confirmed live.** `CooldownRule` is purely elapsed-time-based (12h default) with no awareness of a prior `SUCCESS` outcome, and `payments.status` is never updated after a real recovery. A duplicate failure event arriving >12h after a successful recovery would re-execute a real recovery attempt. |
+| 4 | Previously recovered payment | **FAIL at evaluation time → FIXED (Task E1).** `CooldownRule` was purely elapsed-time-based with no awareness of a prior `SUCCESS` outcome. Fixed: `payments.status='recovered'` is now set on a real `SUCCESS`, and `EligibilityRule` (first in rule order) blocks on it unconditionally. Re-proven live + 2 dedicated regression tests. |
 | 5 | Repeated failures | PASS — proven live (no prior test existed): a synthetic backdated prior attempt was injected for a real payment, `RetryLimitRule` correctly fired `ESCALATE` on the third attempt |
 
 Scenarios 4 and 5 had no existing test coverage before this evaluation; both were proven directly
@@ -216,9 +216,9 @@ none of it touches `recovery_prob_bps`, `recovery_ledger`, or `baseline_runs`.
   publish completed in minutes, not a live multi-day scheduler, so no payment ever reached a
   second attempt naturally. Scenario 5 was proven instead via a synthetic backdated attempt
   history (§5).
-- Scenario 4 (previously recovered payment) is a **confirmed, unfixed gap** — see §5. Not
-  patched as part of this evaluation, per this session's audit methodology (report, don't fix
-  without an explicit go-ahead); recorded here so it isn't lost.
+- Scenario 4 (previously recovered payment) was a **confirmed gap at evaluation time — since
+  fixed as Task E1** (`payments.status='recovered'` + `EligibilityRule` guard, re-proven live,
+  2 regression tests added, full suite green). See §5.
 
 ---
 

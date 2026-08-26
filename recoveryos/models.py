@@ -164,7 +164,11 @@ class Payment(Base):
     amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
     method: Mapped[str] = mapped_column(Text, nullable=False)  # upi | card | netbanking | wallet
     bank: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # created|authorized|failed|success|expired
+    # created|authorized|failed|success|expired|recovered
+    # 'recovered' (Task E1, Phase 8 Scenario 4 fix): set by
+    # services/pipeline/ledger.py when a recovery attempt reaches a real
+    # SUCCESS outcome -- distinct from 'success', which means the ORIGINAL
+    # authorization succeeded on the first attempt and was never failed.
     status: Mapped[str] = mapped_column(Text, nullable=False)
     # TIMEOUT|INVALID_CREDS|BANK_DOWN|...
     failure_code: Mapped[str | None] = mapped_column(Text, nullable=True)

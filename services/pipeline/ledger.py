@@ -25,6 +25,17 @@ from dataclasses import dataclass
 
 BPS_SCALE = 10_000
 
+# Task E1 (Phase 8 Scenario 4 fix): a payment that reaches a real SUCCESS
+# outcome is no longer 'failed' -- distinct from 'success' (which means the
+# ORIGINAL authorization succeeded on the first attempt, never failed at
+# all; see recoveryos/models.py's Payment.status comment). EligibilityRule
+# already blocks anything whose status != 'failed', ordered before
+# CooldownRule -- the bug was never a missing rule, it was that nothing
+# ever wrote this status transition, so EligibilityRule had nothing to act
+# on and CooldownRule's purely-elapsed-time check was the only thing ever
+# consulted, incorrectly, past its 12h window.
+RECOVERED_STATUS = "recovered"
+
 
 @dataclass(frozen=True)
 class LedgerEntry:
@@ -188,6 +199,11 @@ async def populate_ledger_and_audit_async(
                 "summary": build_audit_summary(payment_id, chosen_action, verdict, outcome),
             },
         )
+        if outcome == "SUCCESS":
+            await session.execute(
+                text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
+                {"status": RECOVERED_STATUS, "pid": payment_id},
+            )
     await session.commit()
 
 
@@ -291,4 +307,9 @@ def populate_ledger_and_audit_sync(
                 "summary": build_audit_summary(payment_id, chosen_action, verdict, outcome),
             },
         )
+        if outcome == "SUCCESS":
+            conn.execute(
+                text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
+                {"status": RECOVERED_STATUS, "pid": payment_id},
+            )
     conn.commit()

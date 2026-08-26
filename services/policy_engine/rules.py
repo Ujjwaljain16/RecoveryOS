@@ -79,11 +79,23 @@ class PolicyRule:
 
 
 class EligibilityRule(PolicyRule):
-    """payment.status == 'failed' and not expired."""
+    """
+    payment.status == 'failed' and not expired.
+
+    Task E1 (Phase 8 Scenario 4 fix): this is also what makes "the payment
+    was already successfully recovered" unconditionally BLOCK, independent
+    of cooldown/attempt-count -- services/pipeline/ledger.py sets
+    payment.status='recovered' on a real SUCCESS outcome, and this rule
+    runs FIRST (before CooldownRule), so the rule_trace correctly names
+    this as the reason rather than a coincidental CooldownRule catch that
+    would stop applying once enough wall-clock time has passed.
+    """
 
     name = "EligibilityRule"
 
     def check(self, payment, candidate, policy_config) -> RuleResult:
+        if payment.status == "recovered":
+            return RuleResult(False, "payment already successfully recovered")
         if payment.status != "failed":
             return RuleResult(False, f"payment.status={payment.status!r} is not 'failed'")
         if payment.is_expired:
