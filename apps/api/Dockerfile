@@ -14,6 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Dependency layer (cached unless pyproject.toml changes) ──────────────────
 FROM base AS deps
 
+# pandas + scikit-learn: services/recovery_engine/propensity.py imports pandas
+# at module level and needs scikit-learn to unpickle model_lr.pkl/
+# feature_transformer_v1.pkl (pickle needs the actual sklearn classes
+# available to reconstruct them). apps/api/main.py's response-header
+# middleware calls get_current_model_version() on every request, which
+# reaches this import chain unconditionally — without these, every request
+# 500s, not just the propensity-scoring path. pyyaml: that same import chain
+# (propensity.py -> simulator/episodes/generator.py -> .../payments/
+# distributions.py -> simulator/calibration/loader.py) reaches a bare
+# `import yaml`. Same class of gap Task MD1 fixed in CI's pip install lists
+# — this Dockerfile was never updated to match.
 RUN pip install --no-cache-dir \
     fastapi \
     "uvicorn[standard]" \
@@ -27,7 +38,10 @@ RUN pip install --no-cache-dir \
     prometheus-client \
     httpx \
     structlog \
-    openai
+    openai \
+    pandas \
+    scikit-learn \
+    pyyaml
 
 # ── Runtime layer ─────────────────────────────────────────────────────────────
 FROM base AS runtime
