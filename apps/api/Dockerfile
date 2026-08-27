@@ -58,6 +58,10 @@ COPY simulator/    ./simulator/
 COPY integrations/ ./integrations/
 COPY migrations/   ./migrations/
 COPY alembic.ini   ./
+# Just the artifact GET /v1/experiments/phase8-baseline serves (not the
+# whole tests/ tree, which pulls in test-only fixtures/deps this runtime
+# image has no other reason to carry).
+COPY tests/evaluation/artifacts/ ./tests/evaluation/artifacts/
 
 RUN useradd -m -u 1001 recoveryos && chown -R recoveryos:recoveryos /app
 USER recoveryos

@@ -106,6 +106,7 @@ def create_app() -> FastAPI:
         events,
         experiments,
         health,
+        incidents,
         payments,
         razorpay_webhooks,
         risk,
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(payments.router, prefix="/v1/payments", tags=["Payments"])
     app.include_router(audit.router, prefix="/v1/audit", tags=["Audit"])
     app.include_router(experiments.router, prefix="/v1/experiments", tags=["Evaluation"])
+    app.include_router(incidents.router, prefix="/v1/incidents", tags=["Incidents"])
     app.include_router(
         razorpay_webhooks.router, prefix="/webhooks/razorpay", tags=["Webhooks"]
     )

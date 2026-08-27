@@ -1,0 +1,248 @@
+:root {
+  --bg: #0b0d12;
+  --panel: #131722;
+  --panel-border: #232838;
+  --text: #e6e9f0;
+  --text-dim: #8b93a7;
+  --accent: #5b8cff;
+  --green: #33d17a;
+  --red: #ff5c5c;
+  --amber: #f5a623;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.nav {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.nav .brand {
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-right: 1rem;
+}
+
+.nav a {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.nav a.active,
+.nav a:hover {
+  color: var(--text);
+}
+
+.page {
+  padding: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.stat-card .label {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-card .value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  margin-top: 0.35rem;
+}
+
+.stat-card .value.positive {
+  color: var(--green);
+}
+
+.stat-card .value.negative {
+  color: var(--red);
+}
+
+.section-title {
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin: 2rem 0 1rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 0.9rem;
+}
+
+th {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge.healthy {
+  background: rgba(51, 209, 122, 0.15);
+  color: var(--green);
+}
+
+.badge.degraded {
+  background: rgba(255, 92, 92, 0.15);
+  color: var(--red);
+}
+
+.badge.selected {
+  background: rgba(91, 140, 255, 0.18);
+  color: var(--accent);
+}
+
+.badge.neutral {
+  background: rgba(139, 147, 167, 0.15);
+  color: var(--text-dim);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.6rem 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+}
+
+input,
+select {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+.footer {
+  border-top: 1px solid var(--panel-border);
+  padding: 0.75rem 2rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  display: flex;
+  gap: 1.5rem;
+}
+
+.error-banner {
+  background: rgba(255, 92, 92, 0.1);
+  border: 1px solid rgba(255, 92, 92, 0.4);
+  color: var(--red);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.chain-step {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.chain-step .step-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--accent);
+  letter-spacing: 0.05em;
+  margin-bottom: 0.4rem;
+}
+
+.chain-step .step-empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  font-size: 0.9rem;
+}
+
+.kv dt {
+  color: var(--text-dim);
+}
+
+.kv dd {
+  margin: 0;
+}
