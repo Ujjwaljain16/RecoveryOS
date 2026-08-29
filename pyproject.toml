@@ -85,3 +85,6 @@ python_functions = ["test_*"]
 # (what CI actually runs) doesn't. Without this, apps/recoveryos/services
 # aren't importable in CI even though it works fine locally.
 pythonpath = ["."]
+markers = [
+    "e2e: needs `npm install`/Playwright chromium in apps/dashboard/ and a real Node dev server -- excluded from CI's plain `pytest tests/integration/`, run explicitly with `pytest -m e2e`",
+]

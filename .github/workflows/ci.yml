@@ -160,7 +160,12 @@ jobs:
             "testcontainers[postgres,redis]"
 
       - name: Run integration tests
-        run: pytest tests/integration/ -v --tb=short
+        # -m "not e2e": excludes test_dashboard_e2e.py's Playwright tests --
+        # they need `npm install`/chromium in apps/dashboard/ and a real
+        # Node dev server, none of which this job sets up. That file's own
+        # docstring always said "not run by default sweeps"; this makes it
+        # actually true instead of merely documented.
+        run: pytest tests/integration/ -v --tb=short -m "not e2e"
         env:
           ENV: test
 

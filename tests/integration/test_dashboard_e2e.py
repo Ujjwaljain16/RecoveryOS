@@ -36,12 +36,27 @@ from pathlib import Path
 
 import pytest
 import uvicorn
-from playwright.sync_api import Page, expect
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from apps.api.dependencies.auth import generate_api_key
 from tests.integration.conftest import seed_merchant_with_api_key, to_async_url
+
+# This docstring's own "not run by default sweeps" claim used to be
+# unenforced -- plain `pytest tests/integration/` collected this file
+# regardless, and a bare `from playwright.sync_api import ...` aborted
+# COLLECTION for the ENTIRE run (not just this file) wherever playwright
+# isn't installed (CI's integration-tests job never had it). importorskip
+# fails soft -- this module's tests are cleanly SKIPPED, not a collection
+# error -- while still making them importable/runnable wherever playwright
+# genuinely is installed. The `e2e` marker (registered in pyproject.toml)
+# is the second, independent layer: `pytest -m "not e2e"` (what CI now
+# runs) skips this whole module without even attempting the import.
+playwright_sync_api = pytest.importorskip("playwright.sync_api")
+Page = playwright_sync_api.Page
+expect = playwright_sync_api.expect
+
+pytestmark = pytest.mark.e2e
 
 DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "apps" / "dashboard"
 STARTUP_TIMEOUT_SECONDS = 60
