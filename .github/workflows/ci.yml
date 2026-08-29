@@ -106,6 +106,17 @@ jobs:
           DATABASE_URL_SYNC: postgresql://x:x@localhost:5432/x
           REDIS_URL: redis://localhost:6379/0
 
+      - name: "Gate: model leakage check on an independent seed (test_leakage_seed.py)"
+        # Adversarial Audit Verdict, Blocker #9 -- this script existed at the
+        # repo root and asserted (via sys.exit(1) on failure) that the
+        # recovery model's leakage gate holds on a dataset generated from a
+        # seed (2026) never used for training/eval — but it has no test_*
+        # function, so pytest's `tests/` collection above never ran it; it
+        # silently never executed in CI at all. Run explicitly as the script
+        # it's designed to be (needs no extra deps beyond unit-tests' own:
+        # pandas + scikit-learn, already installed above).
+        run: python test_leakage_seed.py
+
   # ─── Integration Tests (real Postgres via testcontainers) ─────────────────
   integration-tests:
     name: Integration Tests (Postgres)
