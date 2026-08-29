@@ -195,3 +195,27 @@ def advisory_lock(conn: Connection, key: str) -> Generator[None, None, None]:
         raise
     finally:
         conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
+
+
+@contextlib.asynccontextmanager
+async def advisory_lock_async(session: AsyncSession, key: str) -> AsyncGenerator[None, None]:
+    """
+    Async counterpart to `advisory_lock` above, for AsyncSession-based
+    callers (services/pipeline/reconciliation.py — Domain Audit finding
+    #5: its check-then-act on `outcome = 'PENDING'` had no lock at all,
+    unlike execution_worker.py's execute_with_idempotency, which
+    deliberately closes this exact TOCTOU race). Same lock-BEFORE-check
+    ordering requirement, same session-scoped-lock caveat (the `session`
+    passed in must be held for the entire check-then-act-then-write
+    sequence, not a fresh session per statement) — see the sync version's
+    docstring for the full reasoning, not duplicated here.
+    """
+    lock_key = _advisory_lock_key(key)
+    await session.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
+    try:
+        yield
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})

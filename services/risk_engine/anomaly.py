@@ -47,7 +47,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoveryos.config import get_settings
-from recoveryos.database import get_app_session_factory
+from recoveryos.database import advisory_lock_async, get_app_session_factory
+from recoveryos.metrics import systemic_degradation_events_total
 from recoveryos.models import AnomalyWindow
 
 # ─── Constants ──────────────────────────────────────────────────────────────
@@ -305,33 +306,86 @@ async def persist_anomaly_window(app_session: AsyncSession, result: AnomalyResul
     MUST run on an app_role session — diagnoser_role has SELECT only on this
     table (migrations/versions/0002_db_roles.py), confirmed by
     test_diagnoser_role_has_no_write_access.
+
+    TRD §10's systemic_degradation_events_total{bank} counts EVENTS
+    (transitions into a high-severity, is_anomaly=true state), not every
+    re-computation of the same bucket -- a bucket can legitimately be
+    re-detected many times as more payments land in it before the bucket
+    closes, and counting each recomputation would inflate the metric by
+    however many times detection happened to run, not by how many real
+    incidents occurred. So the PRIOR severity for this exact
+    (scope_type, scope_entity, time_bucket) is read before the upsert, and
+    the counter only increments on a genuine not-high -> high transition.
+
+    Production Architecture Domain Audit finding #5: the read-then-write
+    pair above was a real TOCTOU -- two concurrent callers computing the
+    SAME (scope_type, scope_entity, time_bucket) window (plausible once
+    F3's horizontal-replica wiring lets multiple pipeline_orchestrator
+    instances run, or apps/api/routers/simulate.py's demo anomaly
+    injection races a real detection cycle) could both read "not
+    previously high" before either commits, and both increment the
+    counter for what is really ONE transition. Fixed the same way
+    services/pipeline/reconciliation.py's equivalent race was fixed
+    (Payments Domain Audit finding #5): the entire read-check-write-
+    increment sequence is now held inside a single Postgres advisory
+    lock, keyed on this exact (scope_type, scope_entity, time_bucket)
+    tuple -- not a new mechanism, the same recoveryos.database.
+    advisory_lock_async primitive.
     """
-    stmt = (
-        pg_insert(AnomalyWindow)
-        .values(
-            window_id=str(uuid.uuid4()),
-            scope_type=result.scope_type,
-            scope_entity=result.scope_entity,
-            time_bucket=result.time_bucket,
-            baseline_rate=result.baseline_rate,
-            observed_rate=result.observed_rate,
-            z_score=result.z_score,
-            severity=result.severity,
-            is_anomaly=result.is_anomaly,
-        )
-        .on_conflict_do_update(
-            index_elements=["scope_type", "scope_entity", "time_bucket"],
-            set_={
-                "baseline_rate": result.baseline_rate,
-                "observed_rate": result.observed_rate,
-                "z_score": result.z_score,
-                "severity": result.severity,
-                "is_anomaly": result.is_anomaly,
-            },
-        )
+    lock_key = (
+        f"anomaly-window:{result.scope_type}:{result.scope_entity}:{result.time_bucket.isoformat()}"
     )
-    await app_session.execute(stmt)
-    await app_session.commit()
+    async with advisory_lock_async(app_session, key=lock_key):
+        previous = (
+            await app_session.execute(
+                text(
+                    "SELECT severity FROM anomaly_windows "
+                    "WHERE scope_type = :scope_type AND scope_entity = :scope_entity "
+                    "AND time_bucket = :time_bucket"
+                ),
+                {
+                    "scope_type": result.scope_type,
+                    "scope_entity": result.scope_entity,
+                    "time_bucket": result.time_bucket,
+                },
+            )
+        ).first()
+        previously_high = previous is not None and previous[0] == SEVERITY_HIGH
+
+        stmt = (
+            pg_insert(AnomalyWindow)
+            .values(
+                window_id=str(uuid.uuid4()),
+                scope_type=result.scope_type,
+                scope_entity=result.scope_entity,
+                time_bucket=result.time_bucket,
+                baseline_rate=result.baseline_rate,
+                observed_rate=result.observed_rate,
+                z_score=result.z_score,
+                severity=result.severity,
+                is_anomaly=result.is_anomaly,
+            )
+            .on_conflict_do_update(
+                index_elements=["scope_type", "scope_entity", "time_bucket"],
+                set_={
+                    "baseline_rate": result.baseline_rate,
+                    "observed_rate": result.observed_rate,
+                    "z_score": result.z_score,
+                    "severity": result.severity,
+                    "is_anomaly": result.is_anomaly,
+                },
+            )
+        )
+        await app_session.execute(stmt)
+        await app_session.commit()
+
+        if (
+            result.scope_type == "bank"
+            and result.severity == SEVERITY_HIGH
+            and result.is_anomaly
+            and not previously_high
+        ):
+            systemic_degradation_events_total.labels(bank=result.scope_entity).inc()
 
 
 async def run_anomaly_detection(
