@@ -308,4 +308,37 @@ class TestDiagnoserRoleCannotReadGroundTruth:
             )
             result.fetchall()  # Should not raise
 
+
+class TestRecoveryosLoginRoleIsNotSuperuser:
+    """
+    Adversarial Audit Verdict: docker-compose.yml's postgres service
+    bootstraps POSTGRES_USER=recoveryos, which the official postgres image
+    always creates as a database SUPERUSER on first container start.
+    Every app process then connects AS that same role for its everyday
+    reads/writes — bypassing app_role's entire GRANT/REVOKE matrix (full
+    R/W minus UPDATE/DELETE on audit_log/events) by virtue of being
+    superuser, regardless of what app_role itself is scoped to allow.
+
+    Migration 0020 self-heals this (ALTER ROLE recoveryos WITH NOSUPERUSER)
+    the moment it runs. This test proves the invariant holds after a full
+    `alembic upgrade head` — not just that the migration file exists.
+    """
+
+    def test_recoveryos_role_has_rolsuper_false_after_migrations(self, migrated_db):
+        from sqlalchemy import create_engine
+
+        engine = create_engine(migrated_db)
+        with engine.connect() as conn:
+            rolsuper = conn.execute(
+                text("SELECT rolsuper FROM pg_roles WHERE rolname = 'recoveryos'")
+            ).scalar_one()
+        engine.dispose()
+
+        assert rolsuper is False, (
+            "the 'recoveryos' login role must not be a database superuser after "
+            "migrations run — app_role's REVOKE UPDATE/DELETE on audit_log/events "
+            "(TRD §9 immutability) is meaningless for a role that can bypass every "
+            "grant by virtue of being superuser"
+        )
+
         engine.dispose()
