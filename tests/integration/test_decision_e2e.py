@@ -140,7 +140,9 @@ async def test_real_pipeline_blocks_retry_now_during_npci_peak_window(migrated_d
     import recoveryos.clock as clock_module
 
     real_utcnow = clock_module.utcnow
-    peak_ist_11am = datetime(2026, 8, 25, 5, 30, 0, tzinfo=UTC)  # 11:00 IST -- inside NPCI's peak window
+    peak_ist_11am = datetime(
+        2026, 8, 25, 5, 30, 0, tzinfo=UTC
+    )  # 11:00 IST -- inside NPCI's peak window
     clock_module.utcnow = lambda: peak_ist_11am
     try:
         merchant_id = str(uuid.uuid4())
