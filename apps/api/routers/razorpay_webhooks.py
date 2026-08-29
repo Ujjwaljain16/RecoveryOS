@@ -46,6 +46,7 @@ async def razorpay_webhook(
     request: Request,
     response: Response,
     x_razorpay_signature: str | None = Header(default=None),
+    x_razorpay_event_id: str | None = Header(default=None),
     session: AsyncSession = Depends(get_app_session),
 ):
     """
@@ -68,7 +69,10 @@ async def razorpay_webhook(
         response.status_code = status.HTTP_401_UNAUTHORIZED
         return {"error": "invalid_signature"}
 
-    idempotency_key = compute_idempotency_key(raw_body)
+    # Domain Audit finding F4: X-Razorpay-Event-Id is Razorpay's own unique
+    # per-delivery identity, now the primary dedup key -- content-hash is
+    # only a fallback for the (undocumented-as-guaranteed) case it's absent.
+    idempotency_key = compute_idempotency_key(raw_body, event_id=x_razorpay_event_id)
 
     try:
         payload = json.loads(raw_body)
@@ -84,7 +88,8 @@ async def razorpay_webhook(
     )
     if existing.first() is not None:
         logger.info(
-            "[RazorpayWebhook] duplicate delivery, idempotency_key=%s -- ack, no-op", idempotency_key
+            "[RazorpayWebhook] duplicate delivery, idempotency_key=%s -- ack, no-op",
+            idempotency_key,
         )
         return {"status": "already_processed"}
 

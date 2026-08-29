@@ -642,10 +642,13 @@ class RawWebhookEvent(Base):
     Task WEBHOOK1 -- the verbatim record of every inbound Razorpay webhook,
     signature-verified or not (an unverified one is still stored, as
     evidence of a rejected/forged delivery attempt, never silently
-    discarded). idempotency_key is SHA-256 of the raw body bytes -- Razorpay
-    webhooks carry no universal unique event-id field, so content-hash is
-    the real dedup key (a genuine redelivery of the same event hashes
-    identically). matched_recovery_id links this event to the
+    discarded). idempotency_key is Razorpay's own `X-Razorpay-Event-Id`
+    header value when present (prefixed `evtid:`), falling back to a
+    SHA-256 content hash (prefixed `sha256:`) only when that header is
+    genuinely absent -- CORRECTED (Domain Audit finding F4): this used to
+    claim Razorpay webhooks carry no unique event-id field at all, which
+    was false; see integrations/razorpay/webhooks.py:compute_idempotency_key.
+    matched_recovery_id links this event to the
     RazorpayTestAdapter-created order it resolves, via recoveries.provider_ref
     (the real order id) -- reconciliation, not a fresh payment-identity
     mapping (see migration 0016's docstring for the exact scope boundary).
@@ -654,7 +657,9 @@ class RawWebhookEvent(Base):
     __tablename__ = "raw_webhook_events"
     __table_args__ = (Index("idx_raw_webhook_events_matched_recovery", "matched_recovery_id"),)
 
-    webhook_event_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    webhook_event_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     event_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -693,7 +698,9 @@ class ScheduledReevaluation(Base):
         ),
     )
 
-    reevaluation_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    reevaluation_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
     payment_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("payments.payment_id"), nullable=False
     )
@@ -873,6 +880,11 @@ class BaselineRun(Base):
     )
     recovered_amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Domain Audit finding #6 (migration 0018): how many simulated attempts
+    # a FAIR (same attempt budget as RecoveryOS) baseline run consumed
+    # before success/exhaustion -- NULL for the original single-attempt
+    # baseline runs, which have no concept of "attempts used" beyond 1.
+    attempts_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

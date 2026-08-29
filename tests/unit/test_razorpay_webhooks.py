@@ -68,6 +68,56 @@ def test_compute_idempotency_key_differs_for_different_bodies():
     assert key_a != key_b
 
 
+# Domain Audit finding F4: X-Razorpay-Event-Id is now the primary dedup
+# identity, not the content hash fallback.
+
+
+def test_compute_idempotency_key_prefers_event_id_when_present():
+    body = b'{"event": "payment.captured"}'
+    key = compute_idempotency_key(body, event_id="evt_ABC123")
+    assert key == "evtid:evt_ABC123"
+
+
+def test_compute_idempotency_key_distinguishes_byte_identical_bodies_by_event_id():
+    """The exact case content-hash alone cannot handle: two genuinely
+    distinct events (different event ids) whose bodies happen to be
+    byte-identical must still dedupe as DIFFERENT events."""
+    body = b'{"event": "payment.captured"}'
+    key_a = compute_idempotency_key(body, event_id="evt_first")
+    key_b = compute_idempotency_key(body, event_id="evt_second")
+    assert key_a != key_b
+
+
+def test_compute_idempotency_key_treats_same_event_id_as_one_event_even_if_body_reserialized():
+    """The other direction: a genuine redelivery of the SAME event, whose
+    body Razorpay happens to re-serialize with different byte ordering/
+    whitespace, must still dedupe as the SAME event when the event id
+    matches -- content-hash alone would wrongly treat this as new."""
+    original_body = b'{"event":"payment.captured","amount":100}'
+    reserialized_body = b'{"amount": 100, "event": "payment.captured"}'
+    key_a = compute_idempotency_key(original_body, event_id="evt_stable")
+    key_b = compute_idempotency_key(reserialized_body, event_id="evt_stable")
+    assert key_a == key_b
+
+
+def test_compute_idempotency_key_falls_back_to_content_hash_when_event_id_absent():
+    body = b'{"event": "payment.failed"}'
+    key = compute_idempotency_key(body, event_id=None)
+    assert key.startswith("sha256:")
+    assert key == compute_idempotency_key(body)  # still deterministic on the fallback path
+
+
+def test_compute_idempotency_key_event_id_and_content_hash_spaces_never_collide():
+    """A malicious or coincidental event_id string that happens to equal a
+    sha256 hex digest must not collide with the fallback space -- the
+    prefix is what keeps these two identity spaces disjoint."""
+    body = b'{"event": "payment.failed"}'
+    fallback_key = compute_idempotency_key(body, event_id=None)
+    fallback_hash = fallback_key.removeprefix("sha256:")
+    forged_event_id_key = compute_idempotency_key(body, event_id=fallback_hash)
+    assert forged_event_id_key != fallback_key
+
+
 def test_extract_order_id_from_order_entity():
     payload = {"payload": {"order": {"entity": {"id": "order_ABC123"}}}}
     assert extract_order_id(payload) == "order_ABC123"

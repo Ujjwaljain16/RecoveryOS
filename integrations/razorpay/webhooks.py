@@ -35,16 +35,30 @@ def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-def compute_idempotency_key(raw_body: bytes) -> str:
+def compute_idempotency_key(raw_body: bytes, event_id: str | None = None) -> str:
     """
-    SHA-256 of the raw body bytes. Razorpay's webhook payloads carry no
-    universal unique event-id field (unlike Stripe's `id: evt_xxx`), so a
-    content hash is the real, always-available dedup key: Razorpay retries
-    a webhook delivery verbatim on any non-2xx response, so a genuine
-    redelivery hashes identically; a different event (even the same
-    event_type moments later) never collides.
+    CORRECTED (Domain Audit finding F4, pre-existing false claim): this used
+    to say "Razorpay webhook payloads carry no universal unique event-id
+    field" and hashed the raw body as the only available dedup key. That
+    premise was false -- Razorpay sends a real, unique `X-Razorpay-Event-Id`
+    header on every delivery (per Razorpay's own webhook docs), and a
+    genuine redelivery of the same event carries the SAME event id, making
+    it the correct primary identity: it distinguishes two events whose
+    bodies happen to be byte-identical (content-hash cannot), and survives
+    Razorpay ever re-serializing a redelivered payload with different byte
+    ordering/whitespace for the same logical event (content-hash would
+    treat that as two different events).
+
+    `event_id` (the caller-supplied X-Razorpay-Event-Id header value) is
+    used verbatim, prefixed to keep the two identity spaces from ever
+    colliding, when present. Falls back to the SHA-256 content hash only
+    when the header is genuinely absent -- Razorpay's docs don't formally
+    guarantee it's sent on every event type/API version, so this must stay
+    a real fallback, not dead code.
     """
-    return hashlib.sha256(raw_body).hexdigest()
+    if event_id:
+        return f"evtid:{event_id}"
+    return f"sha256:{hashlib.sha256(raw_body).hexdigest()}"
 
 
 def extract_order_id(payload: dict) -> str | None:
