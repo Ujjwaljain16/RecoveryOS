@@ -149,6 +149,7 @@ async def test_diagnose_and_persist_writes_hypotheses_and_investigation_steps(
     assert diagnosis.confidence_band == "LIKELY"
 
     import sqlalchemy as sa
+
     from recoveryos.config import get_settings as _gs
 
     sync_url = _gs().database_url_sync
@@ -216,8 +217,9 @@ async def test_redelivery_does_not_duplicate_investigation_rows(migrated_db, mon
 
     assert diagnosis_1.diagnosis_id == diagnosis_2.diagnosis_id
 
-    from recoveryos.config import get_settings as _gs
     import sqlalchemy as sa
+
+    from recoveryos.config import get_settings as _gs
 
     sync_engine = sa.create_engine(_gs().database_url_sync, pool_pre_ping=True)
     with sync_engine.connect() as conn:

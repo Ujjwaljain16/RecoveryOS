@@ -43,17 +43,15 @@ async def test_advisory_lock_async_actually_blocks_a_second_session(migrated_db)
     waiter_acquired_at: list[float] = []
 
     async def holder():
-        async with session_factory() as session:
-            async with advisory_lock_async(session, key):
-                holder_acquired.set()
-                await asyncio.wait_for(release_holder.wait(), timeout=10)
+        async with session_factory() as session, advisory_lock_async(session, key):
+            holder_acquired.set()
+            await asyncio.wait_for(release_holder.wait(), timeout=10)
 
     async def waiter():
         await asyncio.wait_for(holder_acquired.wait(), timeout=10)
         start = time.monotonic()
-        async with session_factory() as session:
-            async with advisory_lock_async(session, key):
-                waiter_acquired_at.append(time.monotonic() - start)
+        async with session_factory() as session, advisory_lock_async(session, key):
+            waiter_acquired_at.append(time.monotonic() - start)
 
     holder_task = asyncio.create_task(holder())
     await asyncio.wait_for(holder_acquired.wait(), timeout=10)

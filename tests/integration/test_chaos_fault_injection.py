@@ -33,7 +33,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.conftest import seed_merchant_and_customer, to_async_url
 
-
 # ─── shared seeding helpers ─────────────────────────────────────────────────
 
 
@@ -662,7 +661,6 @@ async def test_consumer_restart_resumes_only_unprocessed_messages(
         STREAM_NAME,
         _ensure_consumer_group,
         _process_batch,
-        _reclaim_pending,
     )
 
     merchant_id = str(uuid.uuid4())

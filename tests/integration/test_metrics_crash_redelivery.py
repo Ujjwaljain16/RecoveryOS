@@ -76,9 +76,8 @@ async def test_crash_before_commit_then_real_redelivery_increments_exactly_once(
     # process_job must raise (nothing committed), and the counter must be
     # completely untouched -- this is the exact scenario the old code got
     # wrong (it had already incremented by this point).
-    with engine.connect() as conn:
-        with pytest.raises(RuntimeError):
-            process_job(conn, job, provider=CrashingProvider())
+    with engine.connect() as conn, pytest.raises(RuntimeError):
+        process_job(conn, job, provider=CrashingProvider())
 
     after_crash = REGISTRY.get_sample_value("recovery_attempts_total", {"action_type": "RETRY_NOW"})
     assert (
@@ -125,9 +124,8 @@ async def test_success_counter_also_survives_a_crash_before_commit(migrated_db):
         REGISTRY.get_sample_value("recovery_success_total", {"action_type": "RETRY_NOW"}) or 0.0
     )
 
-    with engine.connect() as conn:
-        with pytest.raises(RuntimeError):
-            process_job(conn, job, provider=CrashingProvider())
+    with engine.connect() as conn, pytest.raises(RuntimeError):
+        process_job(conn, job, provider=CrashingProvider())
 
     assert (
         REGISTRY.get_sample_value("recovery_success_total", {"action_type": "RETRY_NOW"}) == before

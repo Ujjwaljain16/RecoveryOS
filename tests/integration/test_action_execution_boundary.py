@@ -15,8 +15,6 @@ old code (REMINDER/ESCALATE would have shown provider.retry() called).
 
 from __future__ import annotations
 
-import threading
-import time
 import uuid
 
 import pytest

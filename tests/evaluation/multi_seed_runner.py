@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -160,7 +159,7 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
     diagnoses_total = scalar("SELECT count(*) FROM diagnoses")
     abstentions = scalar("SELECT count(*) FROM diagnoses WHERE root_cause = 'unknown'")
 
-    TRUE_TO_EXPECTED_ROOT_CAUSE = {
+    TRUE_TO_EXPECTED_ROOT_CAUSE = {  # noqa: N806 -- constant-style mapping, not a variable
         "PERMANENT_INVALID_CREDS": "permanent_failure",
         "PERMANENT_EXPIRED_INSTRUMENT": "permanent_failure",
         "PERMANENT_ACCOUNT_CLOSED": "permanent_failure",

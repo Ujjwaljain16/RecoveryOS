@@ -24,6 +24,7 @@ throughput -- that stays parked pending a real "1 replica -> X events/sec,
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 import pytest
@@ -32,10 +33,8 @@ from services.pipeline.consumer import GROUP_NAME, STREAM_NAME
 
 
 async def _ensure_group(redis_client, stream: str, group: str) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await redis_client.xgroup_create(stream, group, id="0", mkstream=True)
-    except Exception:
-        pass
 
 
 @pytest.mark.asyncio

@@ -35,8 +35,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy.engine import Connection
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 Outcome = str  # "SUCCESS" | "FAILED" -- matches integrations/razorpay/adapter.py's Outcome
 

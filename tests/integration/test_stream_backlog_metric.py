@@ -10,6 +10,7 @@ hardcoded/always-zero stub.
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 import pytest
@@ -76,10 +77,9 @@ async def test_real_record_backlog_function_updates_the_gauge_for_the_real_strea
     proves the wiring in the real consumer module works end to end.
     Cleans up its own message afterward -- STREAM_NAME/GROUP_NAME are
     shared real constants other tests in this suite also use."""
-    try:
+    with contextlib.suppress(Exception):
+        # group may already exist from another test in this session
         await redis_client.xgroup_create(STREAM_NAME, GROUP_NAME, id="0", mkstream=True)
-    except Exception:
-        pass  # group may already exist from another test in this session
 
     msg_id = await redis_client.xadd(
         STREAM_NAME, {"event_type": "PAYMENT_FAILED", "payment_id": str(uuid.uuid4())}
