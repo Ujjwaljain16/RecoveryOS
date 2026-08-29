@@ -12,10 +12,19 @@ type LiveExperiment = {
   recovery_rate_bps: number;
 };
 
+type Phase8Seed = {
+  seed: number;
+  failed_payments: number;
+  recoveryos_total_paise: number;
+  baseline_total_paise: number;
+  incremental_recovery_paise: number;
+  recovery_rate: number;
+};
+
 type Phase8Experiment = {
   run_id: "phase8-baseline";
   dataset_size: number;
-  seeds: { seed: number }[];
+  seeds: Phase8Seed[];
   baseline: { recovered_paise: number };
   recoveryos: {
     recovered_paise: number;
@@ -93,6 +102,42 @@ export default function ExperimentsPage() {
             {formatPaise(phase8.incremental_recovery_95ci_paise[0])},{" "}
             {formatPaise(phase8.incremental_recovery_95ci_paise[1])}].
           </p>
+
+          <div className="section-title" style={{ marginTop: "1.5rem" }}>
+            Per-seed breakdown
+          </div>
+          <p style={{ color: "var(--text-dim)" }}>
+            The mean and CI above average across every run below, including any run where
+            RecoveryOS recovered less than the baseline — that variance is not hidden here.
+          </p>
+          <table style={{ marginTop: "0.5rem" }}>
+            <thead>
+              <tr>
+                <th>Seed</th>
+                <th>Failed payments</th>
+                <th>Baseline recovered</th>
+                <th>RecoveryOS recovered</th>
+                <th>Incremental</th>
+              </tr>
+            </thead>
+            <tbody>
+              {phase8.seeds.map((s) => {
+                const negative = s.incremental_recovery_paise < 0;
+                return (
+                  <tr key={s.seed}>
+                    <td>{s.seed}</td>
+                    <td>{s.failed_payments.toLocaleString()}</td>
+                    <td>{formatPaise(s.baseline_total_paise)}</td>
+                    <td>{formatPaise(s.recoveryos_total_paise)}</td>
+                    <td style={negative ? { color: "var(--danger, #d33)" } : undefined}>
+                      {negative ? "" : "+"}
+                      {formatPaise(s.incremental_recovery_paise)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </>
       )}
 
