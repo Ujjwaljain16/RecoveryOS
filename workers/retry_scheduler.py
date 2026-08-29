@@ -80,7 +80,10 @@ async def run_once(redis_client) -> int:
 
 
 async def run_scheduler(
-    redis_client, *, max_iterations: int | None = None, poll_interval_seconds: float = POLL_INTERVAL_SECONDS
+    redis_client,
+    *,
+    max_iterations: int | None = None,
+    poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
@@ -94,6 +97,7 @@ async def main() -> None:
     import logging as _logging
 
     import redis.asyncio as aioredis
+    from prometheus_client import start_http_server
 
     from recoveryos.config import get_settings
 
@@ -101,6 +105,11 @@ async def main() -> None:
         level=_logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     settings = get_settings()
+    # TRD §10: retry_scheduler re-enters the same instrumented
+    # diagnose_and_persist/decide_and_persist/ledger.py code paths as
+    # pipeline_orchestrator when a deferred RETRY_LATER fires -- its own
+    # scrape port, not a shared one.
+    start_http_server(settings.prometheus_port)
     redis_client = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     try:
         await run_scheduler(redis_client)

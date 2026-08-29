@@ -3,11 +3,46 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  # RecoveryOS API metrics
+  # RecoveryOS API — /metrics is the default prometheus_client REGISTRY
+  # for this process (records anomaly-related series via
+  # /v1/simulate/degrade in demo mode; see apps/api/routers/health.py).
   - job_name: 'recoveryos-api'
     static_configs:
       - targets: ['api:8000']
     metrics_path: '/metrics'
+
+  # Event Processor — Domain Audit finding #4: the first ingestion stage
+  # in the pipeline (stream:payment_failed) had zero instrumentation.
+  # Records stream_backlog_depth so ingestion falling behind is visible,
+  # not just a raw throughput count.
+  - job_name: 'recoveryos-event-processor'
+    static_configs:
+      - targets: ['event_processor:9104']
+
+  # Pipeline Orchestrator — bare Redis consumer loop, no other HTTP
+  # server, so it gets its own prometheus_client start_http_server port
+  # (recoveryos/config.py's prometheus_port, overridden per-service in
+  # docker-compose.yml). Records diagnosis_latency_seconds,
+  # ai_diagnoser_fallback_total, policy_blocks_total, and the
+  # revenue_*_paise_total series for the no-execution (BLOCK/DO_NOTHING)
+  # path.
+  - job_name: 'recoveryos-pipeline-orchestrator'
+    static_configs:
+      - targets: ['pipeline_orchestrator:9101']
+
+  # Execution Worker — records recovery_attempts_total,
+  # recovery_success_total, stopping_rule_triggers_total, and the
+  # revenue_*_paise_total series for the executed-action path.
+  - job_name: 'recoveryos-execution-worker'
+    static_configs:
+      - targets: ['execution_worker:9102']
+
+  # Retry Scheduler — re-enters the same diagnose/decide/ledger code
+  # paths as the pipeline orchestrator when a deferred RETRY_LATER fires
+  # (Task REPLAN1), so it records the same series from its own process.
+  - job_name: 'recoveryos-retry-scheduler'
+    static_configs:
+      - targets: ['retry_scheduler:9103']
 
   # Prometheus self-monitoring
   - job_name: 'prometheus'

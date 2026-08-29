@@ -106,6 +106,9 @@ services:
       DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       ENV: demo
+      PROMETHEUS_PORT: "9104"
+    ports:
+      - "9104:9104"
     command: ["python", "-m", "services.event_processor.consumer"]
     depends_on:
       postgres:
@@ -123,7 +126,19 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: recoveryos_pipeline_orchestrator
+    # Production Architecture Domain Audit finding #3: NO container_name
+    # (and no fixed host `ports:` publish, which would collide across
+    # replicas) -- both are required for `docker compose up --scale
+    # pipeline_orchestrator=N` to work at all. The Redis consumer-group
+    # mechanics this service already uses (hostname+pid-derived consumer
+    # names, XREADGROUP/XAUTOCLAIM) already support multiple replicas
+    # sharing the same group; the ONLY thing blocking it was this
+    # deployment config never having been wired to actually exercise
+    # that -- see tests/integration/test_consumer_group_replica_distribution.py
+    # for a real proof (multiple consumer instances, one stream, work
+    # distributed not duplicated). /metrics stays reachable on the
+    # internal docker network (other containers, e.g. Prometheus, can
+    # still resolve it) even without a host-published port.
     restart: always
     env_file: .env
     environment:
@@ -133,6 +148,9 @@ services:
       INFERENCE_DATABASE_URL: postgresql+asyncpg://inference:${RECOVERYOS_INFERENCE_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       ENV: demo
+      PROMETHEUS_PORT: "9101"
+    expose:
+      - "9101"
     command: ["python", "-m", "services.pipeline.consumer"]
     depends_on:
       postgres:
@@ -147,7 +165,8 @@ services:
     build:
       context: .
       dockerfile: workers/Dockerfile
-    container_name: recoveryos_execution_worker
+    # Domain Audit finding #3 -- see pipeline_orchestrator's comment above
+    # for why container_name/fixed ports: are gone (--scale compatibility).
     restart: always
     env_file: .env
     environment:
@@ -155,6 +174,9 @@ services:
       DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       ENV: demo
+      PROMETHEUS_PORT: "9102"
+    expose:
+      - "9102"
     command: ["python", "-m", "workers.execution_worker"]
     depends_on:
       postgres:
@@ -173,7 +195,8 @@ services:
     build:
       context: .
       dockerfile: workers/Dockerfile
-    container_name: recoveryos_retry_scheduler
+    # Domain Audit finding #3 -- see pipeline_orchestrator's comment above
+    # for why container_name/fixed ports: are gone (--scale compatibility).
     restart: always
     env_file: .env
     environment:
@@ -183,6 +206,9 @@ services:
       INFERENCE_DATABASE_URL: postgresql+asyncpg://inference:${RECOVERYOS_INFERENCE_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       ENV: demo
+      PROMETHEUS_PORT: "9103"
+    expose:
+      - "9103"
     command: ["python", "-m", "workers.retry_scheduler"]
     depends_on:
       postgres:

@@ -40,6 +40,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recoveryos.metrics import stream_backlog_depth
 from services.diagnosis_engine.diagnoser import diagnose_and_persist
 from services.pipeline.ledger import populate_ledger_and_audit_async
 from services.recovery_engine.orchestrator import decide_and_persist
@@ -157,6 +158,22 @@ async def process_payment_failure(
     # the terminal ledger/audit write once the job actually completes.
 
 
+async def _record_backlog(redis: aioredis.Redis) -> None:
+    """Domain Audit finding #4 -- same reasoning as
+    services/event_processor/consumer.py's own _record_backlog, for the
+    second hop in the pipeline (stream:risk_engine). Best-effort."""
+    try:
+        groups = await redis.xinfo_groups(STREAM_NAME)
+        for group in groups:
+            if group.get("name") == GROUP_NAME:
+                lag = group.get("lag")
+                if lag is not None:
+                    stream_backlog_depth.labels(stream=STREAM_NAME, group=GROUP_NAME).set(lag)
+                break
+    except Exception:
+        logger.exception("[Pipeline] failed to record stream backlog (non-fatal)")
+
+
 async def _ensure_consumer_group(redis: aioredis.Redis) -> None:
     try:
         await redis.xgroup_create(STREAM_NAME, GROUP_NAME, id="0", mkstream=True)
@@ -217,6 +234,7 @@ async def run_consumer(redis: aioredis.Redis, *, max_iterations: int | None = No
                 count=BATCH_SIZE,
                 block=BLOCK_MS,
             )
+            await _record_backlog(redis)
             if not results:
                 continue
             for _stream_name, messages in results:
@@ -228,12 +246,21 @@ async def run_consumer(redis: aioredis.Redis, *, max_iterations: int | None = No
 async def main() -> None:
     import logging as _logging
 
+    from prometheus_client import start_http_server
+
     from recoveryos.config import get_settings
 
     _logging.basicConfig(
         level=_logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     settings = get_settings()
+    # TRD §10: this process has no HTTP server of its own (a bare Redis
+    # consumer loop) -- most of the §10 series are actually recorded HERE
+    # (diagnosis_latency_seconds, ai_diagnoser_fallback_total via
+    # diagnose_and_persist; revenue_*_paise_total via ledger.py for the
+    # no-execution BLOCK/DO_NOTHING path; policy_blocks_total via
+    # decide_and_persist), so it needs its own scrape port, not just api's.
+    start_http_server(settings.prometheus_port)
     redis_client = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     try:
         await run_consumer(redis_client)

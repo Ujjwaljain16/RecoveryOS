@@ -16,6 +16,7 @@ Role boundary (verify by connection string, not comment):
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 
 from sqlalchemy import select, text
@@ -23,6 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoveryos.database import get_app_session_factory, get_diagnoser_session_factory
+from recoveryos.metrics import ai_diagnoser_fallback_total, diagnosis_latency_seconds
 from recoveryos.models import Diagnosis
 from services.diagnosis_engine.fallback_rules import diagnose_fallback
 from services.diagnosis_engine.llm_diagnoser import diagnose_with_llm
@@ -289,10 +291,23 @@ async def diagnose_and_persist(
 ) -> Diagnosis | None:
     """Convenience entry point: full pipeline + persistence in one call —
     what a real Risk Engine consumer would call per failed payment."""
+    started_at = time.monotonic()
     result = await diagnose(payment_id)
+    # TRD §10: diagnosis_latency_seconds -- timed around diagnose() itself
+    # (the diagnoser_role read + investigation/LLM/fallback work), not the
+    # persistence below (plain app_role INSERTs, not what "diagnosis
+    # latency" means to an operator watching this dashboard). Observed even
+    # when diagnose() returns None (payment not found) -- that's still real
+    # wall-clock time this call spent, not a skipped observation.
+    diagnosis_latency_seconds.observe(time.monotonic() - started_at)
     if result is None:
         return None
     output, investigation = result
+    if output.is_fallback:
+        # TRD §10: ai_diagnoser_fallback_total -- an honest reliability
+        # signal for how often the LLM path degrades to the deterministic
+        # fallback (services/diagnosis_engine/fallback_rules.py).
+        ai_diagnoser_fallback_total.inc()
     async with get_app_session_factory()() as app_session:
         confidence_band = investigation.confidence_band if investigation is not None else None
         row = await persist_diagnosis(

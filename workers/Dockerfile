@@ -23,6 +23,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# pandas + scikit-learn + pyyaml: Task REPLAN1 made workers/retry_scheduler.py
+# import services.pipeline.consumer -> services.recovery_engine.orchestrator
+# -> services.recovery_engine.propensity, which imports pandas at module
+# level and needs scikit-learn to unpickle model_lr.pkl (pyyaml comes from
+# that same chain via simulator/calibration/loader.py). This Dockerfile
+# never carried them -- same class of gap Task MD1 already fixed in
+# apps/api/Dockerfile (see that file's comment), just not mirrored here
+# because execution_worker.py alone never reached that import chain.
 RUN pip install --no-cache-dir \
     pydantic \
     pydantic-settings \
@@ -34,7 +42,10 @@ RUN pip install --no-cache-dir \
     prometheus-client \
     httpx \
     structlog \
-    openai
+    openai \
+    pandas \
+    scikit-learn \
+    pyyaml
 
 COPY recoveryos/    ./recoveryos/
 COPY workers/       ./workers/

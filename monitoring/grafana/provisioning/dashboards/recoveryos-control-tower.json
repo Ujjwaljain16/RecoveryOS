@@ -1,0 +1,165 @@
+{
+  "id": null,
+  "uid": "recoveryos-control-tower",
+  "title": "RecoveryOS — Control Tower (TRD §10)",
+  "description": "Panels map 1:1 to the Control Tower UI (PRD §44). The top row of four stat tiles reads *_reconciled gauges, recomputed live from recovery_ledger/recoveries on every scrape (Production Architecture Domain Audit finding #1) -- genuinely 'no separate internal truth vs customer-facing truth', not just a claim: these are the same durable rows /v1/risk/summary itself queries, immune to any background worker's in-process counters resetting on restart. The panels below use TRD §10's raw Counters/Histogram, which are the right tool for rate/trend/activity panels.",
+  "tags": ["recoveryos", "trd-10"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Revenue at Risk",
+      "description": "Control Tower: \"Revenue at Risk\" tile. revenue_at_risk_paise_reconciled -- recomputed live from recovery_ledger on every /metrics scrape (Production Architecture Domain Audit finding #1), not the raw revenue_at_risk_paise_total Counter, which resets to 0 on any worker restart with no reconciliation against the durable ledger.",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(revenue_at_risk_paise_reconciled) / 100", "legendFormat": "Revenue at Risk (₹)", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyINR", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Recovered",
+      "description": "Control Tower: \"Recovered\" tile. revenue_recovered_paise_reconciled -- see panel 1's note; recomputed live from recovery_ledger, immune to worker restarts.",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(revenue_recovered_paise_reconciled) / 100", "legendFormat": "Recovered (₹)", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyINR", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Incremental Recovery",
+      "description": "Control Tower: \"Incremental Recovery\" tile. incremental_revenue_paise_reconciled -- recomputed live from recovery_ledger (see panel 1's note), not the raw incremental_revenue_paise_total accumulator.",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(incremental_revenue_paise_reconciled) / 100", "legendFormat": "Incremental (₹)", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyINR", "decimals": 2,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Recovery Rate",
+      "description": "Control Tower: \"Recovery Rate\" tile. recovery_success_reconciled / recovery_attempts_reconciled -- recomputed live from the `recoveries` table on every scrape (same restart-immunity reasoning as panels 1-3; the raw recovery_success_total/recovery_attempts_total Counters have the identical worker-restart vulnerability F1 identified for revenue).",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "100 * sum(recovery_success_reconciled) / clamp_min(sum(recovery_attempts_reconciled), 1)",
+          "legendFormat": "Recovery Rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "orange", "value": null }, { "color": "green", "value": 30 }] } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "System Health — Bank Health Grid",
+      "description": "Control Tower: \"System Health\" bank grid. Count of systemic_degradation_events_total{bank} -- a bank with any recent count here is the same bank apps/api/routers/risk.py's bank_health marks DEGRADED (fresh, is_anomaly=true, severity=high window).",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (bank) (systemic_degradation_events_total)", "legendFormat": "{{bank}}", "format": "table", "instant": true, "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Recovery Queue Activity — Attempts by Action Type",
+      "description": "Control Tower: \"Recovery Queue\" panel. Live rate(recovery_attempts_total[5m]) by action_type is the closest real-time proxy for queue throughput -- the queue itself is transient DB state (scheduled_reevaluations/recoveries with no terminal outcome), not a cumulative series, so this shows how fast the queue is being WORKED, not its current depth.",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (action_type) (rate(recovery_attempts_total[5m]))", "legendFormat": "{{action_type}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Policy Blocks by Rule",
+      "description": "policy_blocks_total{rule} -- which specific policy_engine rule most often blocks/escalates a decision.",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (rule) (policy_blocks_total)", "legendFormat": "{{rule}}", "instant": true, "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" }
+    },
+    {
+      "id": 8,
+      "type": "bargauge",
+      "title": "Stopping Rule Triggers by Reason",
+      "description": "stopping_rule_triggers_total{reason} -- MAX_RETRIES vs STOP_AFTER_SUCCESS, from recoveries.stopping_rule_triggered (workers/execution_worker.py's _compute_stopping_rule).",
+      "gridPos": { "x": 8, "y": 12, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (reason) (stopping_rule_triggers_total)", "legendFormat": "{{reason}}", "instant": true, "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "AI Diagnoser Fallback Rate",
+      "description": "ai_diagnoser_fallback_total / diagnosis_latency_seconds_count -- an honest reliability signal for how often the LLM path degrades to the deterministic fallback.",
+      "gridPos": { "x": 16, "y": 12, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "100 * sum(ai_diagnoser_fallback_total) / clamp_min(sum(diagnosis_latency_seconds_count), 1)",
+          "legendFormat": "Fallback Rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 20 }, { "color": "red", "value": 50 }] } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Diagnosis Latency (p50 / p95)",
+      "description": "diagnosis_latency_seconds histogram -- wall-clock time of diagnose() (diagnoser_role read -> investigation/LLM/fallback), per services/diagnosis_engine/diagnoser.py.",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum(rate(diagnosis_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(diagnosis_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    }
+  ]
+}

@@ -31,6 +31,7 @@ import socket
 import redis.asyncio as aioredis
 
 from recoveryos.database import get_app_engine
+from recoveryos.metrics import stream_backlog_depth
 from services.event_processor.processor import process_event
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,31 @@ CONSUMER_NAME = f"{socket.gethostname()}-{os.getpid()}"
 BATCH_SIZE = 10
 BLOCK_MS = 1000  # block up to 1s waiting for new messages
 PENDING_RECLAIM_IDLE_MS = 5000  # reclaim messages idle > 5s in PEL
+
+
+async def _record_backlog(redis: aioredis.Redis) -> None:
+    """
+    Domain Audit finding #4: this is the very first ingestion stage in
+    the whole pipeline, and previously had zero Prometheus instrumentation
+    at all -- if PAYMENT_FAILED volume outpaced this consumer, nothing in
+    the stack would surface it until symptoms appeared much further
+    downstream. `lag` (XINFO GROUPS' own field) is entries in the stream
+    that have never been delivered to ANY consumer in cg_event_processor
+    -- the direct "are we falling behind the incoming stream" signal, not
+    a throughput count that says nothing about backlog. Best-effort: a
+    transient Redis error here must never take down the consumer loop
+    over an observability side-channel.
+    """
+    try:
+        groups = await redis.xinfo_groups(STREAM_NAME)
+        for group in groups:
+            if group.get("name") == GROUP_NAME:
+                lag = group.get("lag")
+                if lag is not None:
+                    stream_backlog_depth.labels(stream=STREAM_NAME, group=GROUP_NAME).set(lag)
+                break
+    except Exception:
+        logger.exception("[Consumer] failed to record stream backlog (non-fatal)")
 
 
 async def _ensure_consumer_group(redis: aioredis.Redis) -> None:
@@ -135,6 +161,8 @@ async def run_consumer(redis: aioredis.Redis) -> None:
                 block=BLOCK_MS,
             )
 
+            await _record_backlog(redis)
+
             if not results:
                 # No new messages in this poll window — normal.
                 continue
@@ -153,6 +181,7 @@ async def run_consumer(redis: aioredis.Redis) -> None:
 async def main() -> None:
     """Entrypoint for running the consumer as a standalone process."""
     import redis.asyncio as aioredis
+    from prometheus_client import start_http_server
 
     from recoveryos.config import get_settings
 
@@ -162,6 +191,9 @@ async def main() -> None:
     )
 
     settings = get_settings()
+    # Domain Audit finding #4: previously the only one of the four
+    # consumer-group processes with zero Prometheus instrumentation.
+    start_http_server(settings.prometheus_port)
     redis_client = aioredis.from_url(
         settings.redis_url,
         encoding="utf-8",
