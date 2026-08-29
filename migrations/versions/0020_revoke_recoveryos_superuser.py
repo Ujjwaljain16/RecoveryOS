@@ -14,20 +14,40 @@ GRANT/REVOKE matrix (full R/W minus UPDATE/DELETE on audit_log/events) was
 never actually the binding constraint in practice, because recoveryos could
 always bypass every one of those grants by virtue of being superuser.
 
-This migration self-heals it, in place, with no docker-compose/env changes
-and no data loss: it runs under alembic's own recoveryos connection (still
-superuser at the moment this migration executes) and strips that same
-role's superuser flag for every future connection. A role is permitted to
-revoke its own SUPERUSER bit; Postgres does not require a second superuser
-to do it. From the next connection onward (the very next container
-restart), recoveryos is bound by app_role's grants like every other
-non-owner role in this system (diagnoser_role, inference_role) -- and any
-FUTURE migration needing elevated privilege (CREATE ROLE, CREATE
-EXTENSION, etc.) would need a separate bootstrap-only credential, not this
-one.
+CORRECTED (found running this migration for real against a live
+docker-compose stack, not just testcontainers): a role CANNOT always revoke
+its own SUPERUSER bit. PostgreSQL specifically protects the very first
+bootstrap role (the one initdb creates, exactly what POSTGRES_USER=recoveryos
+produces here) -- "ALTER ROLE ... NOSUPERUSER" on that specific role raises
+"permission denied to alter role: The bootstrap user must have the SUPERUSER
+attribute", unconditionally, regardless of who issues it. This was NOT
+caught by this migration's own regression test
+(tests/integration/test_schema_and_roles.py) because testcontainers'
+bootstrap username there is "recoveryos_test", not "recoveryos" -- that test
+exercises revoking superuser from an ordinary (non-bootstrap) role that
+happens to be superuser, which genuinely does work; it never exercised the
+true bootstrap-role case docker-compose actually produces.
+
+The real, complete fix is architectural: give docker-compose's postgres
+service a SEPARATE bootstrap-only login (distinct from the app's own
+`recoveryos` connection role), so `recoveryos` is never the protected
+bootstrap role in the first place -- tracked as a real follow-up, not done
+here (it needs a new env var, a docker-compose change, and doesn't apply
+retroactively to an already-initialized data volume without a full
+Postgres reinit regardless).
+
+Until then, this migration degrades gracefully instead of crashing the
+whole `alembic upgrade head` run: it attempts the revoke inside a
+SAVEPOINT, and where Postgres refuses because recoveryos IS the protected
+bootstrap role, it logs a clear warning and moves on rather than blocking
+every other migration/deployment behind an unfixable-in-place constraint.
+Wherever recoveryos is NOT the true bootstrap role (a properly separated
+setup, or the CI testcontainer), the revoke still applies for real.
 """
 
 from __future__ import annotations
+
+import logging
 
 import sqlalchemy as sa
 from alembic import op
@@ -37,12 +57,30 @@ down_revision: str | None = "0019"
 branch_labels = None
 depends_on = None
 
+logger = logging.getLogger("alembic.runtime.migration")
+
 
 def upgrade() -> None:
     conn = op.get_bind()
-    conn.execute(sa.text("ALTER ROLE recoveryos WITH NOSUPERUSER;"))
+    try:
+        with conn.begin_nested():
+            conn.execute(sa.text("ALTER ROLE recoveryos WITH NOSUPERUSER;"))
+    except sa.exc.DBAPIError as exc:
+        if "bootstrap user" not in str(exc).lower():
+            raise
+        logger.warning(
+            "[0020] recoveryos is Postgres's protected bootstrap role in this "
+            "deployment -- SUPERUSER cannot be revoked from it in place (see this "
+            "migration's own docstring for the real fix: a separate bootstrap-only "
+            "login). Skipping, not failing the migration run."
+        )
 
 
 def downgrade() -> None:
     conn = op.get_bind()
-    conn.execute(sa.text("ALTER ROLE recoveryos WITH SUPERUSER;"))
+    try:
+        with conn.begin_nested():
+            conn.execute(sa.text("ALTER ROLE recoveryos WITH SUPERUSER;"))
+    except sa.exc.DBAPIError as exc:
+        if "bootstrap user" not in str(exc).lower():
+            raise
