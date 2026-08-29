@@ -36,6 +36,11 @@ class PaymentContext:
     attempt_number: int  # attempt number this candidate would be, if allowed
     amount_paise: int
     now: datetime
+    # upi|card|netbanking|wallet — needed so EMandateRetryComplianceRule/
+    # AutopayExecutionWindowRule (both real NPCI/RBI UPI Autopay
+    # regulations) can scope themselves to UPI, instead of applying a
+    # UPI-specific regulatory ceiling to every payment method.
+    method: str
     # Pre-fetched anomaly state for this payment's bank/method (Phase 4's
     # anomaly detector) — packed in here rather than fetched by
     # SystemicSuppressionRule itself.
@@ -219,10 +224,15 @@ class EMandateRetryComplianceRule(PolicyRule):
     """
     RBI/NPCI e-mandate regulations (real, cited above) -- applies only to
     RETRY_NOW, the silent auto-debit-retry action a real UPI Autopay/NACH
-    mandate retry corresponds to. escalates_on_fail=True: exceeding a
-    REGULATORY ceiling (not an internal risk preference) should stop and
-    route to a human/compliance review, same semantics as RetryLimitRule's
-    own internal cap.
+    mandate retry corresponds to, AND only to method='upi' -- these are
+    UPI Autopay/NACH-specific regulatory ceilings, not a general retry
+    limit, so a card/netbanking/wallet RETRY_NOW must never be blocked by
+    them (found live-testing Phase 10: a method='card' payment was
+    incorrectly blocked by this rule's sibling, AutopayExecutionWindowRule,
+    before this fix). escalates_on_fail=True: exceeding a REGULATORY
+    ceiling (not an internal risk preference) should stop and route to a
+    human/compliance review, same semantics as RetryLimitRule's own
+    internal cap.
     """
 
     name = "EMandateRetryComplianceRule"
@@ -231,6 +241,10 @@ class EMandateRetryComplianceRule(PolicyRule):
     def check(self, payment, candidate, policy_config) -> RuleResult:
         if candidate.action_type != "RETRY_NOW":
             return RuleResult(True, "not a RETRY_NOW action — e-mandate rules don't apply")
+        if payment.method != "upi":
+            return RuleResult(
+                True, f"method={payment.method!r}, not upi — e-mandate rules don't apply"
+            )
         if payment.attempt_number > NPCI_AUTOPAY_MAX_ATTEMPTS:
             return RuleResult(
                 False,
@@ -252,13 +266,20 @@ class EMandateRetryComplianceRule(PolicyRule):
 class AutopayExecutionWindowRule(PolicyRule):
     """NPCI's UPI Autopay non-peak execution window (real, cited above,
     effective 2025-08-01) — RETRY_NOW may execute only before 10:00,
-    between 13:00-17:00, or after 21:30 IST."""
+    between 13:00-17:00, or after 21:30 IST. Scoped to method='upi' only
+    -- this is a UPI Autopay-specific execution-window regulation, not a
+    general time-of-day retry restriction, so it must never block a
+    card/netbanking/wallet RETRY_NOW."""
 
     name = "AutopayExecutionWindowRule"
 
     def check(self, payment, candidate, policy_config) -> RuleResult:
         if candidate.action_type != "RETRY_NOW":
             return RuleResult(True, "not a RETRY_NOW action — execution-window rule doesn't apply")
+        if payment.method != "upi":
+            return RuleResult(
+                True, f"method={payment.method!r}, not upi — execution-window rule doesn't apply"
+            )
         ist_now = _to_ist(payment.now)
         minutes = ist_now.hour * 60 + ist_now.minute
         in_peak = any(
@@ -288,7 +309,9 @@ class QuietHoursComplianceRule(PolicyRule):
         if candidate.action_type != "REMINDER":
             return RuleResult(True, "not a REMINDER action — quiet-hours rule doesn't apply")
         ist_now = _to_ist(payment.now)
-        in_quiet_hours = ist_now.hour >= TRAI_QUIET_HOURS_START_IST or ist_now.hour < TRAI_QUIET_HOURS_END_IST
+        in_quiet_hours = (
+            ist_now.hour >= TRAI_QUIET_HOURS_START_IST or ist_now.hour < TRAI_QUIET_HOURS_END_IST
+        )
         if in_quiet_hours:
             return RuleResult(
                 False,
@@ -296,12 +319,25 @@ class QuietHoursComplianceRule(PolicyRule):
                 f"({TRAI_QUIET_HOURS_START_IST:02d}:00-{TRAI_QUIET_HOURS_END_IST:02d}:00) — "
                 f"commercial communication is prohibited in this window",
             )
-        return RuleResult(True, f"now={ist_now.strftime('%H:%M')} IST is outside TRAI's quiet hours")
+        return RuleResult(
+            True, f"now={ist_now.strftime('%H:%M')} IST is outside TRAI's quiet hours"
+        )
 
 
 class SystemicSuppressionRule(PolicyRule):
     """If cohort is SYSTEMIC (high-severity anomaly active) and
-    action == RETRY_NOW -> BLOCK, suggest RETRY_LATER."""
+    action == RETRY_NOW -> BLOCK, suggest RETRY_LATER.
+
+    In the live pipeline this rule never actually fires: EVI's
+    SYSTEMIC_RISK_PENALTY_PAISE and timing.py's probability haircut
+    (services/recovery_engine/evi.py, timing.py) already make RETRY_LATER's
+    EVI provably beat RETRY_NOW's EVI whenever is_high_severity_anomaly is
+    true, for any amount or degradation severity — so NBA selection never
+    offers this rule a RETRY_NOW candidate to block in the first place. This
+    is deliberate layered defense (three independent mechanisms enforcing
+    the same TRD §3.1 requirement), not dead code — see
+    tests/integration/test_systemic_suppression_organic.py for the proof
+    and the reasoning for keeping it as a backstop anyway."""
 
     name = "SystemicSuppressionRule"
 

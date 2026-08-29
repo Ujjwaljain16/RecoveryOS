@@ -73,6 +73,19 @@ NEW_CUSTOMER_REMINDER_FRICTION_BPS = 15_000  # 150% of base
 # sufficiently-sampled, HIGH-severity systemic anomaly — see module
 # docstring for why this is a separate, non-scaled term from timing.py's
 # probability penalty.
+#
+# Combined with timing.py's one-directional probability haircut, this makes
+# RETRY_LATER's EVI provably dominate RETRY_NOW's EVI whenever
+# is_high_severity_anomaly=True, for every amount and every real
+# degradation ratio (including the degenerate observed_rate==baseline_rate
+# edge case, where timing.py's penalty is a complete no-op and this fixed
+# surcharge alone still decides it) — see
+# tests/integration/test_systemic_suppression_organic.py for the full
+# proof. Consequence: services/policy_engine/rules.py's
+# SystemicSuppressionRule never gets a live (RETRY_NOW, anomaly) pair to
+# block — intentionally: it's a third, independent backstop for the same
+# TRD §3.1 requirement this constant and timing.py's penalty already
+# jointly satisfy, not dead code to remove.
 SYSTEMIC_RISK_PENALTY_PAISE = 500  # ₹5, a deliberate fixed bias constant
 
 VALID_ACTION_TYPES = frozenset(

@@ -51,6 +51,7 @@ def _payment(**overrides) -> PaymentContext:
         "attempt_number": 1,
         "amount_paise": 100_000,
         "now": NOW,
+        "method": "upi",
         "is_high_severity_anomaly": False,
     }
     defaults.update(overrides)
@@ -535,6 +536,33 @@ def test_emandate_does_not_apply_to_non_retry_now_actions():
     assert result.passed is True
 
 
+def test_emandate_does_not_apply_to_card_payments_regardless_of_amount_or_attempts():
+    """RBI/NPCI e-mandate regulations are UPI Autopay/NACH-specific -- a
+    card RETRY_NOW must never be blocked by them, no matter how far over
+    the NPCI attempt cap or RBI AFA threshold it would otherwise be."""
+    result = EMandateRetryComplianceRule().check(
+        _payment(
+            method="card",
+            amount_paise=RBI_EMANDATE_AFA_THRESHOLD_PAISE * 10,
+            attempt_number=NPCI_AUTOPAY_MAX_ATTEMPTS + 99,
+        ),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+def test_emandate_still_applies_to_upi_payments():
+    """Negative control for the method-scoping fix above -- a genuine UPI
+    RETRY_NOW over the cap must still be blocked."""
+    result = EMandateRetryComplianceRule().check(
+        _payment(method="upi", attempt_number=NPCI_AUTOPAY_MAX_ATTEMPTS + 1),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is False
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # AutopayExecutionWindowRule — NPCI's real non-peak execution windows
 # ═══════════════════════════════════════════════════════════════════════
@@ -599,6 +627,41 @@ def test_autopay_window_does_not_apply_to_non_retry_now_actions():
     assert result.passed is True
 
 
+def test_autopay_window_never_blocks_card_payments_regardless_of_time_of_day():
+    """NPCI's UPI Autopay execution window is a UPI-specific regulation --
+    a card RETRY_NOW must pass at every one of the hours a UPI RETRY_NOW
+    would be blocked at (found live-testing Phase 10: a real method='card'
+    payment was incorrectly blocked by this rule at 17:10 IST)."""
+    for hour, minute in ((11, 0), (17, 0), (18, 0)):
+        result = AutopayExecutionWindowRule().check(
+            _payment(method="card", now=_at_ist(hour, minute)),
+            _candidate(action_type="RETRY_NOW"),
+            _policy_config(),
+        )
+        assert result.passed is True, f"card payment wrongly blocked at {hour:02d}:{minute:02d} IST"
+
+
+def test_autopay_window_never_blocks_netbanking_or_wallet_payments():
+    for method in ("netbanking", "wallet"):
+        result = AutopayExecutionWindowRule().check(
+            _payment(method=method, now=_at_ist(11, 0)),
+            _candidate(action_type="RETRY_NOW"),
+            _policy_config(),
+        )
+        assert result.passed is True, f"{method} payment wrongly blocked during an NPCI peak window"
+
+
+def test_autopay_window_still_blocks_upi_payments_during_peak_window():
+    """Negative control for the method-scoping fix above -- a genuine UPI
+    RETRY_NOW during an NPCI peak window must still be blocked."""
+    result = AutopayExecutionWindowRule().check(
+        _payment(method="upi", now=_at_ist(11, 0)),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is False
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # QuietHoursComplianceRule — TRAI's real quiet-hours rule
 # ═══════════════════════════════════════════════════════════════════════
@@ -658,7 +721,9 @@ def test_evaluate_escalates_when_emandate_attempt_cap_exceeded():
     result = evaluate(
         _payment(attempt_number=NPCI_AUTOPAY_MAX_ATTEMPTS + 1),
         _candidate(action_type="RETRY_NOW", expected_value_paise=1_000),
-        _policy_config(max_retries=99),  # merchant's OWN policy would allow this -- regulation overrides it
+        _policy_config(
+            max_retries=99
+        ),  # merchant's OWN policy would allow this -- regulation overrides it
     )
     assert result.verdict == "ESCALATE"
     assert result.rule_trace[-1]["rule"] == "EMandateRetryComplianceRule"
