@@ -27,6 +27,7 @@ from recoveryos.database import get_app_session_factory, get_diagnoser_session_f
 from recoveryos.metrics import ai_diagnoser_fallback_total, diagnosis_latency_seconds
 from recoveryos.models import Diagnosis
 from services.diagnosis_engine.fallback_rules import diagnose_fallback
+from services.diagnosis_engine.investigator import InvestigationResult
 from services.diagnosis_engine.llm_diagnoser import diagnose_with_llm
 from services.diagnosis_engine.schemas import DiagnosisInput, DiagnosisOutput, RootCause
 from services.risk_engine.anomaly import derive_cohort_id
@@ -157,7 +158,7 @@ def _attach_cohort_if_systemic(
     )
 
 
-async def diagnose(payment_id: str) -> tuple[DiagnosisOutput, "InvestigationResult | None"] | None:
+async def diagnose(payment_id: str) -> tuple[DiagnosisOutput, InvestigationResult | None] | None:
     """
     Full diagnosis pipeline for one payment: read (diagnoser_role) ->
     investigative multi-round loop (Task AGENT1, gemini only) OR single-call
