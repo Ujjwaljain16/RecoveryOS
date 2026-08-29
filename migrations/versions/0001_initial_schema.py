@@ -35,9 +35,7 @@ def upgrade() -> None:
         sa.Column("stop_after_success", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("stop_after_opt_out", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("escalate_after_failures", sa.Integer(), nullable=False, server_default="2"),
-        sa.Column(
-            "min_expected_value_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("min_expected_value_paise", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column(
             "created_at",
@@ -88,9 +86,7 @@ def upgrade() -> None:
         ),
         sa.Column("is_returning", sa.Boolean(), nullable=False, server_default="false"),
         # BIGINT paise — never Float
-        sa.Column(
-            "lifetime_value_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("lifetime_value_paise", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("opted_out_at", postgresql.TIMESTAMP(timezone=True), nullable=True),
         sa.Column(
             "created_at",
@@ -144,12 +140,8 @@ def upgrade() -> None:
         sa.Column("failed_at", postgresql.TIMESTAMP(timezone=True), nullable=True),
         sa.CheckConstraint("amount_paise > 0", name="ck_payments_amount_positive"),
     )
-    op.create_index(
-        "idx_payments_merchant_status", "payments", ["merchant_id", "status"]
-    )
-    op.create_index(
-        "idx_payments_bank_method_time", "payments", ["bank", "method", "failed_at"]
-    )
+    op.create_index("idx_payments_merchant_status", "payments", ["merchant_id", "status"])
+    op.create_index("idx_payments_bank_method_time", "payments", ["bank", "method", "failed_at"])
 
     # ─── events (append-only) ─────────────────────────────────────────────────
     op.create_table(
@@ -259,12 +251,8 @@ def upgrade() -> None:
         # BIGINT paise — computed as (amount_paise * recovery_prob_bps) // 10_000
         sa.Column("expected_value_paise", sa.BigInteger(), nullable=False),
         sa.Column("cost_paise", sa.BigInteger(), nullable=False, server_default="0"),
-        sa.Column(
-            "friction_penalty_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
-        sa.Column(
-            "risk_penalty_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("friction_penalty_paise", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("risk_penalty_paise", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("model_version", sa.Text(), nullable=False),
         sa.Column(
             "created_at",
@@ -340,9 +328,7 @@ def upgrade() -> None:
         sa.Column("executed_at", postgresql.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("outcome", sa.Text(), nullable=True),
         # BIGINT paise — never Float
-        sa.Column(
-            "recovered_amount_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("recovered_amount_paise", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("provider_ref", sa.Text(), nullable=True),
         sa.Column("stopping_rule_triggered", sa.Text(), nullable=True),
         sa.Column(
@@ -372,9 +358,7 @@ def upgrade() -> None:
         # All BIGINT paise — evaluation harness SUM()s these directly
         sa.Column("revenue_at_risk_paise", sa.BigInteger(), nullable=False),
         sa.Column("expected_recovery_paise", sa.BigInteger(), nullable=False),
-        sa.Column(
-            "actual_recovery_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("actual_recovery_paise", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("baseline_outcome", sa.Text(), nullable=True),
         sa.Column(
             "incremental_recovery_paise",
@@ -493,9 +477,7 @@ def upgrade() -> None:
             sa.ForeignKey("payments.payment_id"),
             nullable=False,
         ),
-        sa.Column(
-            "recovered_amount_paise", sa.BigInteger(), nullable=False, server_default="0"
-        ),
+        sa.Column("recovered_amount_paise", sa.BigInteger(), nullable=False, server_default="0"),
         sa.Column("outcome", sa.Text(), nullable=True),
         sa.Column(
             "created_at",

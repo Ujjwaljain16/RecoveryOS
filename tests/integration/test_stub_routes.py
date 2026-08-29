@@ -90,16 +90,14 @@ async def test_experiments_phase8_baseline_serves_the_real_multi_seed_artifact(
     check a couple of real numbers from that doc.
     """
     _merchant_id, api_key = await _seeded_merchant(migrated_db)
-    resp = await async_client.get(
-        "/v1/experiments/phase8-baseline", headers={"X-API-Key": api_key}
-    )
+    resp = await async_client.get("/v1/experiments/phase8-baseline", headers={"X-API-Key": api_key})
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["seeds"]) == 5
     seed_1 = next(s for s in body["seeds"] if s["seed"] == 1)
-    assert seed_1["incremental_recovery_paise"] == 73408 or seed_1["incremental_recovery_paise"] == round(
-        seed_1["incremental_recovery_paise"]
-    )
+    assert seed_1["incremental_recovery_paise"] == 73408 or seed_1[
+        "incremental_recovery_paise"
+    ] == round(seed_1["incremental_recovery_paise"])
     # Mean incremental recovery must be a real (non-zero) figure, matching
     # the doc's reported ~+₹70,258 mean, not a placeholder zero.
     assert body["incremental_recovery_paise_mean"] > 0

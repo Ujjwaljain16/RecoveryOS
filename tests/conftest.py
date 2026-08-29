@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import create_engine
 
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_llm_calls_by_default():
     """

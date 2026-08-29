@@ -87,9 +87,7 @@ def upgrade() -> None:
     # other operational table (NOT append-only: reconciliation legitimately
     # updates matched_recovery_id/processed_at/reconciliation_note after
     # the initial insert).
-    op.execute(
-        "GRANT SELECT, INSERT, UPDATE ON raw_webhook_events TO app_role;"
-    )
+    op.execute("GRANT SELECT, INSERT, UPDATE ON raw_webhook_events TO app_role;")
 
 
 def downgrade() -> None:

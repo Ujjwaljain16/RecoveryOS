@@ -81,22 +81,30 @@ def upgrade() -> None:
 
     # ── 3. DB Role Permissions Hardening ──────────────────────────────────────
     conn = op.get_bind()
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
         GRANT SELECT, INSERT, UPDATE, DELETE ON simulator_manifests TO app_role;
         GRANT SELECT, INSERT, UPDATE, DELETE ON simulator_latent_state TO app_role;
 
         -- diagnoser_role gets NO privileges on simulator_latent_state or simulator_manifests
         REVOKE ALL ON simulator_manifests FROM diagnoser_role;
         REVOKE ALL ON simulator_latent_state FROM diagnoser_role;
-    """))
+    """
+        )
+    )
 
 
 def downgrade() -> None:
     conn = op.get_bind()
-    conn.execute(sa.text("""
+    conn.execute(
+        sa.text(
+            """
         REVOKE ALL ON simulator_latent_state FROM app_role;
         REVOKE ALL ON simulator_manifests FROM app_role;
-    """))
+    """
+        )
+    )
     op.drop_index("idx_latent_simulation", table_name="simulator_latent_state")
     op.drop_table("simulator_latent_state")
     op.drop_table("simulator_manifests")

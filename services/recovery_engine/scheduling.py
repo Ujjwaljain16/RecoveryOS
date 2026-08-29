@@ -67,21 +67,27 @@ async def schedule_reevaluation(
         return row[0]
 
 
-async def fetch_due_reevaluations(session: AsyncSession, now: datetime, limit: int = 50) -> list[dict]:
+async def fetch_due_reevaluations(
+    session: AsyncSession, now: datetime, limit: int = 50
+) -> list[dict]:
     """Rows whose scheduled_for has passed and are still PENDING. Read-only
     — claiming happens per-row in claim_reevaluation() so a batch fetch
     here never races with the actual claim."""
     rows = (
-        await session.execute(
-            text(
-                "SELECT reevaluation_id, payment_id, decision_id, diagnosis_id, source_event_id "
-                "FROM scheduled_reevaluations "
-                "WHERE status = 'PENDING' AND scheduled_for <= :now "
-                "ORDER BY scheduled_for ASC LIMIT :limit"
-            ),
-            {"now": now, "limit": limit},
+        (
+            await session.execute(
+                text(
+                    "SELECT reevaluation_id, payment_id, decision_id, diagnosis_id, source_event_id "
+                    "FROM scheduled_reevaluations "
+                    "WHERE status = 'PENDING' AND scheduled_for <= :now "
+                    "ORDER BY scheduled_for ASC LIMIT :limit"
+                ),
+                {"now": now, "limit": limit},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 

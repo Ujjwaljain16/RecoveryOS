@@ -19,7 +19,11 @@ from tests.integration.conftest import seed_merchant_and_customer, to_async_url
 
 
 async def _seed_payment_with_ground_truth(
-    migrated_db: str, *, true_recovery_prob_bps: int, true_failure_type: str, opted_out: bool = False
+    migrated_db: str,
+    *,
+    true_recovery_prob_bps: int,
+    true_failure_type: str,
+    opted_out: bool = False,
 ) -> tuple[str, str]:
     merchant_id = str(uuid.uuid4())
     customer_id = str(uuid.uuid4())
@@ -40,8 +44,12 @@ async def _seed_payment_with_ground_truth(
                 "VALUES (:pid, :mid, :cid, 200000, 'upi', 'HDFC', 'failed', 'TIMEOUT', 'TEMPORARY', "
                 "true, :ts, :ts)"
             ),
-            {"pid": payment_id, "mid": merchant_id, "cid": customer_id,
-             "ts": datetime.now(UTC) - timedelta(hours=1)},
+            {
+                "pid": payment_id,
+                "mid": merchant_id,
+                "cid": customer_id,
+                "ts": datetime.now(UTC) - timedelta(hours=1),
+            },
         )
         sim_id = str(uuid.uuid4())
         await conn.execute(
@@ -59,8 +67,13 @@ async def _seed_payment_with_ground_truth(
                 "latent_customer_propensity, true_recovery_prob_bps, true_failure_type) "
                 "VALUES (:lid, :sim_id, :pid, 0.8, 0.9, 0.1, 0.2, :prob, :tft)"
             ),
-            {"lid": str(uuid.uuid4()), "sim_id": sim_id, "pid": payment_id,
-             "prob": true_recovery_prob_bps, "tft": true_failure_type},
+            {
+                "lid": str(uuid.uuid4()),
+                "sim_id": sim_id,
+                "pid": payment_id,
+                "prob": true_recovery_prob_bps,
+                "tft": true_failure_type,
+            },
         )
     await engine.dispose()
     return payment_id, customer_id
@@ -79,9 +92,7 @@ def _run_execution_worker_once(migrated_db: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_successful_recovery_records_effective_and_correct_outcome(
-    migrated_db, redis_client
-):
+async def test_successful_recovery_records_effective_and_correct_outcome(migrated_db, redis_client):
     """TEMPORARY_GATEWAY_TIMEOUT ground truth + a deterministic-fallback
     diagnosis (no LLM configured in the test env, per tests/conftest.py's
     session-wide override) should classify as temporary_bank_degradation --
@@ -104,20 +115,26 @@ async def test_successful_recovery_records_effective_and_correct_outcome(
         _run_execution_worker_once(migrated_db)
 
     with sync_engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "SELECT o.chosen_action, o.observed_outcome, o.diagnosis_correct, "
-                "o.action_effective, o.counterfactual_result "
-                "FROM diagnosis_outcomes o JOIN diagnoses d ON d.diagnosis_id = o.diagnosis_id "
-                "WHERE d.payment_id = :pid"
-            ),
-            {"pid": payment_id},
-        ).mappings().first()
+        row = (
+            conn.execute(
+                text(
+                    "SELECT o.chosen_action, o.observed_outcome, o.diagnosis_correct, "
+                    "o.action_effective, o.counterfactual_result "
+                    "FROM diagnosis_outcomes o JOIN diagnoses d ON d.diagnosis_id = o.diagnosis_id "
+                    "WHERE d.payment_id = :pid"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
 
     assert row is not None, "diagnosis_outcomes row must exist after a terminal ledger write"
     assert row["observed_outcome"] == "SUCCESS"
     assert row["action_effective"] is True
-    assert row["diagnosis_correct"] is True  # fallback correctly maps TIMEOUT -> temporary_bank_degradation
+    assert (
+        row["diagnosis_correct"] is True
+    )  # fallback correctly maps TIMEOUT -> temporary_bank_degradation
     assert row["counterfactual_result"]["actual_recovery_paise"] == 200000
     sync_engine.dispose()
 
@@ -129,7 +146,9 @@ async def test_blocked_payment_records_outcome_with_null_action_effective(
     """An opted-out customer -> BLOCK, no execution ever attempted --
     action_effective must be NULL (not applicable), not False."""
     payment_id, _ = await _seed_payment_with_ground_truth(
-        migrated_db, true_recovery_prob_bps=5000, true_failure_type="CUSTOMER_INSUFFICIENT_FUNDS",
+        migrated_db,
+        true_recovery_prob_bps=5000,
+        true_failure_type="CUSTOMER_INSUFFICIENT_FUNDS",
         opted_out=True,
     )
     await process_payment_failure(payment_id, "HDFC", redis_client)
@@ -138,13 +157,17 @@ async def test_blocked_payment_records_outcome_with_null_action_effective(
 
     sync_engine = create_engine(migrated_db, pool_pre_ping=True)
     with sync_engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "SELECT o.observed_outcome, o.action_effective FROM diagnosis_outcomes o "
-                "JOIN diagnoses d ON d.diagnosis_id = o.diagnosis_id WHERE d.payment_id = :pid"
-            ),
-            {"pid": payment_id},
-        ).mappings().first()
+        row = (
+            conn.execute(
+                text(
+                    "SELECT o.observed_outcome, o.action_effective FROM diagnosis_outcomes o "
+                    "JOIN diagnoses d ON d.diagnosis_id = o.diagnosis_id WHERE d.payment_id = :pid"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
 
     assert row is not None
     assert row["observed_outcome"] == "BLOCK"
@@ -158,7 +181,9 @@ async def test_redelivery_does_not_duplicate_outcome_row(migrated_db, redis_clie
     redelivered decision for a payment already at a terminal ledger state
     must not create a second outcome row (unique constraint on diagnosis_id)."""
     payment_id, _ = await _seed_payment_with_ground_truth(
-        migrated_db, true_recovery_prob_bps=5000, true_failure_type="CUSTOMER_INSUFFICIENT_FUNDS",
+        migrated_db,
+        true_recovery_prob_bps=5000,
+        true_failure_type="CUSTOMER_INSUFFICIENT_FUNDS",
         opted_out=True,
     )
     source_event_id = str(uuid.uuid4())

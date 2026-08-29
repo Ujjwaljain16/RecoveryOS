@@ -54,8 +54,13 @@ async def _seed(migrated_db: str, bank: str = "HDFC"):
                     "method, bank, status, failure_code, is_synthetic, created_at, failed_at) "
                     "VALUES (:pid, :mid, :cid, 50000, 'upi', :bank, 'success', NULL, true, :ts, NULL)"
                 ),
-                {"pid": str(uuid.uuid4()), "mid": merchant_id, "cid": customer_id, "bank": bank,
-                 "ts": datetime.now(UTC) - timedelta(days=i + 1)},
+                {
+                    "pid": str(uuid.uuid4()),
+                    "mid": merchant_id,
+                    "cid": customer_id,
+                    "bank": bank,
+                    "ts": datetime.now(UTC) - timedelta(days=i + 1),
+                },
             )
         await conn.execute(
             text(
@@ -98,8 +103,12 @@ async def _seed(migrated_db: str, bank: str = "HDFC"):
                 "recovered_amount_paise, created_at) "
                 "VALUES (:rid, :pid, :did, :ik, 1, 'RETRY_NOW', now(), now(), 'FAILED', 0, now())"
             ),
-            {"rid": str(uuid.uuid4()), "pid": payment_id, "did": decision_id,
-             "ik": f"recovery:{payment_id}:RETRY_NOW:1"},
+            {
+                "rid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": decision_id,
+                "ik": f"recovery:{payment_id}:RETRY_NOW:1",
+            },
         )
     await engine.dispose()
     return payment_id, merchant_id, customer_id

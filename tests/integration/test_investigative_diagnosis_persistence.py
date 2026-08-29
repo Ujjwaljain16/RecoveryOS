@@ -55,15 +55,25 @@ def _mock_investigation_responses():
             return {
                 "selected_cause": "systemic_degradation",
                 "confidence_band": "LIKELY",
-                "evidence": [{"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}],
+                "evidence": [
+                    {"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}
+                ],
             }
         if user_content["round_number"] == 1:
             return {
                 "hypotheses": [
-                    {"cause": "customer_specific", "support_score": 2, "contradict_score": 1,
-                     "unresolved_questions": ["cohort data?"]},
-                    {"cause": "systemic_degradation", "support_score": 3, "contradict_score": 1,
-                     "unresolved_questions": []},
+                    {
+                        "cause": "customer_specific",
+                        "support_score": 2,
+                        "contradict_score": 1,
+                        "unresolved_questions": ["cohort data?"],
+                    },
+                    {
+                        "cause": "systemic_degradation",
+                        "support_score": 3,
+                        "contradict_score": 1,
+                        "unresolved_questions": [],
+                    },
                 ],
                 "action": "call_tool",
                 "tool_name": "get_cohort_failure_rate",
@@ -73,8 +83,12 @@ def _mock_investigation_responses():
             }
         return {
             "hypotheses": [
-                {"cause": "systemic_degradation", "support_score": 6, "contradict_score": 1,
-                 "unresolved_questions": []},
+                {
+                    "cause": "systemic_degradation",
+                    "support_score": 6,
+                    "contradict_score": 1,
+                    "unresolved_questions": [],
+                },
             ],
             "action": "finalize",
             "reasoning": "cohort data confirms systemic",
@@ -155,13 +169,17 @@ async def test_diagnose_and_persist_writes_hypotheses_and_investigation_steps(
             ),
             {"did": diagnosis.diagnosis_id},
         ).scalar_one()
-        step_row = conn.execute(
-            text(
-                "SELECT tool_name, tool_cost, latency_ms, investigation_score "
-                "FROM investigation_steps WHERE diagnosis_id = :did"
-            ),
-            {"did": diagnosis.diagnosis_id},
-        ).mappings().first()
+        step_row = (
+            conn.execute(
+                text(
+                    "SELECT tool_name, tool_cost, latency_ms, investigation_score "
+                    "FROM investigation_steps WHERE diagnosis_id = :did"
+                ),
+                {"did": diagnosis.diagnosis_id},
+            )
+            .mappings()
+            .first()
+        )
     sync_engine.dispose()
 
     assert hyp_count == 1  # only the final round's hypothesis set is persisted

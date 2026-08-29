@@ -295,7 +295,7 @@ def test_dashboard_control_tower_numbers_match_db_state(
             revenue_at_risk_paise=500_000,
             actual_recovery_paise=300_000,
             incremental_recovery_paise=100_000,
-        )
+        ),
     )
 
     page.goto(dashboard_server, wait_until="networkidle")
@@ -440,9 +440,7 @@ def test_audit_explorer_chain_matches_db_joins(
     plausible-looking but disconnected UI.
     """
     merchant_id, _raw_key = demo_merchant
-    payment_id = _run_async(
-        bg_loop, _seed_and_run_full_chain(migrated_db, redis_url, merchant_id)
-    )
+    payment_id = _run_async(bg_loop, _seed_and_run_full_chain(migrated_db, redis_url, merchant_id))
 
     sync_engine = create_engine(migrated_db, pool_pre_ping=True)
     with sync_engine.connect() as conn:
@@ -472,20 +470,28 @@ def test_audit_explorer_chain_matches_db_joins(
             .mappings()
             .first()
         )
-        policy_row = conn.execute(
-            text(
-                "SELECT verdict FROM policy_decisions WHERE payment_id = :pid "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"pid": payment_id},
-        ).mappings().first()
-        recovery_row = conn.execute(
-            text(
-                "SELECT action_type, outcome FROM recoveries WHERE payment_id = :pid "
-                "ORDER BY attempt_number DESC LIMIT 1"
-            ),
-            {"pid": payment_id},
-        ).mappings().first()
+        policy_row = (
+            conn.execute(
+                text(
+                    "SELECT verdict FROM policy_decisions WHERE payment_id = :pid "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
+        recovery_row = (
+            conn.execute(
+                text(
+                    "SELECT action_type, outcome FROM recoveries WHERE payment_id = :pid "
+                    "ORDER BY attempt_number DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
 
     assert diagnosis_row is not None, "pipeline must have produced a real diagnosis"
     assert policy_row is not None, "pipeline must have produced a real policy decision"

@@ -183,8 +183,12 @@ def _derive_tool_inputs(tool_name: str, diagnosis_input: DiagnosisInput) -> dict
     entirely. The investigator chooses WHICH tool runs; it never controls
     what arguments that tool actually receives.
     """
-    if tool_name in ("get_customer_payment_history", "get_customer_recovery_history",
-                     "get_payment_attempt_history", "get_intervention_history"):
+    if tool_name in (
+        "get_customer_payment_history",
+        "get_customer_recovery_history",
+        "get_payment_attempt_history",
+        "get_intervention_history",
+    ):
         return {"payment_id": diagnosis_input.payment_id}
     if tool_name in ("get_cohort_failure_rate", "get_recent_anomalies"):
         return {"bank": diagnosis_input.bank, "method": diagnosis_input.method}
@@ -234,7 +238,9 @@ async def investigate(
     same fail-closed contract as the single-call path.
     """
     if provider != "gemini":
-        logger.info("[Investigator] provider=%r has no multi-round loop wired -- skipping", provider)
+        logger.info(
+            "[Investigator] provider=%r has no multi-round loop wired -- skipping", provider
+        )
         return None
 
     try:
@@ -267,8 +273,11 @@ async def _run_investigation(
 
     for round_number in range(1, MAX_INVESTIGATION_ROUNDS + 1):
         available_tools = {
-            name: {"purpose": spec.purpose, "tool_cost": spec.tool_cost,
-                   "latency_ms_estimate": spec.latency_ms_estimate}
+            name: {
+                "purpose": spec.purpose,
+                "tool_cost": spec.tool_cost,
+                "latency_ms_estimate": spec.latency_ms_estimate,
+            }
             for name, spec in TOOL_REGISTRY.items()
             if name not in used_tools
         }
@@ -277,9 +286,12 @@ async def _run_investigation(
             "round_number": round_number,
             "max_rounds": MAX_INVESTIGATION_ROUNDS,
             "current_hypotheses": [
-                {"cause": h.cause, "support_score": h.support_score,
-                 "contradict_score": h.contradict_score,
-                 "unresolved_questions": h.unresolved_questions}
+                {
+                    "cause": h.cause,
+                    "support_score": h.support_score,
+                    "contradict_score": h.contradict_score,
+                    "unresolved_questions": h.unresolved_questions,
+                }
                 for h in hypotheses
             ],
             "evidence_gathered_so_far": evidence_log,
@@ -338,9 +350,12 @@ async def _run_investigation(
     final_input = {
         "payment": payload,
         "final_hypotheses": [
-            {"cause": h.cause, "support_score": h.support_score,
-             "contradict_score": h.contradict_score,
-             "unresolved_questions": h.unresolved_questions}
+            {
+                "cause": h.cause,
+                "support_score": h.support_score,
+                "contradict_score": h.contradict_score,
+                "unresolved_questions": h.unresolved_questions,
+            }
             for h in hypotheses
         ],
         "evidence_gathered": evidence_log,
@@ -381,7 +396,10 @@ async def _generic_llm_json_call(system_prompt, user_content, schema, model, api
     needs a different schema/prompt per round, so it goes straight to the
     shared low-level client instead.
     """
-    from services.diagnosis_engine.llm_client import gemini_generate_json, strip_additional_properties
+    from services.diagnosis_engine.llm_client import (
+        gemini_generate_json,
+        strip_additional_properties,
+    )
 
     # Only Gemini is wired for the multi-round investigation loop today
     # (Task AGENT1) -- OpenAI's Structured Outputs path could be added the

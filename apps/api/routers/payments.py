@@ -176,9 +176,11 @@ async def payment_detail(
             {
                 "diagnosis_id": diagnosis_row["diagnosis_id"],
                 "root_cause": diagnosis_row["root_cause"],
-                "confidence": float(diagnosis_row["confidence"])
-                if diagnosis_row["confidence"] is not None
-                else None,
+                "confidence": (
+                    float(diagnosis_row["confidence"])
+                    if diagnosis_row["confidence"] is not None
+                    else None
+                ),
                 "confidence_band": diagnosis_row["confidence_band"],
                 "is_fallback": diagnosis_row["is_fallback"],
                 "model_version": diagnosis_row["model_version"],
@@ -197,9 +199,9 @@ async def payment_detail(
                 "cost_paise": c["cost_paise"],
                 "friction_penalty_paise": c["friction_penalty_paise"],
                 "risk_penalty_paise": c["risk_penalty_paise"],
-                "action_confidence": float(c["action_confidence"])
-                if c["action_confidence"] is not None
-                else None,
+                "action_confidence": (
+                    float(c["action_confidence"]) if c["action_confidence"] is not None else None
+                ),
                 "is_selected": (
                     policy_decision_row is not None
                     and c["candidate_id"] == policy_decision_row["candidate_id"]
@@ -222,12 +224,14 @@ async def payment_detail(
                     if policy_config_row is not None
                     else None
                 ),
-                "max_amount_paise": policy_config_row["max_amount_paise"]
-                if policy_config_row is not None
-                else None,
-                "retry_cooldown_hours": policy_config_row["retry_cooldown_hours"]
-                if policy_config_row is not None
-                else None,
+                "max_amount_paise": (
+                    policy_config_row["max_amount_paise"] if policy_config_row is not None else None
+                ),
+                "retry_cooldown_hours": (
+                    policy_config_row["retry_cooldown_hours"]
+                    if policy_config_row is not None
+                    else None
+                ),
             }
             if policy_decision_row is not None
             else None

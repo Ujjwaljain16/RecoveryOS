@@ -75,6 +75,8 @@ def downgrade() -> None:
     op.create_index("ix_recovery_episodes_simulation_id", "recovery_episodes", ["simulation_id"])
     op.create_index("ix_recovery_episodes_payment_id", "recovery_episodes", ["payment_id"])
     op.create_index("ix_recovery_episodes_split_name", "recovery_episodes", ["split_name"])
-    op.create_index("ix_recovery_episodes_clock_timestamp", "recovery_episodes", ["clock_timestamp"])
+    op.create_index(
+        "ix_recovery_episodes_clock_timestamp", "recovery_episodes", ["clock_timestamp"]
+    )
     op.execute("REVOKE ALL ON recovery_episodes FROM diagnoser_role;")
     op.execute("GRANT SELECT, INSERT, UPDATE ON recovery_episodes TO app_role;")

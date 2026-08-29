@@ -151,7 +151,8 @@ async def audit_trail(
         (
             c
             for c in candidate_rows
-            if policy_decision_row is not None and c["candidate_id"] == policy_decision_row["candidate_id"]
+            if policy_decision_row is not None
+            and c["candidate_id"] == policy_decision_row["candidate_id"]
         ),
         None,
     )
@@ -216,20 +217,30 @@ async def audit_trail(
             "failure": {
                 "failure_code": payment_row["failure_code"],
                 "failure_class": payment_row["failure_class"],
-                "failed_at": payment_row["failed_at"].isoformat() if payment_row["failed_at"] else None,
+                "failed_at": (
+                    payment_row["failed_at"].isoformat() if payment_row["failed_at"] else None
+                ),
             },
             "anomaly": (
                 {
                     "scope_type": anomaly_row["scope_type"],
                     "scope_entity": anomaly_row["scope_entity"],
                     "time_bucket": anomaly_row["time_bucket"].isoformat(),
-                    "baseline_rate": float(anomaly_row["baseline_rate"])
-                    if anomaly_row["baseline_rate"] is not None
-                    else None,
-                    "observed_rate": float(anomaly_row["observed_rate"])
-                    if anomaly_row["observed_rate"] is not None
-                    else None,
-                    "z_score": float(anomaly_row["z_score"]) if anomaly_row["z_score"] is not None else None,
+                    "baseline_rate": (
+                        float(anomaly_row["baseline_rate"])
+                        if anomaly_row["baseline_rate"] is not None
+                        else None
+                    ),
+                    "observed_rate": (
+                        float(anomaly_row["observed_rate"])
+                        if anomaly_row["observed_rate"] is not None
+                        else None
+                    ),
+                    "z_score": (
+                        float(anomaly_row["z_score"])
+                        if anomaly_row["z_score"] is not None
+                        else None
+                    ),
                     "severity": anomaly_row["severity"],
                     "is_anomaly": anomaly_row["is_anomaly"],
                 }
@@ -241,9 +252,11 @@ async def audit_trail(
                     "diagnosis_id": diagnosis_row["diagnosis_id"],
                     "cohort_id": diagnosis_row["cohort_id"],
                     "root_cause": diagnosis_row["root_cause"],
-                    "confidence": float(diagnosis_row["confidence"])
-                    if diagnosis_row["confidence"] is not None
-                    else None,
+                    "confidence": (
+                        float(diagnosis_row["confidence"])
+                        if diagnosis_row["confidence"] is not None
+                        else None
+                    ),
                     "confidence_band": diagnosis_row["confidence_band"],
                     "is_fallback": diagnosis_row["is_fallback"],
                     "model_version": diagnosis_row["model_version"],
@@ -284,9 +297,11 @@ async def audit_trail(
                     "cost_paise": chosen_candidate["cost_paise"],
                     "friction_penalty_paise": chosen_candidate["friction_penalty_paise"],
                     "risk_penalty_paise": chosen_candidate["risk_penalty_paise"],
-                    "action_confidence": float(chosen_candidate["action_confidence"])
-                    if chosen_candidate["action_confidence"] is not None
-                    else None,
+                    "action_confidence": (
+                        float(chosen_candidate["action_confidence"])
+                        if chosen_candidate["action_confidence"] is not None
+                        else None
+                    ),
                 }
                 if chosen_candidate is not None
                 else None

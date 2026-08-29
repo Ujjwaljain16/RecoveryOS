@@ -189,8 +189,12 @@ def test_action_confidence_bounded_when_winner_has_no_real_competition():
     still bounded by the same bands, not automatically 1.0 just because
     nothing else came close."""
     candidates = _all_six(
-        RETRY_NOW=500, RETRY_LATER=-999999, ALT_ROUTE=-999999, REMINDER=-999999,
-        ESCALATE=-999999, DO_NOTHING=-999999,
+        RETRY_NOW=500,
+        RETRY_LATER=-999999,
+        ALT_ROUTE=-999999,
+        REMINDER=-999999,
+        ESCALATE=-999999,
+        DO_NOTHING=-999999,
     )
     confidence = compute_action_confidence("RETRY_NOW", candidates)
     assert confidence == 0.90

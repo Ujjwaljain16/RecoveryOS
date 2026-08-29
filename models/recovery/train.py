@@ -31,6 +31,7 @@ try:
     from sklearn.metrics import roc_auc_score
     from sklearn.neural_network import MLPClassifier
     import lightgbm as lgb
+
     HAS_DEPS = True
 except ImportError as e:
     HAS_DEPS = False
@@ -44,7 +45,9 @@ BOOTSTRAP_N = 1000
 BOOTSTRAP_SEED = 12345
 
 
-def _bootstrap_auc_ci(y_true: np.ndarray, y_score: np.ndarray, n: int = BOOTSTRAP_N) -> tuple[float, float]:
+def _bootstrap_auc_ci(
+    y_true: np.ndarray, y_score: np.ndarray, n: int = BOOTSTRAP_N
+) -> tuple[float, float]:
     rng = np.random.RandomState(BOOTSTRAP_SEED)
     aucs = []
     for _ in range(n):
@@ -95,7 +98,9 @@ def _run_leakage_gate(
 
 def train(data_dir: Path, output_dir: Path) -> None:
     if not HAS_DEPS:
-        raise ImportError(f"Missing dependencies: {_IMPORT_ERROR}\npip install lightgbm scikit-learn pandas pyarrow")
+        raise ImportError(
+            f"Missing dependencies: {_IMPORT_ERROR}\npip install lightgbm scikit-learn pandas pyarrow"
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -137,6 +142,7 @@ def train(data_dir: Path, output_dir: Path) -> None:
     lr_action_auc = roc_auc_score(y_val_action, lr_action_proba)
 
     import pickle
+
     with open(output_dir / "model_lr.pkl", "wb") as f:
         pickle.dump(lr_cal, f)
 
@@ -149,7 +155,7 @@ def train(data_dir: Path, output_dir: Path) -> None:
     print("[Train] Training LightGBM...")
     # For LGBM: use raw features (string categoricals) for native handling
     cat_cols_present = [c for c in CATEGORICAL_COLS if c in feat_train.columns]
-    
+
     # LightGBM requires pandas 'category' dtype for native categorical handling
     lgb_feat_train = feat_train.drop(columns=["episode_id"]).copy()
     lgb_feat_val = feat_val.drop(columns=["episode_id"]).copy()
@@ -184,7 +190,10 @@ def train(data_dir: Path, output_dir: Path) -> None:
         "class_weight": "balanced",
     }
 
-    callbacks = [lgb.early_stopping(stopping_rounds=50, verbose=False), lgb.log_evaluation(period=100)]
+    callbacks = [
+        lgb.early_stopping(stopping_rounds=50, verbose=False),
+        lgb.log_evaluation(period=100),
+    ]
     lgb_model = lgb.train(
         lgb_params,
         lgb_train,
@@ -243,23 +252,26 @@ def train(data_dir: Path, output_dir: Path) -> None:
     # Suspicion flag (Gate 3 — not a hard gate)
     max_auc = max(lgb_auc, mlp_auc, lr_auc)
     if max_auc > 0.88:
-        print(f"[Gate3] WARNING: Max AUC = {max_auc:.4f} > 0.88. "
-              f"Investigate for latent column leakage in features.parquet.")
+        print(
+            f"[Gate3] WARNING: Max AUC = {max_auc:.4f} > 0.88. "
+            f"Investigate for latent column leakage in features.parquet."
+        )
         results["gate3_suspicion"] = True
     else:
         results["gate3_suspicion"] = False
 
     results["duration_sec"] = round(time.time() - t0, 2)
     results["best_model"] = max(
-        results["models"].items(),
-        key=lambda x: x[1]["auc_actual_recovered"]
+        results["models"].items(), key=lambda x: x[1]["auc_actual_recovered"]
     )[0]
 
     out_path = output_dir / "train_results.json"
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"\n[Train] ✓ Complete in {results['duration_sec']}s | Best model: {results['best_model']}")
+    print(
+        f"\n[Train] ✓ Complete in {results['duration_sec']}s | Best model: {results['best_model']}"
+    )
     print(f"[Train] Results → {out_path}")
 
 

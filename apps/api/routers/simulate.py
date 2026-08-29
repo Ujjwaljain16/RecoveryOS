@@ -27,7 +27,11 @@ from apps.api.dependencies.auth import verify_api_key
 from recoveryos.config import get_settings
 from recoveryos.database import get_app_session
 from recoveryos.models import Merchant
-from services.risk_engine.anomaly import compute_anomaly_window, floor_to_bucket, persist_anomaly_window
+from services.risk_engine.anomaly import (
+    compute_anomaly_window,
+    floor_to_bucket,
+    persist_anomaly_window,
+)
 
 router = APIRouter()
 

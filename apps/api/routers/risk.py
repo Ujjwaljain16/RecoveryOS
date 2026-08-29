@@ -44,9 +44,10 @@ async def risk_summary(
     merchant_id (see apps/api/dependencies/auth.py).
     """
     ledger_row = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 SELECT
                     COALESCE(SUM(rl.revenue_at_risk_paise), 0) AS revenue_at_risk_paise,
                     COALESCE(SUM(rl.actual_recovery_paise), 0) AS recovered_paise,
@@ -55,10 +56,13 @@ async def risk_summary(
                 JOIN payments p ON p.payment_id = rl.payment_id
                 WHERE p.merchant_id = :merchant_id
                 """
-            ),
-            {"merchant_id": merchant.merchant_id},
+                ),
+                {"merchant_id": merchant.merchant_id},
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
 
     revenue_at_risk_paise = int(ledger_row["revenue_at_risk_paise"])
     recovered_paise = int(ledger_row["recovered_paise"])
@@ -73,9 +77,10 @@ async def risk_summary(
     # column on that scope), so this reads the latest window per bank that
     # has ANY anomaly history, real DB rows only.
     bank_rows = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 SELECT DISTINCT ON (scope_entity)
                     scope_entity AS bank, severity, is_anomaly, observed_rate,
                     baseline_rate, time_bucket
@@ -83,9 +88,12 @@ async def risk_summary(
                 WHERE scope_type = 'bank'
                 ORDER BY scope_entity, time_bucket DESC
                 """
+                )
             )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     freshness_cutoff = datetime.now(UTC) - timedelta(minutes=BANK_HEALTH_FRESHNESS_MINUTES)
     bank_health = [
@@ -97,8 +105,12 @@ async def risk_summary(
                 else "HEALTHY"
             ),
             "severity": row["severity"],
-            "observed_rate": float(row["observed_rate"]) if row["observed_rate"] is not None else None,
-            "baseline_rate": float(row["baseline_rate"]) if row["baseline_rate"] is not None else None,
+            "observed_rate": (
+                float(row["observed_rate"]) if row["observed_rate"] is not None else None
+            ),
+            "baseline_rate": (
+                float(row["baseline_rate"]) if row["baseline_rate"] is not None else None
+            ),
             "time_bucket": row["time_bucket"].isoformat(),
         }
         for row in bank_rows
@@ -109,9 +121,10 @@ async def risk_summary(
     # terminal outcome yet, and a RETRY_LATER decision deferred to
     # scheduled_reevaluations (Task REPLAN1) awaiting its future re-run.
     queue_rows = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 (
                     SELECT r.payment_id, p.amount_paise, r.action_type AS chosen_action,
                            ca.recovery_prob_bps, 'EXECUTING' AS status, r.created_at AS ts
@@ -135,10 +148,13 @@ async def risk_summary(
                 ORDER BY ts DESC
                 LIMIT :limit
                 """
-            ),
-            {"merchant_id": merchant.merchant_id, "limit": RECOVERY_QUEUE_LIMIT},
+                ),
+                {"merchant_id": merchant.merchant_id, "limit": RECOVERY_QUEUE_LIMIT},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     recovery_queue = [
         {

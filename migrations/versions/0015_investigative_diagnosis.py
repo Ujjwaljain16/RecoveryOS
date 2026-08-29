@@ -91,9 +91,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
     )
-    op.create_index(
-        "idx_diagnosis_hypotheses_diagnosis", "diagnosis_hypotheses", ["diagnosis_id"]
-    )
+    op.create_index("idx_diagnosis_hypotheses_diagnosis", "diagnosis_hypotheses", ["diagnosis_id"])
 
     # ── investigation_steps: the tool-call trace, in order, with the
     # information-gain score that justified each choice -- Points 2 & 3.

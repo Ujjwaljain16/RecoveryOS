@@ -13,6 +13,7 @@ after EACH seed (so a crash partway through doesn't lose completed seeds).
 Run as a background process -- a single seed takes ~10-12 minutes, this
 script runs several sequentially.
 """
+
 from __future__ import annotations
 
 import json
@@ -50,9 +51,7 @@ def wait_for_postgres_healthy(timeout=90):
     raise RuntimeError("postgres never became reachable")
 
 
-COMPOSE = (
-    "docker compose -f docker-compose.yml -f docker-compose.override.baseline.yml"
-)
+COMPOSE = "docker compose -f docker-compose.yml -f docker-compose.override.baseline.yml"
 
 
 def regenerate_dataset(seed: int):
@@ -66,7 +65,7 @@ def regenerate_dataset(seed: int):
     run("python -m dotenv run -- alembic upgrade head")
     run(
         f"python -m dotenv run -- python -m simulator.run "
-        f"--n=10000 --seed={seed} --customers=2000 --scenario-weights=\"{{}}\" --output=db"
+        f'--n=10000 --seed={seed} --customers=2000 --scenario-weights="{{}}" --output=db'
     )
     run(f"{COMPOSE} up -d --build")
     time.sleep(15)
@@ -119,7 +118,10 @@ def wait_for_drain(expected_ledger_rows: int, timeout=1800):
             lag, pending = None, None
         cur.execute("SELECT count(*) FROM recovery_ledger")
         ledger_count = cur.fetchone()[0]
-        print(f"  drain progress: ledger={ledger_count}/{expected_ledger_rows} lag={lag} pending={pending}", flush=True)
+        print(
+            f"  drain progress: ledger={ledger_count}/{expected_ledger_rows} lag={lag} pending={pending}",
+            flush=True,
+        )
         if ledger_count >= expected_ledger_rows and lag == 0 and pending == 0:
             conn.close()
             return
@@ -141,7 +143,9 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
     failed_payments = scalar("SELECT count(*) FROM payments WHERE status IN ('failed','recovered')")
     recoveryos_total = scalar("SELECT COALESCE(SUM(actual_recovery_paise),0) FROM recovery_ledger")
     baseline_total = scalar("SELECT COALESCE(SUM(recovered_amount_paise),0) FROM baseline_runs")
-    recovered_payments = scalar("SELECT count(*) FROM recovery_ledger WHERE actual_recovery_paise > 0")
+    recovered_payments = scalar(
+        "SELECT count(*) FROM recovery_ledger WHERE actual_recovery_paise > 0"
+    )
     revenue_at_risk = scalar("SELECT COALESCE(SUM(revenue_at_risk_paise),0) FROM recovery_ledger")
     interventions = scalar("SELECT count(*) FROM policy_decisions WHERE verdict='ALLOW'")
     blocks = scalar("SELECT count(*) FROM policy_decisions WHERE verdict='BLOCK'")
@@ -173,15 +177,15 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
         """
     )
     root_cause_rows = cur.fetchall()
-    committed = [
-        (tft, rc) for tft, rc in root_cause_rows if rc != "unknown"
-    ]
+    committed = [(tft, rc) for tft, rc in root_cause_rows if rc != "unknown"]
     correct_committed = sum(
         1 for tft, rc in committed if TRUE_TO_EXPECTED_ROOT_CAUSE.get(tft) == rc
     )
 
     elapsed_seconds = time.time() - start_wall_time
-    avg_latency_ms_per_payment = (elapsed_seconds / failed_payments) * 1000 if failed_payments else None
+    avg_latency_ms_per_payment = (
+        (elapsed_seconds / failed_payments) * 1000 if failed_payments else None
+    )
 
     conn.close()
 
@@ -200,7 +204,9 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
         "policy_blocks": blocks,
         "policy_escalates": escalates,
         "root_cause_accuracy_raw": correct_committed / diagnoses_total if diagnoses_total else None,
-        "root_cause_accuracy_committed_only": correct_committed / len(committed) if committed else None,
+        "root_cause_accuracy_committed_only": (
+            correct_committed / len(committed) if committed else None
+        ),
         "abstention_rate": abstentions / diagnoses_total if diagnoses_total else None,
         "wall_clock_seconds_full_run": elapsed_seconds,
         "avg_throughput_latency_ms_per_payment": avg_latency_ms_per_payment,

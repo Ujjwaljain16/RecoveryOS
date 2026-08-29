@@ -61,15 +61,15 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["simulation_id"], ["simulator_manifests.simulation_id"], ondelete="CASCADE"
         ),
-        sa.ForeignKeyConstraint(
-            ["payment_id"], ["payments.payment_id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["payment_id"], ["payments.payment_id"], ondelete="CASCADE"),
     )
 
     op.create_index("ix_recovery_episodes_simulation_id", "recovery_episodes", ["simulation_id"])
     op.create_index("ix_recovery_episodes_payment_id", "recovery_episodes", ["payment_id"])
     op.create_index("ix_recovery_episodes_split_name", "recovery_episodes", ["split_name"])
-    op.create_index("ix_recovery_episodes_clock_timestamp", "recovery_episodes", ["clock_timestamp"])
+    op.create_index(
+        "ix_recovery_episodes_clock_timestamp", "recovery_episodes", ["clock_timestamp"]
+    )
 
     # ── Role grants ────────────────────────────────────────────────────────────
     # diagnoser_role: ZERO access — table contains ground-truth labels + latent state

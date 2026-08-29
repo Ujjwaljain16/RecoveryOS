@@ -59,8 +59,11 @@ async def _seed_failed_payment(
                 "true, :ts, :ts)"
             ),
             {
-                "pid": payment_id, "mid": merchant_id, "cid": customer_id,
-                "amount": amount_paise, "ts": datetime.now(UTC) - timedelta(hours=1),
+                "pid": payment_id,
+                "mid": merchant_id,
+                "cid": customer_id,
+                "amount": amount_paise,
+                "ts": datetime.now(UTC) - timedelta(hours=1),
             },
         )
         if with_latent_state:
@@ -80,7 +83,12 @@ async def _seed_failed_payment(
                     "latent_customer_propensity, true_recovery_prob_bps, true_failure_type) "
                     "VALUES (:lid, :sim_id, :pid, 0.8, 0.9, 0.1, 0.2, :prob, 'TEMPORARY_GATEWAY_TIMEOUT')"
                 ),
-                {"lid": str(uuid.uuid4()), "sim_id": sim_id, "pid": payment_id, "prob": true_recovery_prob_bps},
+                {
+                    "lid": str(uuid.uuid4()),
+                    "sim_id": sim_id,
+                    "pid": payment_id,
+                    "prob": true_recovery_prob_bps,
+                },
             )
     await engine.dispose()
     return payment_id, merchant_id, customer_id
@@ -125,8 +133,15 @@ def _counts(migrated_db: str, payment_id: str) -> dict:
             t: conn.execute(
                 text(f"SELECT count(*) FROM {t} WHERE payment_id = :pid"), {"pid": payment_id}
             ).scalar_one()
-            for t in ("events", "diagnoses", "candidate_actions", "policy_decisions",
-                      "recoveries", "recovery_ledger", "audit_log")
+            for t in (
+                "events",
+                "diagnoses",
+                "candidate_actions",
+                "policy_decisions",
+                "recoveries",
+                "recovery_ledger",
+                "audit_log",
+            )
         }
     engine.dispose()
     return row
@@ -161,10 +176,16 @@ async def test_kill_event_processor_mid_batch(migrated_db, redis_client, monkeyp
         await redis_client.xadd(
             STREAM_NAME,
             {
-                "event_id": str(uuid.uuid4()), "idempotency_key": str(uuid.uuid4()),
-                "payment_id": pid, "merchant_id": merchant_id, "customer_id": customer_id,
-                "amount_paise": "100000", "method": "upi", "bank": "HDFC",
-                "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+                "event_id": str(uuid.uuid4()),
+                "idempotency_key": str(uuid.uuid4()),
+                "payment_id": pid,
+                "merchant_id": merchant_id,
+                "customer_id": customer_id,
+                "amount_paise": "100000",
+                "method": "upi",
+                "bank": "HDFC",
+                "event_type": "PAYMENT_FAILED",
+                "failure_code": "TIMEOUT",
             },
         )
 
@@ -245,9 +266,14 @@ async def test_kill_pipeline_worker_mid_decision(migrated_db, redis_client, monk
     await redis_client.xadd(
         STREAM_NAME,
         {
-            "source_event_id": source_event_id, "payment_id": payment_id,
-            "merchant_id": "unused", "amount_paise": "200000", "method": "upi",
-            "bank": "HDFC", "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+            "source_event_id": source_event_id,
+            "payment_id": payment_id,
+            "merchant_id": "unused",
+            "amount_paise": "200000",
+            "method": "upi",
+            "bank": "HDFC",
+            "event_type": "PAYMENT_FAILED",
+            "failure_code": "TIMEOUT",
         },
     )
 
@@ -277,7 +303,8 @@ async def test_kill_pipeline_worker_mid_decision(migrated_db, redis_client, monk
     # "restart" -- retry with the real function
     monkeypatch.setattr(pipeline_consumer_module, "decide_and_persist", real_decide_and_persist)
     results = await redis_client.xreadgroup(
-        groupname=GROUP_NAME, consumername="c1",
+        groupname=GROUP_NAME,
+        consumername="c1",
         streams={STREAM_NAME: "0"},  # redeliver this consumer's own pending entries
         count=10,
     )
@@ -285,7 +312,9 @@ async def test_kill_pipeline_worker_mid_decision(migrated_db, redis_client, monk
         await _process_batch(redis_client, messages)
 
     counts_final = _counts(migrated_db, payment_id)
-    assert counts_final["diagnoses"] == 1, "must not duplicate the diagnosis on retry (source_event_id dedup)"
+    assert (
+        counts_final["diagnoses"] == 1
+    ), "must not duplicate the diagnosis on retry (source_event_id dedup)"
     assert counts_final["policy_decisions"] == 1
     assert counts_final["recovery_ledger"] <= 1
 
@@ -328,9 +357,14 @@ async def test_drop_postgres_connection_mid_ledger_write(migrated_db, redis_clie
     await redis_client.xadd(
         STREAM_NAME,
         {
-            "source_event_id": source_event_id, "payment_id": payment_id,
-            "merchant_id": "unused", "amount_paise": "200000", "method": "upi",
-            "bank": "HDFC", "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+            "source_event_id": source_event_id,
+            "payment_id": payment_id,
+            "merchant_id": "unused",
+            "amount_paise": "200000",
+            "method": "upi",
+            "bank": "HDFC",
+            "event_type": "PAYMENT_FAILED",
+            "failure_code": "TIMEOUT",
         },
     )
 
@@ -349,7 +383,9 @@ async def test_drop_postgres_connection_mid_ledger_write(migrated_db, redis_clie
             raise ConnectionError("simulated Postgres connection drop mid-write")
         return await real_populate(*args, **kwargs)
 
-    monkeypatch.setattr(pipeline_consumer_module, "populate_ledger_and_audit_async", _crash_first_write)
+    monkeypatch.setattr(
+        pipeline_consumer_module, "populate_ledger_and_audit_async", _crash_first_write
+    )
 
     results = await redis_client.xreadgroup(
         groupname=GROUP_NAME, consumername="c1", streams={STREAM_NAME: ">"}, count=10
@@ -361,7 +397,9 @@ async def test_drop_postgres_connection_mid_ledger_write(migrated_db, redis_clie
     assert pending["pending"] == 1
 
     counts_after_crash = _counts(migrated_db, payment_id)
-    assert counts_after_crash["recovery_ledger"] == 0, "no partial ledger row after a dropped connection"
+    assert (
+        counts_after_crash["recovery_ledger"] == 0
+    ), "no partial ledger row after a dropped connection"
     assert counts_after_crash["audit_log"] == 0
 
     monkeypatch.setattr(pipeline_consumer_module, "populate_ledger_and_audit_async", real_populate)
@@ -372,7 +410,9 @@ async def test_drop_postgres_connection_mid_ledger_write(migrated_db, redis_clie
         await _process_batch(redis_client, messages)
 
     counts_final = _counts(migrated_db, payment_id)
-    assert counts_final["recovery_ledger"] == 1, "eventually consistent -- exactly one row after retry"
+    assert (
+        counts_final["recovery_ledger"] == 1
+    ), "eventually consistent -- exactly one row after retry"
     assert counts_final["audit_log"] == 1
 
 
@@ -406,9 +446,16 @@ async def test_partitioned_redis_during_downstream_publish(migrated_db, redis_cl
     await redis_client.xadd(
         STREAM_NAME,
         {
-            "event_id": event_id, "idempotency_key": event_id, "payment_id": payment_id,
-            "merchant_id": merchant_id, "customer_id": customer_id, "amount_paise": "100000",
-            "method": "upi", "bank": "HDFC", "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+            "event_id": event_id,
+            "idempotency_key": event_id,
+            "payment_id": payment_id,
+            "merchant_id": merchant_id,
+            "customer_id": customer_id,
+            "amount_paise": "100000",
+            "method": "upi",
+            "bank": "HDFC",
+            "event_type": "PAYMENT_FAILED",
+            "failure_code": "TIMEOUT",
         },
     )
 
@@ -452,7 +499,9 @@ async def test_partitioned_redis_during_downstream_publish(migrated_db, redis_cl
     await _reclaim_pending(redis_client)
 
     risk_engine_len_after = await redis_client.xlen("stream:risk_engine")
-    assert risk_engine_len_after == 1, "exactly one publish once Redis heals -- not zero, not duplicated"
+    assert (
+        risk_engine_len_after == 1
+    ), "exactly one publish once Redis heals -- not zero, not duplicated"
     with sync_engine.connect() as conn:
         event_count_final = conn.execute(
             text("SELECT count(*) FROM events WHERE payment_id = :pid"), {"pid": payment_id}
@@ -487,9 +536,16 @@ async def test_duplicate_and_replayed_events_stay_idempotent(migrated_db, redis_
     payment_id = str(uuid.uuid4())
     event_id = str(uuid.uuid4())
     msg = {
-        "event_id": event_id, "idempotency_key": event_id, "payment_id": payment_id,
-        "merchant_id": merchant_id, "customer_id": customer_id, "amount_paise": "100000",
-        "method": "upi", "bank": "HDFC", "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+        "event_id": event_id,
+        "idempotency_key": event_id,
+        "payment_id": payment_id,
+        "merchant_id": merchant_id,
+        "customer_id": customer_id,
+        "amount_paise": "100000",
+        "method": "upi",
+        "bank": "HDFC",
+        "event_type": "PAYMENT_FAILED",
+        "failure_code": "TIMEOUT",
     }
 
     await _reset_streams(redis_client, STREAM_NAME, "stream:risk_engine")
@@ -508,10 +564,14 @@ async def test_duplicate_and_replayed_events_stay_idempotent(migrated_db, redis_
         event_count = conn.execute(
             text("SELECT count(*) FROM events WHERE payment_id = :pid"), {"pid": payment_id}
         ).scalar_one()
-    assert event_count == 1, f"6 deliveries of the same event must collapse to 1 row, got {event_count}"
+    assert (
+        event_count == 1
+    ), f"6 deliveries of the same event must collapse to 1 row, got {event_count}"
 
     risk_engine_len = await redis_client.xlen("stream:risk_engine")
-    assert risk_engine_len == 1, f"exactly 1 downstream publish for 6 deliveries, got {risk_engine_len}"
+    assert (
+        risk_engine_len == 1
+    ), f"exactly 1 downstream publish for 6 deliveries, got {risk_engine_len}"
     sync_engine.dispose()
 
 
@@ -555,9 +615,14 @@ async def test_out_of_order_events_same_payment_still_yield_one_ledger_row(
         await redis_client.xadd(
             STREAM_NAME,
             {
-                "source_event_id": str(uuid.uuid4()), "payment_id": payment_id,
-                "merchant_id": "unused", "amount_paise": "200000", "method": "upi",
-                "bank": "HDFC", "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+                "source_event_id": str(uuid.uuid4()),
+                "payment_id": payment_id,
+                "merchant_id": "unused",
+                "amount_paise": "200000",
+                "method": "upi",
+                "bank": "HDFC",
+                "event_type": "PAYMENT_FAILED",
+                "failure_code": "TIMEOUT",
             },
         )
 
@@ -568,11 +633,15 @@ async def test_out_of_order_events_same_payment_still_yield_one_ledger_row(
         await _process_batch(redis_client, messages)
 
     counts = _counts(migrated_db, payment_id)
-    assert counts["policy_decisions"] == 2, "two distinct source_event_ids legitimately get two decisions"
-    assert counts["recovery_ledger"] == 1, (
-        f"UNIQUE(payment_id) must hold regardless of arrival order -- got {counts['recovery_ledger']} rows"
-    )
-    assert counts["audit_log"] == 1, "only the winning write gets an audit_log entry (gaps.md's own rule)"
+    assert (
+        counts["policy_decisions"] == 2
+    ), "two distinct source_event_ids legitimately get two decisions"
+    assert (
+        counts["recovery_ledger"] == 1
+    ), f"UNIQUE(payment_id) must hold regardless of arrival order -- got {counts['recovery_ledger']} rows"
+    assert (
+        counts["audit_log"] == 1
+    ), "only the winning write gets an audit_log entry (gaps.md's own rule)"
 
 
 # ─── 8. consumer restart mid multi-message batch ────────────────────────────
@@ -607,10 +676,16 @@ async def test_consumer_restart_resumes_only_unprocessed_messages(
         await redis_client.xadd(
             STREAM_NAME,
             {
-                "event_id": str(uuid.uuid4()), "idempotency_key": str(uuid.uuid4()),
-                "payment_id": pid, "merchant_id": merchant_id, "customer_id": customer_id,
-                "amount_paise": "100000", "method": "upi", "bank": "HDFC",
-                "event_type": "PAYMENT_FAILED", "failure_code": "TIMEOUT",
+                "event_id": str(uuid.uuid4()),
+                "idempotency_key": str(uuid.uuid4()),
+                "payment_id": pid,
+                "merchant_id": merchant_id,
+                "customer_id": customer_id,
+                "amount_paise": "100000",
+                "method": "upi",
+                "bank": "HDFC",
+                "event_type": "PAYMENT_FAILED",
+                "failure_code": "TIMEOUT",
             },
         )
 
@@ -629,7 +704,9 @@ async def test_consumer_restart_resumes_only_unprocessed_messages(
     assert events_after_partial == 2
 
     pending = await redis_client.xpending(STREAM_NAME, GROUP_NAME)
-    assert pending["pending"] == 0, "the first 2 were cleanly xack'd; the other 3 were never delivered yet"
+    assert (
+        pending["pending"] == 0
+    ), "the first 2 were cleanly xack'd; the other 3 were never delivered yet"
 
     # "fresh consumer instance" picks up the rest
     results = await redis_client.xreadgroup(
@@ -651,7 +728,9 @@ async def test_consumer_restart_resumes_only_unprocessed_messages(
 
 
 @pytest.mark.asyncio
-async def test_partial_downstream_failure_execution_then_ledger_write_dies(migrated_db, monkeypatch):
+async def test_partial_downstream_failure_execution_then_ledger_write_dies(
+    migrated_db, monkeypatch
+):
     """
     Sync path (execution_worker): a recovery attempt genuinely executes and
     reaches a terminal SUCCESS outcome, but the ledger/audit write that
@@ -697,9 +776,9 @@ async def test_partial_downstream_failure_execution_then_ledger_write_dies(migra
                 payment_id=payment_id,
                 candidate_id=None,
                 decision_id=None,  # audit_log's decision_id/recovery_id FKs are nullable --
-                verdict="ALLOW",   # this test targets the ledger write's own crash-retry
+                verdict="ALLOW",  # this test targets the ledger write's own crash-retry
                 chosen_action="RETRY_NOW",  # safety, not FK integrity, so no real
-                recovery_prob_bps=8000,     # policy_decisions/recoveries rows are needed.
+                recovery_prob_bps=8000,  # policy_decisions/recoveries rows are needed.
                 cost_paise=0,
                 actual_recovery_paise=160_000,
                 recovery_id=None,
@@ -709,14 +788,17 @@ async def test_partial_downstream_failure_execution_then_ledger_write_dies(migra
         conn.rollback()
 
         ledger_count_after_crash = conn.execute(
-            text("SELECT count(*) FROM recovery_ledger WHERE payment_id = :pid"), {"pid": payment_id}
+            text("SELECT count(*) FROM recovery_ledger WHERE payment_id = :pid"),
+            {"pid": payment_id},
         ).scalar_one()
         status_after_crash = conn.execute(
             text("SELECT status FROM payments WHERE payment_id = :pid"), {"pid": payment_id}
         ).scalar_one()
 
     assert ledger_count_after_crash == 0, "no partial ledger row after the simulated crash"
-    assert status_after_crash == "failed", "payments.status must not flip to 'recovered' on a write that didn't complete"
+    assert (
+        status_after_crash == "failed"
+    ), "payments.status must not flip to 'recovered' on a write that didn't complete"
 
     with sync_engine.connect() as conn:
         ledger_module.populate_ledger_and_audit_sync(
@@ -736,7 +818,8 @@ async def test_partial_downstream_failure_execution_then_ledger_write_dies(migra
 
     with sync_engine.connect() as conn:
         ledger_count_final = conn.execute(
-            text("SELECT count(*) FROM recovery_ledger WHERE payment_id = :pid"), {"pid": payment_id}
+            text("SELECT count(*) FROM recovery_ledger WHERE payment_id = :pid"),
+            {"pid": payment_id},
         ).scalar_one()
         audit_count_final = conn.execute(
             text("SELECT count(*) FROM audit_log WHERE payment_id = :pid"), {"pid": payment_id}
@@ -745,7 +828,9 @@ async def test_partial_downstream_failure_execution_then_ledger_write_dies(migra
             text("SELECT status FROM payments WHERE payment_id = :pid"), {"pid": payment_id}
         ).scalar_one()
 
-    assert ledger_count_final == 1, "eventually consistent -- exactly one ledger row after the retry succeeds"
+    assert (
+        ledger_count_final == 1
+    ), "eventually consistent -- exactly one ledger row after the retry succeeds"
     assert audit_count_final == 1
     assert status_final == "recovered"
     sync_engine.dispose()

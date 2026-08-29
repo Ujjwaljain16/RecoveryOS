@@ -105,9 +105,7 @@ def upgrade() -> None:
         "scheduled_reevaluations",
         ["status", "scheduled_for"],
     )
-    op.execute(
-        "GRANT SELECT, INSERT, UPDATE ON scheduled_reevaluations TO app_role;"
-    )
+    op.execute("GRANT SELECT, INSERT, UPDATE ON scheduled_reevaluations TO app_role;")
 
 
 def downgrade() -> None:

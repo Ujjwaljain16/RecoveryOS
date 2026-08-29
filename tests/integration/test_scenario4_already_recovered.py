@@ -57,7 +57,12 @@ async def _seed_payment_guaranteed_to_recover(migrated_db: str) -> tuple[str, st
                 "VALUES (:pid, :mid, :cid, 300000, 'upi', 'HDFC', 'failed', 'TIMEOUT', 'TEMPORARY', "
                 "true, :ts, :ts)"
             ),
-            {"pid": payment_id, "mid": merchant_id, "cid": customer_id, "ts": datetime.now(UTC) - timedelta(hours=1)},
+            {
+                "pid": payment_id,
+                "mid": merchant_id,
+                "cid": customer_id,
+                "ts": datetime.now(UTC) - timedelta(hours=1),
+            },
         )
         simulation_id = str(uuid.uuid4())
         await conn.execute(
@@ -140,23 +145,29 @@ async def test_already_recovered_payment_blocked_even_immediately_after_recovery
     # Immediately (well within any cooldown window), a genuinely new event
     # arrives for the same payment -- fresh source_event_id, real ingest path.
     new_source_event_id = str(uuid.uuid4())
-    await process_payment_failure(payment_id, "HDFC", redis_client, source_event_id=new_source_event_id)
+    await process_payment_failure(
+        payment_id, "HDFC", redis_client, source_event_id=new_source_event_id
+    )
 
     sync_engine = create_engine(migrated_db, pool_pre_ping=True)
     with sync_engine.connect() as conn:
-        decision = conn.execute(
-            text(
-                "SELECT verdict, rule_trace FROM policy_decisions "
-                "WHERE payment_id = :pid AND source_event_id = :sid"
-            ),
-            {"pid": payment_id, "sid": new_source_event_id},
-        ).mappings().first()
+        decision = (
+            conn.execute(
+                text(
+                    "SELECT verdict, rule_trace FROM policy_decisions "
+                    "WHERE payment_id = :pid AND source_event_id = :sid"
+                ),
+                {"pid": payment_id, "sid": new_source_event_id},
+            )
+            .mappings()
+            .first()
+        )
     sync_engine.dispose()
 
     assert decision is not None, "the new event should have produced its own policy_decisions row"
-    assert decision["verdict"] == "BLOCK", (
-        f"expected BLOCK for an already-recovered payment, got {decision['verdict']!r}"
-    )
+    assert (
+        decision["verdict"] == "BLOCK"
+    ), f"expected BLOCK for an already-recovered payment, got {decision['verdict']!r}"
     assert len(decision["rule_trace"]) == 1, (
         f"trace should stop at the FIRST rule (EligibilityRule) -- got {len(decision['rule_trace'])} "
         f"entries: {decision['rule_trace']}"
@@ -196,17 +207,23 @@ async def test_scenario4_repro_duplicate_event_past_cooldown_window_now_blocks_c
     sync_engine.dispose()
 
     new_source_event_id = str(uuid.uuid4())
-    await process_payment_failure(payment_id, "HDFC", redis_client, source_event_id=new_source_event_id)
+    await process_payment_failure(
+        payment_id, "HDFC", redis_client, source_event_id=new_source_event_id
+    )
 
     sync_engine = create_engine(migrated_db, pool_pre_ping=True)
     with sync_engine.connect() as conn:
-        decision = conn.execute(
-            text(
-                "SELECT verdict, rule_trace FROM policy_decisions "
-                "WHERE payment_id = :pid AND source_event_id = :sid"
-            ),
-            {"pid": payment_id, "sid": new_source_event_id},
-        ).mappings().first()
+        decision = (
+            conn.execute(
+                text(
+                    "SELECT verdict, rule_trace FROM policy_decisions "
+                    "WHERE payment_id = :pid AND source_event_id = :sid"
+                ),
+                {"pid": payment_id, "sid": new_source_event_id},
+            )
+            .mappings()
+            .first()
+        )
         recovery_count = conn.execute(
             text("SELECT count(*) FROM recoveries WHERE payment_id = :pid"), {"pid": payment_id}
         ).scalar_one()
@@ -223,6 +240,6 @@ async def test_scenario4_repro_duplicate_event_past_cooldown_window_now_blocks_c
         f"now PASS since 13h > 12h cooldown) -- got trace: {trace}"
     )
     assert "already successfully recovered" in trace[0]["reason"]
-    assert recovery_count == 1, (
-        "no second recovery attempt should ever have been enqueued/executed for this payment"
-    )
+    assert (
+        recovery_count == 1
+    ), "no second recovery attempt should ever have been enqueued/executed for this payment"

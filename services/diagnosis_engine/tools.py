@@ -92,16 +92,20 @@ async def get_customer_payment_history(
     identity than this layer needs").
     """
     rows = (
-        await session.execute(
-            text(
-                "SELECT payment_id, amount_paise, method, bank, status, failure_code, "
-                "created_at FROM payments WHERE customer_id = "
-                "(SELECT customer_id FROM payments WHERE payment_id = :pid) "
-                "ORDER BY created_at DESC LIMIT :limit"
-            ),
-            {"pid": payment_id, "limit": limit},
+        (
+            await session.execute(
+                text(
+                    "SELECT payment_id, amount_paise, method, bank, status, failure_code, "
+                    "created_at FROM payments WHERE customer_id = "
+                    "(SELECT customer_id FROM payments WHERE payment_id = :pid) "
+                    "ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"pid": payment_id, "limit": limit},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 
@@ -111,17 +115,21 @@ async def get_customer_recovery_history(
     """Same payment_id-in, customer_id-never-surfaced pattern as
     get_customer_payment_history()."""
     rows = (
-        await session.execute(
-            text(
-                "SELECT r.recovery_id, r.payment_id, r.action_type, r.outcome, "
-                "r.attempt_number, r.executed_at FROM recoveries r "
-                "JOIN payments p ON p.payment_id = r.payment_id "
-                "WHERE p.customer_id = (SELECT customer_id FROM payments WHERE payment_id = :pid) "
-                "ORDER BY r.executed_at DESC LIMIT :limit"
-            ),
-            {"pid": payment_id, "limit": limit},
+        (
+            await session.execute(
+                text(
+                    "SELECT r.recovery_id, r.payment_id, r.action_type, r.outcome, "
+                    "r.attempt_number, r.executed_at FROM recoveries r "
+                    "JOIN payments p ON p.payment_id = r.payment_id "
+                    "WHERE p.customer_id = (SELECT customer_id FROM payments WHERE payment_id = :pid) "
+                    "ORDER BY r.executed_at DESC LIMIT :limit"
+                ),
+                {"pid": payment_id, "limit": limit},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 
@@ -133,26 +141,34 @@ async def get_cohort_failure_rate(
     since = datetime.now(UTC) - timedelta(minutes=window_minutes)
     baseline_since = since - timedelta(days=7)
     row = (
-        await session.execute(
-            text(
-                "SELECT count(*) FILTER (WHERE status = 'failed') AS failed, "
-                "count(*) AS total FROM payments "
-                "WHERE bank = :bank AND method = :method AND created_at >= :since"
-            ),
-            {"bank": bank, "method": method, "since": since},
+        (
+            await session.execute(
+                text(
+                    "SELECT count(*) FILTER (WHERE status = 'failed') AS failed, "
+                    "count(*) AS total FROM payments "
+                    "WHERE bank = :bank AND method = :method AND created_at >= :since"
+                ),
+                {"bank": bank, "method": method, "since": since},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     baseline_row = (
-        await session.execute(
-            text(
-                "SELECT count(*) FILTER (WHERE status = 'failed') AS failed, "
-                "count(*) AS total FROM payments "
-                "WHERE bank = :bank AND method = :method "
-                "AND created_at >= :baseline_since AND created_at < :since"
-            ),
-            {"bank": bank, "method": method, "baseline_since": baseline_since, "since": since},
+        (
+            await session.execute(
+                text(
+                    "SELECT count(*) FILTER (WHERE status = 'failed') AS failed, "
+                    "count(*) AS total FROM payments "
+                    "WHERE bank = :bank AND method = :method "
+                    "AND created_at >= :baseline_since AND created_at < :since"
+                ),
+                {"bank": bank, "method": method, "baseline_since": baseline_since, "since": since},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     current_rate = (row["failed"] / row["total"]) if row["total"] else None
     baseline_rate = (
         (baseline_row["failed"] / baseline_row["total"]) if baseline_row["total"] else None
@@ -175,42 +191,54 @@ async def get_recent_anomalies(
         return []
     since = datetime.now(UTC) - timedelta(minutes=window_minutes)
     rows = (
-        await session.execute(
-            text(
-                "SELECT scope_type, scope_entity, time_bucket, severity, is_anomaly, "
-                "z_score, observed_rate, baseline_rate FROM anomaly_windows "
-                "WHERE scope_type = 'bank' AND scope_entity = :bank AND time_bucket >= :since "
-                "ORDER BY time_bucket DESC"
-            ),
-            {"bank": bank, "since": since},
+        (
+            await session.execute(
+                text(
+                    "SELECT scope_type, scope_entity, time_bucket, severity, is_anomaly, "
+                    "z_score, observed_rate, baseline_rate FROM anomaly_windows "
+                    "WHERE scope_type = 'bank' AND scope_entity = :bank AND time_bucket >= :since "
+                    "ORDER BY time_bucket DESC"
+                ),
+                {"bank": bank, "since": since},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 
 async def get_payment_attempt_history(session: AsyncSession, payment_id: str) -> list[dict]:
     rows = (
-        await session.execute(
-            text(
-                "SELECT recovery_id, action_type, attempt_number, outcome, executed_at "
-                "FROM recoveries WHERE payment_id = :pid ORDER BY attempt_number ASC"
-            ),
-            {"pid": payment_id},
+        (
+            await session.execute(
+                text(
+                    "SELECT recovery_id, action_type, attempt_number, outcome, executed_at "
+                    "FROM recoveries WHERE payment_id = :pid ORDER BY attempt_number ASC"
+                ),
+                {"pid": payment_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 
 async def get_intervention_history(session: AsyncSession, payment_id: str) -> list[dict]:
     rows = (
-        await session.execute(
-            text(
-                "SELECT decision_id, verdict, rule_trace, created_at "
-                "FROM policy_decisions WHERE payment_id = :pid ORDER BY created_at ASC"
-            ),
-            {"pid": payment_id},
+        (
+            await session.execute(
+                text(
+                    "SELECT decision_id, verdict, rule_trace, created_at "
+                    "FROM policy_decisions WHERE payment_id = :pid ORDER BY created_at ASC"
+                ),
+                {"pid": payment_id},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [dict(r) for r in rows]
 
 

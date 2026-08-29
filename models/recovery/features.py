@@ -29,6 +29,7 @@ import numpy as np
 try:
     import pandas as pd
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -37,8 +38,13 @@ ARTIFACTS_DIR = Path(__file__).parent / "artifacts"
 TRANSFORMER_PATH = ARTIFACTS_DIR / "feature_transformer_v1.pkl"
 
 # Categorical columns — OneHot for LR/MLP
-CATEGORICAL_COLS = ["method", "bank", "initial_failure_class", "initial_failure_code",
-                    "merchant_id"]
+CATEGORICAL_COLS = [
+    "method",
+    "bank",
+    "initial_failure_class",
+    "initial_failure_code",
+    "merchant_id",
+]
 # Continuous columns
 CONTINUOUS_COLS = ["amount_paise"]
 # Cyclic columns
@@ -66,7 +72,9 @@ class FeatureTransformer:
         self._scaler = StandardScaler()
         self._train_episode_ids_hash: int | None = None
 
-    def fit(self, features_df: "pd.DataFrame", episode_ids: list[str] | None = None) -> "FeatureTransformer":
+    def fit(
+        self, features_df: "pd.DataFrame", episode_ids: list[str] | None = None
+    ) -> "FeatureTransformer":
         """
         Fit transformer on TRAIN features only.
         episode_ids should be the train episode_id list for audit purposes.
@@ -96,7 +104,9 @@ class FeatureTransformer:
         Raises RuntimeError if called before fit().
         """
         if not self._fitted:
-            raise RuntimeError("FeatureTransformer.transform() called before fit(). Call fit() on train data first.")
+            raise RuntimeError(
+                "FeatureTransformer.transform() called before fit(). Call fit() on train data first."
+            )
 
         parts: list[np.ndarray] = []
 
@@ -126,7 +136,9 @@ class FeatureTransformer:
 
         return np.hstack(parts)
 
-    def fit_transform(self, features_df: "pd.DataFrame", episode_ids: list[str] | None = None) -> np.ndarray:
+    def fit_transform(
+        self, features_df: "pd.DataFrame", episode_ids: list[str] | None = None
+    ) -> np.ndarray:
         """Convenience: fit then transform in one call (use ONLY on train data)."""
         return self.fit(features_df, episode_ids).transform(features_df)
 

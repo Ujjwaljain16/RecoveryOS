@@ -43,9 +43,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_unique_constraint(
-        "uq_recovery_ledger_payment", "recovery_ledger", ["payment_id"]
-    )
+    op.create_unique_constraint("uq_recovery_ledger_payment", "recovery_ledger", ["payment_id"])
 
     op.add_column("diagnoses", sa.Column("source_event_id", sa.UUID(), nullable=True))
     op.create_unique_constraint(

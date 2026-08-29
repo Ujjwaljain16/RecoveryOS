@@ -38,16 +38,26 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
             return {
                 "selected_cause": "temporary_bank_degradation",
                 "confidence_band": "LIKELY",
-                "evidence": [{"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}],
+                "evidence": [
+                    {"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}
+                ],
             }
         calls["round"].append(user_content["round_number"])
         if user_content["round_number"] == 1:
             return {
                 "hypotheses": [
-                    {"cause": "customer_specific", "support_score": 3, "contradict_score": 1,
-                     "unresolved_questions": ["is this bank-wide?"]},
-                    {"cause": "temporary_bank_degradation", "support_score": 2, "contradict_score": 2,
-                     "unresolved_questions": []},
+                    {
+                        "cause": "customer_specific",
+                        "support_score": 3,
+                        "contradict_score": 1,
+                        "unresolved_questions": ["is this bank-wide?"],
+                    },
+                    {
+                        "cause": "temporary_bank_degradation",
+                        "support_score": 2,
+                        "contradict_score": 2,
+                        "unresolved_questions": [],
+                    },
                 ],
                 "action": "call_tool",
                 "tool_name": "get_cohort_failure_rate",
@@ -57,8 +67,12 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
             }
         return {
             "hypotheses": [
-                {"cause": "temporary_bank_degradation", "support_score": 7, "contradict_score": 1,
-                 "unresolved_questions": []},
+                {
+                    "cause": "temporary_bank_degradation",
+                    "support_score": 7,
+                    "contradict_score": 1,
+                    "unresolved_questions": [],
+                },
             ],
             "action": "finalize",
             "tool_name": "",
@@ -75,8 +89,12 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
     monkeypatch.setattr(investigator_module, "call_tool", fake_call_tool)
 
     result = await investigate(
-        _base_input(), diagnoser_session=object(), model="gemini-2.5-flash-lite",
-        api_key="fake", provider="gemini", round_timeout_seconds=5.0,
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
     )
 
     assert result is not None
@@ -86,7 +104,9 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
     assert len(result.steps) == 1
     assert result.steps[0].tool_name == "get_cohort_failure_rate"
     assert result.steps[0].expected_uncertainty_reduction == 6.0
-    assert result.steps[0].investigation_score == 6.0 - 1.5 - (25 / 1000)  # cohort tool's real cost/latency
+    assert result.steps[0].investigation_score == 6.0 - 1.5 - (
+        25 / 1000
+    )  # cohort tool's real cost/latency
     assert len(result.hypotheses) >= 1
     assert calls["round"] == [1, 2]
 
@@ -100,8 +120,12 @@ async def test_non_gemini_provider_returns_none_immediately(monkeypatch):
     )
 
     result = await investigate(
-        _base_input(), diagnoser_session=object(), model="gpt-4o-mini",
-        api_key="fake", provider="openai", round_timeout_seconds=5.0,
+        _base_input(),
+        diagnoser_session=object(),
+        model="gpt-4o-mini",
+        api_key="fake",
+        provider="openai",
+        round_timeout_seconds=5.0,
     )
     assert result is None
 
@@ -118,8 +142,12 @@ async def test_round_timeout_falls_back_cleanly(monkeypatch):
     )
 
     result = await investigate(
-        _base_input(), diagnoser_session=object(), model="gemini-2.5-flash-lite",
-        api_key="fake", provider="gemini", round_timeout_seconds=0.05,
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=0.05,
     )
     assert result is None
 
@@ -133,8 +161,12 @@ async def test_malformed_round_response_returns_none(monkeypatch):
     )
 
     result = await investigate(
-        _base_input(), diagnoser_session=object(), model="gemini-2.5-flash-lite",
-        api_key="fake", provider="gemini", round_timeout_seconds=5.0,
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
     )
     assert result is None
 
@@ -148,8 +180,14 @@ async def test_invalid_tool_name_stops_investigation_without_crashing(monkeypatc
                 "evidence": [{"fact": "investigation stopped early", "source": "system"}],
             }
         return {
-            "hypotheses": [{"cause": "unknown", "support_score": 0, "contradict_score": 0,
-                             "unresolved_questions": []}],
+            "hypotheses": [
+                {
+                    "cause": "unknown",
+                    "support_score": 0,
+                    "contradict_score": 0,
+                    "unresolved_questions": [],
+                }
+            ],
             "action": "call_tool",
             "tool_name": "drop_all_tables",  # not in TOOL_REGISTRY
             "tool_inputs": {},
@@ -162,8 +200,12 @@ async def test_invalid_tool_name_stops_investigation_without_crashing(monkeypatc
     )
 
     result = await investigate(
-        _base_input(), diagnoser_session=object(), model="gemini-2.5-flash-lite",
-        api_key="fake", provider="gemini", round_timeout_seconds=5.0,
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
     )
     assert result is not None  # invalid tool choice stops the loop, doesn't crash it
     assert result.steps == []
@@ -175,7 +217,9 @@ async def test_adversarial_guard_applies_to_finalized_result(monkeypatch):
     the single-call LLM path and the fallback path (Task S2)."""
     from services.diagnosis_engine.guards import MISSING_BANK_CONFIDENCE_CAP
 
-    async def finalize_without_evidence_gathering(*, system_prompt, user_content, response_schema, model, api_key):
+    async def finalize_without_evidence_gathering(
+        *, system_prompt, user_content, response_schema, model, api_key
+    ):
         if "final_hypotheses" in user_content:
             return {
                 "selected_cause": "temporary_bank_degradation",
@@ -183,8 +227,14 @@ async def test_adversarial_guard_applies_to_finalized_result(monkeypatch):
                 "evidence": [{"fact": "gateway timeout", "source": "payment_data"}],
             }
         return {
-            "hypotheses": [{"cause": "temporary_bank_degradation", "support_score": 5,
-                             "contradict_score": 0, "unresolved_questions": []}],
+            "hypotheses": [
+                {
+                    "cause": "temporary_bank_degradation",
+                    "support_score": 5,
+                    "contradict_score": 0,
+                    "unresolved_questions": [],
+                }
+            ],
             "action": "finalize",
             "reasoning": "clear enough already",
         }
@@ -196,8 +246,11 @@ async def test_adversarial_guard_applies_to_finalized_result(monkeypatch):
 
     result = await investigate(
         _base_input(bank=None, failure_code="BANK_DOWN"),
-        diagnoser_session=object(), model="gemini-2.5-flash-lite",
-        api_key="fake", provider="gemini", round_timeout_seconds=5.0,
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
     )
 
     assert result is not None

@@ -245,9 +245,9 @@ async def test_retry_scheduler_fires_due_row_and_genuinely_reevaluates(migrated_
     assert fired_row is not None
     assert fired_row["status"] == "FIRED"
     assert fired_row["fired_source_event_id"] is not None
-    assert diagnoses_after > diagnoses_before, (
-        "the scheduler must genuinely re-run the decision pipeline, not just flip a status flag"
-    )
+    assert (
+        diagnoses_after > diagnoses_before
+    ), "the scheduler must genuinely re-run the decision pipeline, not just flip a status flag"
 
 
 @pytest.mark.asyncio
