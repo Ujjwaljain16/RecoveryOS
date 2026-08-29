@@ -38,6 +38,12 @@ from sqlalchemy.engine import Connection
 
 from integrations.razorpay.adapter import ProviderResult, get_provider_adapter
 from recoveryos.database import get_sync_engine
+from recoveryos.metrics import (
+    recovery_attempts_total,
+    recovery_success_total,
+    stopping_rule_triggers_total,
+    stream_backlog_depth,
+)
 from services.execution_engine.idempotency import execute_with_idempotency
 
 logger = logging.getLogger(__name__)
@@ -119,6 +125,44 @@ def _get_existing_recovery(conn: Connection, idempotency_key: str) -> dict[str, 
     }
 
 
+STOPPING_RULE_MAX_RETRIES = "MAX_RETRIES"
+STOPPING_RULE_STOP_AFTER_SUCCESS = "STOP_AFTER_SUCCESS"
+
+
+def _compute_stopping_rule(
+    conn: Connection, decision_id: str, attempt_number: int, outcome: str
+) -> str | None:
+    """
+    Real stopping-rule evaluation against THIS merchant's actual
+    policy_configs row (via policy_decisions.policy_config_id) -- not a
+    placeholder. `recoveries.stopping_rule_triggered` (migrations/0001)
+    existed as a column nothing ever populated before this; this is its
+    first real writer. Checked in the same priority order
+    services/policy_engine/rules.py's RetryLimitRule/stop_after_success
+    intent implies: a genuine SUCCESS ends the retry sequence outright,
+    otherwise having reached the configured max_retries this attempt does.
+    """
+    config_row = (
+        conn.execute(
+            text(
+                "SELECT pc.max_retries, pc.stop_after_success FROM policy_configs pc "
+                "JOIN policy_decisions pd ON pd.policy_config_id = pc.policy_config_id "
+                "WHERE pd.decision_id = :decision_id"
+            ),
+            {"decision_id": decision_id},
+        )
+        .mappings()
+        .first()
+    )
+    if config_row is None:
+        return None
+    if outcome == "SUCCESS" and config_row["stop_after_success"]:
+        return STOPPING_RULE_STOP_AFTER_SUCCESS
+    if attempt_number >= config_row["max_retries"]:
+        return STOPPING_RULE_MAX_RETRIES
+    return None
+
+
 def _upsert_recovery(
     conn: Connection,
     *,
@@ -136,20 +180,24 @@ def _upsert_recovery(
     than erroring — the UNIQUE constraint (gaps.md §B.2's physical
     backstop) still guarantees only ONE row, ever, per idempotency_key.
     """
+    stopping_rule = _compute_stopping_rule(conn, decision_id, attempt_number, result.outcome)
     conn.execute(
         text(
             """
             INSERT INTO recoveries
                 (recovery_id, payment_id, decision_id, idempotency_key, attempt_number,
-                 action_type, scheduled_for, executed_at, outcome, recovered_amount_paise, provider_ref)
+                 action_type, scheduled_for, executed_at, outcome, recovered_amount_paise,
+                 provider_ref, stopping_rule_triggered)
             VALUES
                 (:recovery_id, :payment_id, :decision_id, :idempotency_key, :attempt_number,
-                 :action_type, :scheduled_for, :executed_at, :outcome, :recovered_amount_paise, :provider_ref)
+                 :action_type, :scheduled_for, :executed_at, :outcome, :recovered_amount_paise,
+                 :provider_ref, :stopping_rule_triggered)
             ON CONFLICT (idempotency_key) DO UPDATE SET
                 executed_at = EXCLUDED.executed_at,
                 outcome = EXCLUDED.outcome,
                 recovered_amount_paise = EXCLUDED.recovered_amount_paise,
-                provider_ref = EXCLUDED.provider_ref
+                provider_ref = EXCLUDED.provider_ref,
+                stopping_rule_triggered = EXCLUDED.stopping_rule_triggered
             """
         ),
         {
@@ -164,8 +212,15 @@ def _upsert_recovery(
             "outcome": result.outcome,
             "recovered_amount_paise": result.recovered_amount_paise,
             "provider_ref": result.provider_ref,
+            "stopping_rule_triggered": stopping_rule,
         },
     )
+    if stopping_rule is not None:
+        # TRD §10: stopping_rule_triggers_total{reason} -- action_fn (this
+        # function's only caller) runs at most once per idempotency_key
+        # (services/execution_engine/idempotency.py's check-then-act
+        # guarantee), so no redelivery double-count guard is needed here.
+        stopping_rule_triggers_total.labels(reason=stopping_rule).inc()
     return {
         "outcome": result.outcome,
         "recovered_amount_paise": result.recovered_amount_paise,
@@ -220,16 +275,38 @@ def _write_ledger_and_audit(
     )
 
 
-def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[str, Any]:
+def process_job(
+    conn: Connection,
+    job: dict[str, Any],
+    provider=None,
+    notification_service=None,
+    human_handoff_service=None,
+) -> dict[str, Any]:
     """
     One recovery job, fully processed through the TRD §4.2 state machine,
     wrapped in the exact lock-before-check idempotency pattern (gaps.md
     §B.2, services/execution_engine/idempotency.py:execute_with_idempotency).
 
-    `provider` is injectable for tests (a call-counting spy standing in for
-    a real PaymentProvider); production callers omit it and get
-    get_provider_adapter()'s config-selected implementation.
+    Domain Audit finding #3: `action_type` now decides WHICH side-effecting
+    call happens, not just which label gets logged. Before this fix, every
+    action_type reached the exact same PaymentProvider.retry() (a real
+    charge/order-creation call) -- including REMINDER, which services/
+    policy_engine/rules.py's own QuietHoursComplianceRule docstring calls
+    "the only customer-contact action in this system" (i.e. explicitly NOT
+    a charge). The real execution boundary is now:
+        RETRY_NOW / ALT_ROUTE -> PaymentProvider.retry() (real money)
+        REMINDER              -> NotificationService (never money)
+        ESCALATE              -> HumanHandoffService (never money)
+
+    `provider`/`notification_service`/`human_handoff_service` are all
+    injectable for tests (spies standing in for the real adapters);
+    production callers omit them and get the real config-selected/demo
+    implementations. `provider` is resolved LAZILY -- a REMINDER/ESCALATE
+    job never needs a configured payment provider at all.
     """
+    from services.execution_engine.human_handoff import get_human_handoff_service
+    from services.execution_engine.notification import get_notification_service
+
     payment_id = job["payment_id"]
     idempotency_key = job["idempotency_key"]
     action_type = job["action_type"]
@@ -237,7 +314,8 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
     decision_id = job["decision_id"]
     amount_paise = int(job["amount_paise"])
 
-    provider = provider or get_provider_adapter()
+    notification_service = notification_service or get_notification_service()
+    human_handoff_service = human_handoff_service or get_human_handoff_service()
 
     _emit_event(
         conn,
@@ -263,7 +341,19 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
             logger.info("[ExecutionWorker] test fault-injection sleep: %sms", inject_delay_ms)
             time.sleep(int(inject_delay_ms) / 1000.0)
 
-        result = provider.retry(conn, payment_id, amount_paise, attempt_number)
+        if action_type == "REMINDER":
+            result = notification_service.send_reminder(
+                conn, payment_id, amount_paise, attempt_number
+            )
+        elif action_type == "ESCALATE":
+            result = human_handoff_service.create_escalation(
+                conn, payment_id, amount_paise, attempt_number
+            )
+        else:
+            # RETRY_NOW / ALT_ROUTE -- the only two action types that
+            # genuinely mean "attempt to charge the customer."
+            provider_adapter = provider or get_provider_adapter()
+            result = provider_adapter.retry(conn, payment_id, amount_paise, attempt_number)
 
         _emit_event(
             conn,
@@ -297,6 +387,26 @@ def process_job(conn: Connection, job: dict[str, Any], provider=None) -> dict[st
             {"outcome": result.outcome, "recovered_amount_paise": result.recovered_amount_paise},
         )
         conn.commit()
+        # Domain Audit finding #2 (Production Architecture audit): these
+        # used to increment BEFORE this commit -- if the process crashed
+        # anywhere between the old increment point and this commit, the
+        # `recoveries` row was never durably written, Redis would
+        # redeliver the message, and action_fn would run again from
+        # scratch (get_existing() finds nothing), permanently
+        # over-counting these series even though `recoveries` itself
+        # stayed correctly deduplicated via its UNIQUE(idempotency_key)
+        # constraint. Moved to HERE, after the commit that actually backs
+        # `_upsert_recovery`'s write (the immediately preceding
+        # conn.commit() above): action_fn only ever reaches this point
+        # once its own row is durably committed, and execute_with_
+        # idempotency's get_existing() check (run BEFORE action_fn on
+        # every call, including a redelivery) means a redelivery that
+        # finds an already-committed row never re-enters action_fn at
+        # all -- so this line now runs at most once per row that ever
+        # gets a real commit, matching what these series claim to count.
+        recovery_attempts_total.labels(action_type=action_type).inc()
+        if result.outcome == "SUCCESS":
+            recovery_success_total.labels(action_type=action_type).inc()
 
         if result.outcome in ("SUCCESS", "FAILED"):
             # A real terminal outcome -- this consumer (not
@@ -341,6 +451,21 @@ def _process_message(engine, stream_msg_id: str, raw_msg: dict[str, str], provid
     except Exception:
         logger.exception("[ExecutionWorker] job failed, leaving pending: %s", stream_msg_id)
         return False
+
+
+def _record_backlog(redis_client: sync_redis.Redis) -> None:
+    """Domain Audit finding #4 -- sync mirror of the async consumers' own
+    _record_backlog, for stream:recovery_jobs. Best-effort."""
+    try:
+        groups = redis_client.xinfo_groups(STREAM_NAME)
+        for group in groups:
+            if group.get("name") == GROUP_NAME:
+                lag = group.get("lag")
+                if lag is not None:
+                    stream_backlog_depth.labels(stream=STREAM_NAME, group=GROUP_NAME).set(lag)
+                break
+    except Exception:
+        logger.exception("[ExecutionWorker] failed to record stream backlog (non-fatal)")
 
 
 def _ensure_consumer_group(redis_client: sync_redis.Redis) -> None:
@@ -398,6 +523,7 @@ def run_worker(
             count=BATCH_SIZE,
             block=BLOCK_MS,
         )
+        _record_backlog(redis_client)
         if not results:
             continue
         for _stream_name, messages in results:
@@ -408,10 +534,19 @@ def run_worker(
 
 
 def main() -> None:
+    from prometheus_client import start_http_server
+
     from recoveryos.config import get_settings
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = get_settings()
+    # TRD §10: recovery_attempts_total, recovery_success_total, and
+    # stopping_rule_triggers_total are all recorded in THIS process (see
+    # action_fn/_upsert_recovery above) -- needs its own scrape port.
+    # start_http_server spawns a plain background thread, safe to call from
+    # this sync (non-asyncio) process (see this module's own docstring for
+    # why execution_worker stays sync).
+    start_http_server(settings.prometheus_port)
     redis_client = sync_redis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
     try:
         run_worker(redis_client)
