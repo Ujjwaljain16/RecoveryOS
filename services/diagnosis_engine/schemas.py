@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -56,9 +56,7 @@ _FAILURE_CODE_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_]")
 _FAILURE_CODE_MAX_LEN = 64
 
 
-class RootCause(
-    str, Enum
-):  # noqa: UP042 -- str mixin kept deliberately, not migrating to StrEnum here
+class RootCause(StrEnum):
     """Closed enum — the diagnoser must abstain to UNKNOWN rather than invent
     a value outside this set (PRD §36 "Abstention": unknown situations should
     result in UNKNOWN rather than fabricated certainty)."""

@@ -12,7 +12,7 @@ here runs on a diagnoser_role session. DIAGNOSER_SAFE_TABLES (migrations/
 0002) already covers every table these tools touch -- no new grants were
 needed for this file. Every query uses an explicit column allow-list, the
 same discipline diagnoser.py's own _PAYMENT_SAFE_COLUMNS already follows
-(gaps.md SB.1: no wildcard SELECT * in any inference-reachable path).
+(gaps.md SB.1: no wildcard "SELECT star" in any inference-reachable path).
 """
 
 from __future__ import annotations
