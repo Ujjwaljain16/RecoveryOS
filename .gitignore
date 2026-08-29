@@ -34,6 +34,7 @@ node_modules/
 .next/
 apps/dashboard/.next/
 apps/dashboard/node_modules/
+apps/dashboard/tsconfig.tsbuildinfo
 
 # ─── Docker ────────────────────────────────────────────────────────────────────
 .docker/
