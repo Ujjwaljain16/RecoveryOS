@@ -277,6 +277,15 @@ async def test_post_event_writes_to_db_and_publishes_to_stream(
     assert payment_row is not None, "Payment row missing from DB"
     assert len(event_rows) == 1, f"Expected 1 event row, got {len(event_rows)}"
     assert event_rows[0].event_id == event_id
+    # Live E2E smoke test finding (2026-08-29): failure_class used to be
+    # left NULL for every real API-ingested payment (EventPayload has no
+    # such field), which crashed propensity scoring the moment this payment
+    # reached decisioning -- see services/event_processor/repository.py's
+    # classify_failure().
+    assert payment_row.failure_class is not None, (
+        "failure_class must never be NULL for a real ingested payment -- "
+        "build_propensity_context() requires it and raises otherwise"
+    )
 
     # Verify downstream stream received the event
     risk_len = await redis_client.xlen(STREAM_RISK)

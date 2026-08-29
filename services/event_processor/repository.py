@@ -36,6 +36,44 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# Live E2E smoke test finding (2026-08-29): a REAL payment ingested through
+# /v1/events -> event_processor never got a failure_class at all -- this
+# upsert only ever wrote failure_code, and EventPayload has no failure_class
+# field to send one through (merchants report a failure CODE, not our
+# internal TEMPORARY/PERMANENT/CUSTOMER_SPECIFIC taxonomy). Every real,
+# non-simulator-seeded payment then hit
+# services.recovery_engine.propensity.build_propensity_context's hard
+# ValueError ("required feature missing: initial_failure_class") the moment
+# it reached decisioning -- the demo's actual live-payment path was broken
+# for anything other than internally-seeded synthetic data.
+#
+# Keyword classification against the SAME three classes
+# services/pipeline/baseline.py's BASELINE_UNRETRYABLE_FAILURE_CLASSES and
+# simulator/failures/codes.py's ObservedFailureClass already use -- not a
+# new taxonomy. failure_code is open-ended free text at the API boundary
+# (EventPayload's own `pattern` only bounds its shape, not its vocabulary),
+# so this can never be a closed lookup table; TEMPORARY is the deliberate
+# default for anything unrecognized (same "assume retryable unless proven
+# otherwise" stance _would_baseline_retry already takes with its
+# PERMANENT-only blocklist), not a guess dressed up as certainty.
+_PERMANENT_KEYWORDS = ("PERMANENT", "INVALID", "EXPIRED", "CLOSED", "BLOCKED", "FRAUD")
+_CUSTOMER_SPECIFIC_KEYWORDS = ("CUSTOMER", "INSUFFICIENT_FUNDS", "AUTH_EXHAUSTED", "LIMIT_EXCEEDED")
+
+
+def classify_failure(failure_code: str | None) -> str:
+    """Best-effort failure_class from a real merchant's failure_code --
+    see the module comment above for why this exists and why TEMPORARY is
+    the safe default rather than leaving the field NULL."""
+    if not failure_code:
+        return "TEMPORARY"
+    code = failure_code.upper()
+    if any(kw in code for kw in _PERMANENT_KEYWORDS):
+        return "PERMANENT"
+    if any(kw in code for kw in _CUSTOMER_SPECIFIC_KEYWORDS):
+        return "CUSTOMER_SPECIFIC"
+    return "TEMPORARY"
+
+
 async def upsert_payment(session: AsyncSession, msg: dict[str, Any]) -> None:
     """
     Upsert a Payment row from an inbound event.
@@ -58,6 +96,7 @@ async def upsert_payment(session: AsyncSession, msg: dict[str, Any]) -> None:
             bank=msg.get("bank") or None,
             status="failed" if msg.get("event_type") == "PAYMENT_FAILED" else "created",
             failure_code=msg.get("failure_code") or None,
+            failure_class=classify_failure(msg.get("failure_code")),
             is_synthetic=False,  # HTTP path = live/real events
             created_at=_now(),
             failed_at=_now() if msg.get("event_type") == "PAYMENT_FAILED" else None,
