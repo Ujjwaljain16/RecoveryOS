@@ -35,6 +35,7 @@ type PaymentDetail = {
     confidence_band: string | null;
     is_fallback: boolean;
     model_version: string;
+    evidence: { fact: string; source: string }[] | null;
   } | null;
   candidate_actions: CandidateAction[];
   policy_decision: {
@@ -118,6 +119,22 @@ export default function PaymentDetailPage({ params }: { params: { id: string } }
               {detail.diagnosis.is_fallback ? " (fallback)" : ""}
             </dd>
           </div>
+          {detail.diagnosis.evidence && detail.diagnosis.evidence.length > 0 && (
+            <>
+              <div style={{ marginTop: "0.75rem", color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                Evidence (why this diagnosis — LLM/fallback-authored, plain text only, never
+                consulted by the recovery decision below)
+              </div>
+              <ul style={{ marginTop: "0.35rem", paddingLeft: "1.2rem" }}>
+                {detail.diagnosis.evidence.map((e, i) => (
+                  <li key={i} style={{ color: "var(--text-dim)", fontSize: "0.9rem" }}>
+                    {e.fact}{" "}
+                    <span style={{ opacity: 0.6 }}>({e.source})</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       ) : (
         <p className="step-empty">No diagnosis recorded for this payment yet.</p>

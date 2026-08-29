@@ -13,7 +13,12 @@ type Chain = {
     observed_rate: number | null;
     baseline_rate: number | null;
   } | null;
-  diagnosis: { root_cause: string; confidence: number | null; confidence_band: string | null } | null;
+  diagnosis: {
+    root_cause: string;
+    confidence: number | null;
+    confidence_band: string | null;
+    evidence: { fact: string; source: string }[] | null;
+  } | null;
   propensity: { recovery_prob_bps: number; model_version: string; source: string } | null;
   actions: { candidate_id: string; action_type: string; recovery_prob_bps: number; is_selected: boolean }[];
   evi: {
@@ -116,16 +121,33 @@ export default function AuditDetailPage({ params }: { params: { id: string } }) 
 
       <Step label="4. Diagnosis">
         {chain.diagnosis ? (
-          <div className="kv">
-            <dt>Root cause</dt>
-            <dd>{chain.diagnosis.root_cause}</dd>
-            <dt>Confidence</dt>
-            <dd>
-              {chain.diagnosis.confidence !== null
-                ? `${(chain.diagnosis.confidence * 100).toFixed(0)}%`
-                : chain.diagnosis.confidence_band ?? "—"}
-            </dd>
-          </div>
+          <>
+            <div className="kv">
+              <dt>Root cause</dt>
+              <dd>{chain.diagnosis.root_cause}</dd>
+              <dt>Confidence</dt>
+              <dd>
+                {chain.diagnosis.confidence !== null
+                  ? `${(chain.diagnosis.confidence * 100).toFixed(0)}%`
+                  : chain.diagnosis.confidence_band ?? "—"}
+              </dd>
+            </div>
+            {chain.diagnosis.evidence && chain.diagnosis.evidence.length > 0 && (
+              <>
+                <div style={{ marginTop: "0.75rem", color: "var(--text-dim)", fontSize: "0.85rem" }}>
+                  Evidence (explains this diagnosis — has no effect on steps 5-10 below; see
+                  step 6 onward, which never reference this diagnosis at all)
+                </div>
+                <ul style={{ marginTop: "0.35rem", paddingLeft: "1.2rem" }}>
+                  {chain.diagnosis.evidence.map((e, i) => (
+                    <li key={i} style={{ color: "var(--text-dim)", fontSize: "0.9rem" }}>
+                      {e.fact} <span style={{ opacity: 0.6 }}>({e.source})</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
         ) : (
           <div className="step-empty">No diagnosis recorded.</div>
         )}

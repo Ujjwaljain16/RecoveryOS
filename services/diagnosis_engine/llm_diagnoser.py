@@ -3,10 +3,15 @@ Real AI Diagnoser — the LLM path.
 
 TRD §9 threat model:
   - INPUT: exactly `DiagnosisInput`, dumped as JSON — never a raw DB row,
-    never an f-string built from event payload text. There is no
-    free-text-concatenation step for a malicious `failure_code` string to
-    exploit, because every field reaching the prompt is already a typed,
-    bounded Pydantic field (str enum values, bounded floats, ints).
+    never an f-string built from event payload text. CORRECTED (Domain
+    Audit finding F3): this used to claim `failure_code` couldn't be a
+    free-text injection vector because every field was "typed, bounded" --
+    that was false; `failure_code` was unconstrained `str | None`. It's
+    now sanitized (stripped to [A-Za-z0-9_], truncated to 64 chars) by
+    `DiagnosisInput._sanitize_failure_code` (schemas.py) before this
+    module ever sees it, and length/character-bounded at the API ingest
+    boundary too (apps/api/routers/events.py's `pattern`) -- bounded, not
+    absent.
   - OUTPUT: OpenAI Structured Outputs (`response_format=json_schema,
     strict=True`) constrains the model to the exact shape below, then this
     module ALSO re-validates through the same `DiagnosisOutput` Pydantic
@@ -159,11 +164,15 @@ async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisO
         missing_key_reason = "ai_diagnoser_not_configured_openai"
         timeout_seconds = settings.ai_diagnoser_timeout_seconds
     else:
-        logger.warning("[Diagnoser] Unknown ai_diagnoser_provider=%r -- skipping LLM path", provider)
+        logger.warning(
+            "[Diagnoser] Unknown ai_diagnoser_provider=%r -- skipping LLM path", provider
+        )
         return None, "ai_diagnoser_unknown_provider"
 
     if not api_key:
-        logger.info("[Diagnoser] No API key configured for provider=%r -- skipping LLM path", provider)
+        logger.info(
+            "[Diagnoser] No API key configured for provider=%r -- skipping LLM path", provider
+        )
         return None, missing_key_reason
 
     try:
@@ -172,9 +181,7 @@ async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisO
             timeout=timeout_seconds,
         )
     except TimeoutError:
-        logger.warning(
-            "[Diagnoser] LLM call timed out after %.1fs", timeout_seconds
-        )
+        logger.warning("[Diagnoser] LLM call timed out after %.1fs", timeout_seconds)
         return None, "ai_diagnoser_timeout"
     except Exception as exc:  # network error, API error, anything the SDK raises
         logger.warning("[Diagnoser] LLM call failed: %s: %s", type(exc).__name__, exc)

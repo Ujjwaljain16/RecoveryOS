@@ -108,7 +108,12 @@ class EventPayload(BaseModel):
     )
     failure_code: str | None = Field(
         default=None,
-        description="Failure code if event_type is PAYMENT_FAILED.",
+        description="Failure code if event_type is PAYMENT_FAILED, e.g. TIMEOUT, BANK_DOWN, "
+        "INVALID_CREDS. Bounded, not an enum -- new codes from a real gateway must still be "
+        "accepted (see services/diagnosis_engine/fallback_rules.py's UNKNOWN mapping for an "
+        "unrecognized code) -- but this is real prompt-reaching content (Domain Audit finding "
+        "F3), not the free-text field its downstream docstrings used to claim didn't exist.",
+        pattern=r"^[A-Z][A-Z0-9_]{0,31}$",
     )
     idempotency_key: str | None = Field(
         default=None,
