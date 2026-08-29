@@ -34,7 +34,7 @@ def test_monkeypatching_the_shared_resolver_changes_both_call_sites(monkeypatch)
     """
     calls = []
 
-    def fake_resolver(true_recovery_prob_bps: int) -> bool:
+    def fake_resolver(true_recovery_prob_bps: int, *, seed_key: str) -> bool:
         calls.append(true_recovery_prob_bps)
         return True  # always "succeeds", regardless of the real probability
 
@@ -72,7 +72,7 @@ def test_monkeypatching_the_shared_resolver_changes_both_call_sites(monkeypatch)
 
     # --- baseline.py side (call the resolver directly as the module does) ---
     calls.clear()
-    succeeded = baseline_module.resolve_simulated_outcome(1)
+    succeeded = baseline_module.resolve_simulated_outcome(1, seed_key="fake-payment-id:1")
     assert succeeded is True, (
         "baseline.py's own reference to resolve_simulated_outcome did not observe "
         "the patch -- it is not calling the same function object as SimulatorAdapter"

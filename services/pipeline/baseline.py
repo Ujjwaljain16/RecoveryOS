@@ -36,7 +36,10 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from integrations.razorpay.adapter import resolve_simulated_outcome
+from integrations.razorpay.adapter import (
+    _recompute_attempt_aware_prob_bps,
+    resolve_simulated_outcome,
+)
 
 # Baseline heuristic — matches models/recovery/certificate.py's naive
 # baseline exactly: retry everything except PERMANENT failure_class or an
@@ -53,6 +56,15 @@ OUTCOME_NOT_ATTEMPTED = "NOT_ATTEMPTED"
 # 8's formal multi-run evaluation harness mints for its own comparisons.
 PIPELINE_BASELINE_EXPERIMENT_ID = "00000000-0000-0000-0000-0000000000e8"
 
+# Domain Audit finding #6: a SEPARATE experiment_id for the fair,
+# same-attempt-budget baseline (compute_and_persist_fair_baseline_run
+# below) — deliberately not overwriting/replacing the original
+# single-attempt PIPELINE_BASELINE_EXPERIMENT_ID rows, so existing
+# recovery_ledger.baseline_outcome computations (which read the original
+# single-attempt baseline) are unaffected; this is new, additive analysis
+# capability, not a silent redefinition of the existing headline number.
+PIPELINE_BASELINE_FAIR_EXPERIMENT_ID = "00000000-0000-0000-0000-0000000000e9"
+
 
 def _would_baseline_retry(failure_class: str | None, failure_code: str | None) -> bool:
     if failure_class in BASELINE_UNRETRYABLE_FAILURE_CLASSES:
@@ -62,10 +74,12 @@ def _would_baseline_retry(failure_class: str | None, failure_code: str | None) -
 
 async def compute_and_persist_baseline_run(session: AsyncSession, payment_id: str) -> dict | None:
     """
-    Idempotent (ON CONFLICT DO NOTHING is not available here since
-    baseline_runs has no unique constraint on payment_id by design — TRD §7
-    allows multiple experiments per payment — so this checks for an
-    existing PIPELINE_BASELINE_EXPERIMENT_ID row first). Returns
+    Idempotent via the S1 dedup pattern (INSERT ... ON CONFLICT DO NOTHING
+    ... RETURNING, re-SELECT on conflict) against baseline_runs'
+    uq_baseline_runs_payment_experiment unique constraint (migration 0019)
+    -- two concurrent calls for the same payment can no longer both insert.
+    TRD §7 still allows multiple experiments per payment; the constraint is
+    scoped to (payment_id, experiment_id), not payment_id alone. Returns
     {"outcome": str, "recovered_amount_paise": int} or None if this
     payment has no simulator ground truth to compare against.
     """
@@ -120,23 +134,243 @@ async def compute_and_persist_baseline_run(session: AsyncSession, payment_id: st
     if not would_retry:
         outcome, recovered_amount_paise = OUTCOME_NOT_ATTEMPTED, 0
     else:
-        succeeded = resolve_simulated_outcome(true_recovery_prob_bps)
+        succeeded = resolve_simulated_outcome(true_recovery_prob_bps, seed_key=f"{payment_id}:1")
         outcome = OUTCOME_RECOVERED if succeeded else OUTCOME_NOT_RECOVERED
         recovered_amount_paise = payment_row["amount_paise"] if succeeded else 0
 
-    await session.execute(
-        text(
-            "INSERT INTO baseline_runs (run_id, experiment_id, payment_id, recovered_amount_paise, outcome) "
-            "VALUES (:run_id, :exp_id, :pid, :amount, :outcome)"
-        ),
-        {
-            "run_id": str(uuid.uuid4()),
-            "exp_id": PIPELINE_BASELINE_EXPERIMENT_ID,
-            "pid": payment_id,
-            "amount": recovered_amount_paise,
-            "outcome": outcome,
-        },
+    inserted = (
+        (
+            await session.execute(
+                text(
+                    "INSERT INTO baseline_runs (run_id, experiment_id, payment_id, recovered_amount_paise, outcome) "
+                    "VALUES (:run_id, :exp_id, :pid, :amount, :outcome) "
+                    "ON CONFLICT (payment_id, experiment_id) DO NOTHING "
+                    "RETURNING outcome, recovered_amount_paise"
+                ),
+                {
+                    "run_id": str(uuid.uuid4()),
+                    "exp_id": PIPELINE_BASELINE_EXPERIMENT_ID,
+                    "pid": payment_id,
+                    "amount": recovered_amount_paise,
+                    "outcome": outcome,
+                },
+            )
+        )
+        .mappings()
+        .first()
     )
     await session.commit()
 
-    return {"outcome": outcome, "recovered_amount_paise": recovered_amount_paise}
+    if inserted is not None:
+        return dict(inserted)
+
+    # Lost the race to a concurrent caller — re-select the row it inserted.
+    existing = (
+        (
+            await session.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise FROM baseline_runs "
+                    "WHERE payment_id = :pid AND experiment_id = :exp_id"
+                ),
+                {"pid": payment_id, "exp_id": PIPELINE_BASELINE_EXPERIMENT_ID},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return (
+        dict(existing)
+        if existing is not None
+        else {"outcome": outcome, "recovered_amount_paise": recovered_amount_paise}
+    )
+
+
+# Merchant's own policy_config_id is NULL until explicitly set — mirrors
+# services/recovery_engine/orchestrator.py's own PLATFORM_DEFAULT_POLICY_
+# CONFIG_ID sentinel value exactly (not imported from there, per this
+# module's own "no cross-service import" discipline stated above).
+PLATFORM_DEFAULT_POLICY_CONFIG_ID = "00000000-0000-0000-0000-000000000001"
+
+
+async def compute_and_persist_fair_baseline_run(
+    session: AsyncSession, payment_id: str
+) -> dict | None:
+    """
+    Domain Audit finding #6: "how much of the incremental-revenue number
+    reflects 'we tried more times' rather than 'we chose better actions'?"
+    -- compute_and_persist_baseline_run() above models exactly ONE naive
+    retry, while RecoveryOS's own path can execute up to policy_configs.
+    max_retries real attempts. This gives the naive baseline the SAME
+    attempt budget RecoveryOS itself is allowed for THIS payment's
+    merchant, so the comparison controls for opportunity/attempt count.
+
+    Deliberately NOT a smarter baseline: the decision policy stays exactly
+    as naive as the single-attempt version (retry everything except a
+    known-hopeless failure, no EVI/propensity/timing intelligence at all)
+    -- only the NUMBER of attempts changes. Each simulated attempt
+    re-derives true_recovery_prob_bps via _recompute_attempt_aware_prob_bps,
+    the EXACT SAME attempt-decay function integrations/razorpay/adapter.py:
+    SimulatorAdapter.retry() uses for RecoveryOS's own real executed
+    attempts (not a second, independently-written decay curve), and
+    resolves via the SAME shared resolve_simulated_outcome() this module's
+    own docstring already requires.
+
+    Persisted under a SEPARATE experiment_id (PIPELINE_BASELINE_FAIR_
+    EXPERIMENT_ID) from the original single-attempt baseline -- additive
+    analysis, not a silent redefinition of recovery_ledger.baseline_outcome
+    (which still reads the original single-attempt run).
+
+    Returns {"outcome", "recovered_amount_paise", "attempts_used"} or None
+    if this payment has no simulator ground truth to compare against.
+    """
+    existing = (
+        (
+            await session.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise, attempts_used FROM baseline_runs "
+                    "WHERE payment_id = :pid AND experiment_id = :exp_id"
+                ),
+                {"pid": payment_id, "exp_id": PIPELINE_BASELINE_FAIR_EXPERIMENT_ID},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if existing is not None:
+        return dict(existing)
+
+    payment_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT amount_paise, failure_class, failure_code, merchant_id "
+                    "FROM payments WHERE payment_id = :pid"
+                ),
+                {"pid": payment_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if payment_row is None:
+        return None
+
+    latent_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT true_recovery_prob_bps, customer_patience_score, bank_latent_health, "
+                    "latent_customer_propensity, true_failure_type FROM simulator_latent_state "
+                    "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if latent_row is None:
+        # No ground truth (a genuinely live payment) — same as the
+        # single-attempt baseline, do not fabricate a number.
+        return None
+
+    merchant_row = (
+        await session.execute(
+            text("SELECT policy_config_id FROM merchants WHERE merchant_id = :mid"),
+            {"mid": payment_row["merchant_id"]},
+        )
+    ).first()
+    policy_config_id = (
+        merchant_row[0] if merchant_row and merchant_row[0] else PLATFORM_DEFAULT_POLICY_CONFIG_ID
+    )
+    policy_config_row = (
+        await session.execute(
+            text("SELECT max_retries FROM policy_configs WHERE policy_config_id = :pcid"),
+            {"pcid": policy_config_id},
+        )
+    ).first()
+    # PolicyConfig.max_retries' own model default (recoveryos/models.py) —
+    # used only if this merchant somehow resolves to no policy_config row
+    # at all (shouldn't happen in practice; orchestrator.py's own
+    # _resolve_policy_config lazily creates the platform-default row).
+    max_retries = policy_config_row[0] if policy_config_row else 2
+
+    would_retry = _would_baseline_retry(payment_row["failure_class"], payment_row["failure_code"])
+
+    if not would_retry:
+        outcome, recovered_amount_paise, attempts_used = OUTCOME_NOT_ATTEMPTED, 0, 0
+    else:
+        outcome, recovered_amount_paise, attempts_used = OUTCOME_NOT_RECOVERED, 0, 0
+        for attempt_number in range(1, max_retries + 1):
+            if attempt_number == 1:
+                # attempt 1 has no decay to apply yet -- use the stored
+                # value directly, same shortcut SimulatorAdapter.retry()
+                # itself takes.
+                true_recovery_prob_bps = latent_row["true_recovery_prob_bps"]
+            else:
+                true_recovery_prob_bps = _recompute_attempt_aware_prob_bps(
+                    customer_patience_score=float(latent_row["customer_patience_score"]),
+                    bank_latent_health=float(latent_row["bank_latent_health"]),
+                    latent_customer_propensity=float(latent_row["latent_customer_propensity"]),
+                    true_failure_type_value=latent_row["true_failure_type"],
+                    attempt_number=attempt_number,
+                    seed_key=f"{payment_id}:{attempt_number}",
+                )
+            attempts_used = attempt_number
+            if resolve_simulated_outcome(
+                true_recovery_prob_bps, seed_key=f"{payment_id}:{attempt_number}"
+            ):
+                outcome, recovered_amount_paise = OUTCOME_RECOVERED, payment_row["amount_paise"]
+                break
+
+    inserted = (
+        (
+            await session.execute(
+                text(
+                    "INSERT INTO baseline_runs "
+                    "(run_id, experiment_id, payment_id, recovered_amount_paise, outcome, attempts_used) "
+                    "VALUES (:run_id, :exp_id, :pid, :amount, :outcome, :attempts_used) "
+                    "ON CONFLICT (payment_id, experiment_id) DO NOTHING "
+                    "RETURNING outcome, recovered_amount_paise, attempts_used"
+                ),
+                {
+                    "run_id": str(uuid.uuid4()),
+                    "exp_id": PIPELINE_BASELINE_FAIR_EXPERIMENT_ID,
+                    "pid": payment_id,
+                    "amount": recovered_amount_paise,
+                    "outcome": outcome,
+                    "attempts_used": attempts_used,
+                },
+            )
+        )
+        .mappings()
+        .first()
+    )
+    await session.commit()
+
+    if inserted is not None:
+        return dict(inserted)
+
+    # Lost the race to a concurrent caller — re-select the row it inserted.
+    existing = (
+        (
+            await session.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise, attempts_used FROM baseline_runs "
+                    "WHERE payment_id = :pid AND experiment_id = :exp_id"
+                ),
+                {"pid": payment_id, "exp_id": PIPELINE_BASELINE_FAIR_EXPERIMENT_ID},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return (
+        dict(existing)
+        if existing is not None
+        else {
+            "outcome": outcome,
+            "recovered_amount_paise": recovered_amount_paise,
+            "attempts_used": attempts_used,
+        }
+    )

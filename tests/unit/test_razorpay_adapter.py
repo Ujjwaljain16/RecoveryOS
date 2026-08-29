@@ -226,11 +226,13 @@ def test_simulator_adapter_decays_across_attempts(monkeypatch):
         latent_customer_propensity=propensity,
         true_failure_type_value=true_failure_type_value,
         attempt_number=1,
+        seed_key="test-payment:1",
     )
     prob_bps_attempt_3 = _recompute_attempt_aware_prob_bps(
         customer_patience_score=patience_mean,
         bank_latent_health=bank_health,
         latent_customer_propensity=propensity,
+        seed_key="test-payment:3",
         true_failure_type_value=true_failure_type_value,
         attempt_number=3,
     )

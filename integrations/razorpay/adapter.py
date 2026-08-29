@@ -29,10 +29,11 @@ provider calls belong.
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import random
 import uuid
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Literal, Protocol
 
 import httpx
@@ -66,7 +67,29 @@ class PaymentProvider(Protocol):
     ) -> ProviderResult: ...
 
 
-def resolve_simulated_outcome(true_recovery_prob_bps: int) -> bool:
+def _deterministic_bps_draw(seed_key: str) -> float:
+    """
+    Adversarial Audit Verdict, blocker #5: resolve_simulated_outcome and
+    _recompute_attempt_aware_prob_bps used to draw from Python's global,
+    process-seeded `random` module / a fresh `uuid.uuid4()`-seeded SimRng
+    per call — neither reproducible across runs, which silently broke the
+    "same dataset seed -> same headline number" reproducibility promise
+    every other simulated draw in this codebase (simulator/core/rng.py's
+    SimRng) already provides.
+
+    Hashes seed_key (a stable identity string, e.g. "<payment_id>:<attempt
+    number>:<purpose>") into a value uniformly distributed over [0, 10_000)
+    — the exact scale resolve_simulated_outcome compares against. SHA-256
+    is used instead of Python's builtin hash() specifically because
+    hash(str) is randomized per-process (PYTHONHASHSEED) and would
+    reintroduce the same non-reproducibility this function exists to fix.
+    Same seed_key always yields the same draw, in this process or any other.
+    """
+    digest = hashlib.sha256(seed_key.encode("utf-8")).digest()
+    return (int.from_bytes(digest[:8], "big") % 10_000_000) / 1000.0
+
+
+def resolve_simulated_outcome(true_recovery_prob_bps: int, *, seed_key: str) -> bool:
     """
     THE single dice-roll that resolves a simulated ground-truth recovery
     probability into a real/counterfactual outcome. TRD §7's incremental-
@@ -79,8 +102,12 @@ def resolve_simulated_outcome(true_recovery_prob_bps: int) -> bool:
     call this exact function object; a test
     (tests/unit/test_resolve_simulated_outcome_shared.py) asserts that by
     monkeypatching it once and observing both call sites change together.
+
+    seed_key must uniquely identify this exact draw (payment + attempt) —
+    see _deterministic_bps_draw's docstring for why this replaced a
+    process-random `random.uniform()` call.
     """
-    return random.uniform(0, 10_000) < true_recovery_prob_bps
+    return _deterministic_bps_draw(f"{seed_key}:outcome") < true_recovery_prob_bps
 
 
 def _recompute_attempt_aware_prob_bps(
@@ -90,6 +117,7 @@ def _recompute_attempt_aware_prob_bps(
     latent_customer_propensity: float,
     true_failure_type_value: str,
     attempt_number: int,
+    seed_key: str,
 ) -> int:
     """
     Re-derive true_recovery_prob_bps for the GIVEN attempt_number, using the
@@ -115,18 +143,22 @@ def _recompute_attempt_aware_prob_bps(
     resolve_simulated_outcome() exclusively (TRD §7's shared-resolver
     requirement is between SimulatorAdapter and baseline.py, not between
     this and the episode generator's own internal sampling).
+
+    seed_key derives this call's SimRng deterministically (Adversarial
+    Audit Verdict blocker #5 — see _deterministic_bps_draw's docstring):
+    same (payment, attempt) always re-derives the same probability, in
+    this process or any other, instead of the previous fresh-uuid4()-per-
+    call seed that made even re-running the identical dataset seed produce
+    a different headline number each time.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from simulator.core.rng import SimRng
     from simulator.customers.generator import SimulatedCustomer
     from simulator.failures.codes import TrueFailureType
     from simulator.outcomes.ground_truth import LatentRecoverabilityFunction
 
-    # Fresh RNG seed per call — this models a genuinely live, non-reproducible
-    # retry attempt (not offline dataset generation), so there is no
-    # determinism requirement to preserve here.
-    rng = SimRng(uuid.uuid4().int & 0xFFFFFFFF)
+    rng = SimRng(int(_deterministic_bps_draw(f"{seed_key}:prob") * 1000))
     latent_function = LatentRecoverabilityFunction(rng)
 
     # Only latent_patience_mean and latent_propensity_bias are ever read by
@@ -139,7 +171,7 @@ def _recompute_attempt_aware_prob_bps(
         is_returning=False,
         lifetime_value_paise=0,
         opted_out_at=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         latent_patience_mean=customer_patience_score,
         latent_propensity_bias=latent_customer_propensity,
     )
@@ -152,7 +184,7 @@ def _recompute_attempt_aware_prob_bps(
         true_failure_type=TrueFailureType(true_failure_type_value),
         latent_bank_health=bank_latent_health,
         attempt_number=attempt_number,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
     return latent_record.true_recovery_prob_bps
 
@@ -177,14 +209,18 @@ class SimulatorAdapter:
     def retry(
         self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int
     ) -> ProviderResult:
-        row = conn.execute(
-            text(
-                "SELECT true_recovery_prob_bps, customer_patience_score, bank_latent_health, "
-                "latent_customer_propensity, true_failure_type FROM simulator_latent_state "
-                "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"pid": payment_id},
-        ).mappings().first()
+        row = (
+            conn.execute(
+                text(
+                    "SELECT true_recovery_prob_bps, customer_patience_score, bank_latent_health, "
+                    "latent_customer_propensity, true_failure_type FROM simulator_latent_state "
+                    "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
 
         if row is None:
             logger.warning(
@@ -193,6 +229,8 @@ class SimulatorAdapter:
                 payment_id,
             )
             return ProviderResult(outcome="PENDING", provider_ref=None, recovered_amount_paise=0)
+
+        seed_key = f"{payment_id}:{attempt_number}"
 
         if attempt_number <= 1:
             # No decay to apply yet — use the stored value directly rather
@@ -206,9 +244,10 @@ class SimulatorAdapter:
                 latent_customer_propensity=float(row["latent_customer_propensity"]),
                 true_failure_type_value=row["true_failure_type"],
                 attempt_number=attempt_number,
+                seed_key=seed_key,
             )
 
-        succeeded = resolve_simulated_outcome(true_recovery_prob_bps)
+        succeeded = resolve_simulated_outcome(true_recovery_prob_bps, seed_key=seed_key)
         return ProviderResult(
             outcome="SUCCESS" if succeeded else "FAILED",
             provider_ref=f"sim_{uuid.uuid4().hex[:16]}",
@@ -255,13 +294,15 @@ class RazorpayTestAdapter:
     below to a value deterministic in payment_id for exactly this reason —
     that IS the real idempotency mechanism here, not a header.
 
-    HONESTY NOTE: this has NOT been exercised against a live Razorpay
-    sandbox in this session — no real RAZORPAY_KEY_ID/SECRET is configured
-    (.env has none), and no network call to api.razorpay.com has actually
-    been made or verified end-to-end. "Real HTTP calls" describes what the
-    code does structurally, not that it has been proven against the real
-    API. Treat this adapter as unverified integration code until someone
-    with real test-mode credentials runs it once.
+    VERIFIED 2026-08-27: exercised end to end with a real Razorpay
+    test-mode key against api.razorpay.com through the full live pipeline
+    (POST /v1/events -> event_processor -> pipeline_orchestrator ->
+    execution_worker) -- produced a genuine Order (order_TUmiloPc520f75)
+    and a `recoveries` row with outcome=PENDING, provider_ref=that real
+    order id. Webhook-driven resolution to SUCCESS/FAILED (see
+    apps/api/routers/razorpay_webhooks.py) still needs a public URL
+    (ngrok or a real deployment) registered in the Razorpay dashboard
+    before IT can be proven the same way.
 
     OUTAGE FALLBACK (TRD §8 NFR table: "Provider Adapter degrades to
     Simulator on Razorpay test-API outage" — this is a named demo-day
@@ -309,13 +350,18 @@ class RazorpayTestAdapter:
                     # Razorpay itself would reject the real retry as a
                     # duplicate of the first attempt.
                     "receipt": f"recovery_{payment_id}_{attempt_number}",
-                    "notes": {"recovery_of_payment_id": payment_id, "attempt_number": str(attempt_number)},
+                    "notes": {
+                        "recovery_of_payment_id": payment_id,
+                        "attempt_number": str(attempt_number),
+                    },
                 },
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
             logger.warning("[RazorpayTestAdapter] request failed: %s: %s", type(exc).__name__, exc)
-            return self._fallback_to_simulator(conn, payment_id, amount_paise, attempt_number, reason=str(exc))
+            return self._fallback_to_simulator(
+                conn, payment_id, amount_paise, attempt_number, reason=str(exc)
+            )
 
         if response.status_code >= 400:
             logger.warning(
@@ -324,7 +370,11 @@ class RazorpayTestAdapter:
                 response.text[:500],
             )
             return self._fallback_to_simulator(
-                conn, payment_id, amount_paise, attempt_number, reason=f"status={response.status_code}"
+                conn,
+                payment_id,
+                amount_paise,
+                attempt_number,
+                reason=f"status={response.status_code}",
             )
 
         body = response.json()
@@ -339,7 +389,13 @@ class RazorpayTestAdapter:
         )
 
     def _fallback_to_simulator(
-        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int, *, reason: str
+        self,
+        conn: Connection,
+        payment_id: str,
+        amount_paise: int,
+        attempt_number: int,
+        *,
+        reason: str,
     ) -> ProviderResult:
         logger.warning(
             "RAZORPAY_OUTAGE_FALLBACK payment_id=%s attempt_number=%s reason=%s -- "
