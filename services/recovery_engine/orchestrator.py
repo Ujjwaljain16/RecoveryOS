@@ -35,6 +35,7 @@ from recoveryos.database import (
     get_app_session_factory,
     get_inference_session_factory,
 )
+from recoveryos.metrics import policy_blocks_total
 from recoveryos.models import CandidateAction, Merchant, PolicyConfig, PolicyDecision
 from services.policy_engine.evaluate import PolicyDecision as PolicyDecisionResult
 from services.policy_engine.evaluate import evaluate
@@ -264,6 +265,7 @@ async def build_decision(
         attempt_number=attempt_number,
         amount_paise=payment_row["amount_paise"],
         now=clock.utcnow(),
+        method=payment_row["method"],
         is_high_severity_anomaly=is_high_severity_anomaly,
     )
     candidate_ctx = CandidateContext(
@@ -298,7 +300,7 @@ async def persist_decision(
     decision: PolicyDecisionResult,
     context: dict,
     source_event_id: str | None = None,
-) -> tuple[list[CandidateAction], PolicyDecision]:
+) -> tuple[list[CandidateAction], PolicyDecision, bool]:
     """
     Persist ALL 6 candidate_actions rows + ONE policy_decision row (pointing
     at the CHOSEN candidate's row) with the full rule_trace. app_role
@@ -379,6 +381,7 @@ async def persist_decision(
             .returning(PolicyDecision)
         )
         policy_decision_row = (await session.execute(policy_stmt)).scalar_one_or_none()
+        was_inserted = policy_decision_row is not None
         if policy_decision_row is None:
             policy_decision_row = (
                 await session.execute(
@@ -390,7 +393,7 @@ async def persist_decision(
             ).scalar_one()
         await session.commit()
 
-    return candidate_rows, policy_decision_row
+    return candidate_rows, policy_decision_row, was_inserted
 
 
 async def decide_and_persist(
@@ -419,7 +422,7 @@ async def decide_and_persist(
         writes the terminal ledger/audit row itself.
     """
     nba_result, decision, context = await build_decision(payment_id)
-    candidate_rows, policy_decision_row = await persist_decision(
+    candidate_rows, policy_decision_row, was_inserted = await persist_decision(
         payment_id, nba_result, decision, context, source_event_id
     )
 
@@ -434,6 +437,16 @@ async def decide_and_persist(
         "decision_id": policy_decision_row.decision_id,
         "candidate_ids": [c.candidate_id for c in candidate_rows],
     }
+
+    if was_inserted and decision.verdict != "ALLOW" and context["blocking_rule"] is not None:
+        # TRD §10: policy_blocks_total{rule} -- labeled with the SPECIFIC
+        # rule that blocked/escalated (services.policy_engine.evaluate's
+        # own short-circuit already identifies exactly one), not a generic
+        # "blocked" bucket. Guarded on was_inserted (same dedup discipline
+        # as services/pipeline/ledger.py's ledger_row_inserted guard) so a
+        # redelivered triggering event -- which reuses the ALREADY-persisted
+        # decision instead of creating a new one -- doesn't double-count.
+        policy_blocks_total.labels(rule=context["blocking_rule"]).inc()
 
     if decision.verdict == "ALLOW" and nba_result.chosen_action == "RETRY_LATER":
         # Task REPLAN1: RETRY_LATER no longer enqueues an immediate
