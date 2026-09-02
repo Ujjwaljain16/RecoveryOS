@@ -286,8 +286,18 @@ def _phase8_baseline_experiment() -> dict:
             "intervention_rate_bps": round(
                 statistics.mean([s["intervention_rate"] for s in seeds]) * 10_000
             ),
+            # Adversarial sweep regression: gaps.md sec:C.5 renamed this
+            # field in the evaluation artifact (tests/evaluation/
+            # multi_seed_runner.py) from unnecessary_intervention_rate to
+            # did_not_beat_single_attempt_baseline_rate -- same query, same
+            # semantics, honestly relabeled -- but this reader was never
+            # updated to match, so this endpoint 500'd on every call against
+            # the current multi_seed_results.json. The OUTPUT key stays
+            # unnecessary_intervention_rate_bps: apps/dashboard/app/experiments/page.tsx
+            # depends on it and the value's meaning hasn't changed, only the
+            # internal artifact's field name.
             "unnecessary_intervention_rate_bps": round(
-                statistics.mean([s["unnecessary_intervention_rate"] for s in seeds]) * 10_000
+                statistics.mean([s["did_not_beat_single_attempt_baseline_rate"] for s in seeds]) * 10_000
             ),
         },
         "incremental_recovery_paise_mean": round(mean_incremental),

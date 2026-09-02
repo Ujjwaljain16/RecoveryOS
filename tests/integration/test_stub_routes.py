@@ -104,6 +104,33 @@ async def test_experiments_phase8_baseline_serves_the_real_multi_seed_artifact(
 
 
 @pytest.mark.asyncio
+async def test_experiments_phase8_baseline_unnecessary_intervention_rate_field_survives_artifact_rename(
+    async_client, migrated_db
+):
+    """
+    Adversarial sweep regression: gaps.md sec:C.5 renamed this metric's
+    field in the evaluation artifact from unnecessary_intervention_rate to
+    did_not_beat_single_attempt_baseline_rate (same query, same semantics,
+    honestly relabeled) -- apps/api/routers/experiments.py's
+    _phase8_baseline_experiment() read the OLD field name and 500'd with
+    KeyError on every call against the CURRENT multi_seed_results.json.
+    This test pins the OUTPUT contract narrowly: unnecessary_intervention_rate_bps
+    (apps/dashboard/app/experiments/page.tsx's own field name -- deliberately
+    NOT renamed, since nothing about the dashboard's contract needs to
+    change just because the internal artifact's field was relabeled) must
+    be present and a sane basis-points value, computed from whatever the
+    artifact's CURRENT field is, not a stale one.
+    """
+    _merchant_id, api_key = await _seeded_merchant(migrated_db)
+    resp = await async_client.get("/v1/experiments/phase8-baseline", headers={"X-API-Key": api_key})
+    assert resp.status_code == 200
+    body = resp.json()
+    rate_bps = body["recoveryos"]["unnecessary_intervention_rate_bps"]
+    assert isinstance(rate_bps, int)
+    assert 0 <= rate_bps <= 10_000, f"expected a basis-points rate in [0, 10000], got {rate_bps}"
+
+
+@pytest.mark.asyncio
 async def test_wired_routes_401_before_ever_reaching_route_logic(async_client):
     """
     Auth still runs first: an unauthenticated caller gets 401, never a 200
