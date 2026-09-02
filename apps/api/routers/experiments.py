@@ -9,11 +9,21 @@ Two real, non-fabricated data sources, selected by `run_id`:
     payment this merchant has actually processed through the live
     pipeline. Empty/zeroed if the merchant hasn't run any synthetic
     traffic yet -- never a fabricated placeholder.
-  - run_id == "phase8-baseline": serves the real Phase 8 multi-seed
-    replication study (tests/evaluation/artifacts/multi_seed_results.json,
-    docs/phase8_priority0_multi_seed_baseline.md) -- 5 independent
-    10,000-payment runs, read verbatim off disk, never regenerated or
-    guessed at request time.
+  - run_id == "phase8-baseline": serves the 5-seed compliance-aware
+    multi-seed study (tests/evaluation/artifacts/
+    multi_seed_compliance_aware_aggregate.json) -- the SAME artifact
+    README.md's own headline number (+₹73,181.78 mean incremental) and
+    §10/§11 are sourced from. The run_id/route stays "phase8-baseline"
+    (apps/dashboard/app/experiments/page.tsx's existing fetch and this
+    endpoint's own external contract, unchanged) even though the artifact
+    it now reads is the newer, compliance-aware study, not the original
+    Phase 8 one (multi_seed_results.json, superseded -- see
+    docs/phase8_priority0_multi_seed_baseline.md for that earlier study).
+    Found live-screenshotting the dashboard for the README: this endpoint
+    was still silently serving the OLDER, explicitly-non-headline study,
+    which would have put a different number on the live page next to this
+    README's own claimed one. Read verbatim off disk either way -- never
+    regenerated or guessed at request time.
 
 Any other run_id is a real 404, not a fabricated empty result.
 """
@@ -38,12 +48,12 @@ from services.pipeline.baseline import (
 
 router = APIRouter()
 
-MULTI_SEED_ARTIFACT_PATH = (
+COMPLIANCE_AWARE_ARTIFACT_PATH = (
     Path(__file__).resolve().parents[3]
     / "tests"
     / "evaluation"
     / "artifacts"
-    / "multi_seed_results.json"
+    / "multi_seed_compliance_aware_aggregate.json"
 )
 
 
@@ -250,62 +260,84 @@ async def _ai_contribution(merchant: Merchant, session: AsyncSession) -> dict:
 
 
 def _phase8_baseline_experiment() -> dict:
-    if not MULTI_SEED_ARTIFACT_PATH.exists():
+    """
+    Reads multi_seed_compliance_aware_aggregate.json's {per_seed_results,
+    aggregate} shape (see this module's own docstring) and maps it onto the
+    SAME output contract this endpoint has always returned -- so
+    apps/dashboard/app/experiments/page.tsx needs no changes. The
+    aggregate's own precomputed mean/CI are used directly rather than
+    recomputed here, so this endpoint can never silently drift from
+    README.md's own headline numbers, which are sourced from that same
+    `aggregate` block.
+
+    "Compliance-aware baseline" per seed is `compliance_aware_fair_baseline`
+    (same attempt budget AND same compliance rule chain as RecoveryOS
+    itself -- see README.md §10/§11 for why this, not
+    `single_attempt_baseline` or the DIAGNOSTIC_ONLY compliance-blind
+    field, is the real comparator).
+
+    "unnecessary_intervention_rate_bps": the OLD multi_seed_results.json
+    artifact exposed a baseline-relative field
+    (did_not_beat_single_attempt_baseline_rate) this newer artifact simply
+    doesn't carry per-seed. Rather than fabricate or approximate that exact
+    metric, this computes a genuinely different but equally real one from
+    fields this artifact DOES have: the fraction of RecoveryOS's own
+    interventions (unique_intervened_payments) that did not end in a
+    recovery (recovered_count). Honestly relabeled by substance, not by
+    name -- the dashboard's field name is unchanged (see
+    tests/integration/test_stub_routes.py's own regression test for this).
+    """
+    if not COMPLIANCE_AWARE_ARTIFACT_PATH.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Phase 8 multi-seed artifact not found at {MULTI_SEED_ARTIFACT_PATH}",
+            detail=f"Compliance-aware multi-seed artifact not found at {COMPLIANCE_AWARE_ARTIFACT_PATH}",
         )
-    with MULTI_SEED_ARTIFACT_PATH.open() as f:
-        seeds: list[dict] = json.load(f)
+    with COMPLIANCE_AWARE_ARTIFACT_PATH.open() as f:
+        data: dict = json.load(f)
 
-    incrementals = [s["incremental_recovery_paise"] for s in seeds]
-    mean_incremental = statistics.mean(incrementals)
-    stdev_incremental = statistics.stdev(incrementals) if len(incrementals) > 1 else 0.0
-    # 95% CI via t-distribution critical value for df=len-1 (hardcoded
-    # 2.776 for df=4, matching docs/phase8_priority0_multi_seed_baseline.md's
-    # own reported CI exactly -- not recomputed with a different method
-    # that could silently disagree with the audited doc).
-    t_critical_df4 = 2.776
-    margin = (
-        t_critical_df4 * (stdev_incremental / (len(incrementals) ** 0.5)) if len(seeds) > 1 else 0.0
-    )
+    per_seed: list[dict] = data["per_seed_results"]
+    agg: dict = data["aggregate"]
+
+    seeds = [
+        {
+            "seed": s["seed"],
+            "failed_payments": s["failed_payments"],
+            "recoveryos_total_paise": s["recoveryos"]["recovered_revenue_paise"],
+            "baseline_total_paise": s["compliance_aware_fair_baseline"]["recovered_revenue_paise"],
+            "incremental_recovery_paise": s["incremental_recoveryos_vs_compliance_aware_fair_paise"],
+            "recovery_rate": s["recoveryos"]["recovered_count"] / s["failed_payments"],
+        }
+        for s in per_seed
+    ]
+
+    unnecessary_rates = [
+        (s["recoveryos"]["unique_intervened_payments"] - s["recoveryos"]["recovered_count"])
+        / s["recoveryos"]["unique_intervened_payments"]
+        for s in per_seed
+        if s["recoveryos"]["unique_intervened_payments"] > 0
+    ]
 
     return {
         "run_id": "phase8-baseline",
-        "source": str(MULTI_SEED_ARTIFACT_PATH),
-        "dataset_size": seeds[0]["failed_payments"] if seeds else 0,
+        "source": str(COMPLIANCE_AWARE_ARTIFACT_PATH),
+        "dataset_size": per_seed[0]["failed_payments"] if per_seed else 0,
         "seeds": seeds,
         "baseline": {
-            "recovered_paise": round(statistics.mean([s["baseline_total_paise"] for s in seeds])),
+            "recovered_paise": round(agg["compliance_aware_baseline_mean_revenue_paise"]),
         },
         "recoveryos": {
-            "recovered_paise": round(statistics.mean([s["recoveryos_total_paise"] for s in seeds])),
-            "recovery_rate_bps": round(
-                statistics.mean([s["recovery_rate"] for s in seeds]) * 10_000
-            ),
-            "intervention_rate_bps": round(
-                statistics.mean([s["intervention_rate"] for s in seeds]) * 10_000
-            ),
-            # Adversarial sweep regression: gaps.md sec:C.5 renamed this
-            # field in the evaluation artifact (tests/evaluation/
-            # multi_seed_runner.py) from unnecessary_intervention_rate to
-            # did_not_beat_single_attempt_baseline_rate -- same query, same
-            # semantics, honestly relabeled -- but this reader was never
-            # updated to match, so this endpoint 500'd on every call against
-            # the current multi_seed_results.json. The OUTPUT key stays
-            # unnecessary_intervention_rate_bps: apps/dashboard/app/experiments/page.tsx
-            # depends on it and the value's meaning hasn't changed, only the
-            # internal artifact's field name.
+            "recovered_paise": round(agg["recoveryos_mean_revenue_paise"]),
+            "recovery_rate_bps": round(agg["recoveryos_recovery_rate_mean"] * 10_000),
+            "intervention_rate_bps": round(agg["unique_intervention_rate_mean"] * 10_000),
             "unnecessary_intervention_rate_bps": round(
-                statistics.mean([s["did_not_beat_single_attempt_baseline_rate"] for s in seeds])
-                * 10_000
+                statistics.mean(unnecessary_rates) * 10_000 if unnecessary_rates else 0
             ),
         },
-        "incremental_recovery_paise_mean": round(mean_incremental),
-        "incremental_recovery_paise_stdev": round(stdev_incremental),
+        "incremental_recovery_paise_mean": round(agg["mean_incremental_recovery_paise"]),
+        "incremental_recovery_paise_stdev": round(agg["incremental_recovery_std_paise"]),
         "incremental_recovery_95ci_paise": [
-            round(mean_incremental - margin),
-            round(mean_incremental + margin),
+            round(agg["incremental_recovery_95pct_t_ci_paise"][0]),
+            round(agg["incremental_recovery_95pct_t_ci_paise"][1]),
         ],
     }
 
@@ -325,7 +357,7 @@ async def experiment_results(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=(
             f"Unknown run_id={run_id!r}. Valid values: 'live' (this merchant's own "
-            "recovery_ledger/baseline_runs data) or 'phase8-baseline' (the real Phase 8 "
-            "multi-seed replication study)."
+            "recovery_ledger/baseline_runs data) or 'phase8-baseline' (the 5-seed "
+            "compliance-aware multi-seed replication study)."
         ),
     )

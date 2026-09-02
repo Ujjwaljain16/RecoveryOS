@@ -69,8 +69,8 @@ export default function ExperimentsPage() {
       {phase8 && (
         <>
           <p style={{ color: "var(--text-dim)" }}>
-            Phase 8 multi-seed replication study — {phase8.seeds.length} independent runs,{" "}
-            {phase8.dataset_size.toLocaleString()} failed payments each.
+            Compliance-aware multi-seed replication study — {phase8.seeds.length} independent
+            runs, ~{phase8.dataset_size.toLocaleString()} failed payments per run.
           </p>
           <table style={{ marginTop: "1rem" }}>
             <thead>

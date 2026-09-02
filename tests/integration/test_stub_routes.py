@@ -85,21 +85,43 @@ async def test_experiments_phase8_baseline_serves_the_real_multi_seed_artifact(
     async_client, migrated_db
 ):
     """
-    docs/phase8_priority0_multi_seed_baseline.md's 5-seed replication study
-    must be served verbatim off disk, not recomputed or guessed — spot
-    check a couple of real numbers from that doc.
+    tests/evaluation/artifacts/multi_seed_compliance_aware_aggregate.json's
+    5-seed compliance-aware study -- the SAME artifact README.md's own
+    headline number is sourced from -- must be served verbatim off disk,
+    not recomputed or guessed. Reads the artifact directly here (rather
+    than hardcoding a magic number) so this test can never itself drift
+    from whatever the artifact currently says, the same "read verbatim"
+    discipline the endpoint itself is held to.
     """
+    import json
+    from pathlib import Path
+
+    artifact_path = (
+        Path(__file__).resolve().parents[2]
+        / "tests"
+        / "evaluation"
+        / "artifacts"
+        / "multi_seed_compliance_aware_aggregate.json"
+    )
+    with artifact_path.open() as f:
+        artifact = json.load(f)
+    seed_1_expected = next(s for s in artifact["per_seed_results"] if s["seed"] == 1)
+    expected_incremental = seed_1_expected["incremental_recoveryos_vs_compliance_aware_fair_paise"]
+
     _merchant_id, api_key = await _seeded_merchant(migrated_db)
     resp = await async_client.get("/v1/experiments/phase8-baseline", headers={"X-API-Key": api_key})
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["seeds"]) == 5
     seed_1 = next(s for s in body["seeds"] if s["seed"] == 1)
-    assert seed_1["incremental_recovery_paise"] == 73408 or seed_1[
-        "incremental_recovery_paise"
-    ] == round(seed_1["incremental_recovery_paise"])
-    # Mean incremental recovery must be a real (non-zero) figure, matching
-    # the doc's reported ~+₹70,258 mean, not a placeholder zero.
+    assert seed_1["incremental_recovery_paise"] == expected_incremental
+    # Mean incremental recovery must match the artifact's own precomputed
+    # aggregate exactly (this is what README.md's headline number is), not
+    # a placeholder zero or an independently-recomputed value that could
+    # silently disagree with it.
+    assert body["incremental_recovery_paise_mean"] == round(
+        artifact["aggregate"]["mean_incremental_recovery_paise"]
+    )
     assert body["incremental_recovery_paise_mean"] > 0
 
 
@@ -108,18 +130,17 @@ async def test_experiments_phase8_baseline_unnecessary_intervention_rate_field_s
     async_client, migrated_db
 ):
     """
-    Adversarial sweep regression: gaps.md sec:C.5 renamed this metric's
-    field in the evaluation artifact from unnecessary_intervention_rate to
-    did_not_beat_single_attempt_baseline_rate (same query, same semantics,
-    honestly relabeled) -- apps/api/routers/experiments.py's
-    _phase8_baseline_experiment() read the OLD field name and 500'd with
-    KeyError on every call against the CURRENT multi_seed_results.json.
-    This test pins the OUTPUT contract narrowly: unnecessary_intervention_rate_bps
-    (apps/dashboard/app/experiments/page.tsx's own field name -- deliberately
-    NOT renamed, since nothing about the dashboard's contract needs to
-    change just because the internal artifact's field was relabeled) must
-    be present and a sane basis-points value, computed from whatever the
-    artifact's CURRENT field is, not a stale one.
+    Regression coverage for a class of bug this endpoint has hit twice now
+    (the artifact backing it changed shape/fields under it): this pins the
+    OUTPUT contract narrowly, not the internal computation.
+    apps/dashboard/app/experiments/page.tsx's field name
+    (unnecessary_intervention_rate_bps) must stay present and a sane
+    basis-points value regardless of which real fields
+    _phase8_baseline_experiment() currently derives it from -- see that
+    function's own docstring for what it computes today (a proxy: the
+    fraction of RecoveryOS's own interventions that did not end in a
+    recovery) and why it's no longer the same metric the original Phase 8
+    artifact exposed under this name.
     """
     _merchant_id, api_key = await _seeded_merchant(migrated_db)
     resp = await async_client.get("/v1/experiments/phase8-baseline", headers={"X-API-Key": api_key})
