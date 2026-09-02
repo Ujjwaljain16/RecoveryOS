@@ -189,6 +189,29 @@ async def audit_trail(
         .first()
     )
 
+    # ─── AI FUSION (Phase 11) ────────────────────────────────────────────
+    # decision_fusion_trace exists only when ai_recommendation_fusion_enabled
+    # was on for this decision -- null (not fabricated) otherwise, same
+    # discipline as every other step in this chain.
+    fusion_row = None
+    if policy_decision_row is not None:
+        fusion_row = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT deterministic_chosen_action, deterministic_chosen_evi_paise, "
+                        "near_tied_candidates, tie_tolerance_bps, ai_recommended_action, "
+                        "ai_confidence, ai_risk_flags, tie_break_applied, risk_escalation_applied, "
+                        "final_action, fusion_reason "
+                        "FROM decision_fusion_trace WHERE decision_id = :did"
+                    ),
+                    {"did": policy_decision_row["decision_id"]},
+                )
+            )
+            .mappings()
+            .first()
+        )
+
     # ─── The audit_log rows themselves (real, insert-only table) ───────
     audit_log_rows = (
         (
@@ -342,6 +365,27 @@ async def audit_trail(
                     "net_recovery_paise": ledger_row["net_recovery_paise"],
                 }
                 if ledger_row is not None
+                else None
+            ),
+            "ai_fusion": (
+                {
+                    "deterministic_chosen_action": fusion_row["deterministic_chosen_action"],
+                    "deterministic_chosen_evi_paise": fusion_row["deterministic_chosen_evi_paise"],
+                    "near_tied_candidates": fusion_row["near_tied_candidates"],
+                    "tie_tolerance_bps": fusion_row["tie_tolerance_bps"],
+                    "ai_recommended_action": fusion_row["ai_recommended_action"],
+                    "ai_confidence": (
+                        float(fusion_row["ai_confidence"])
+                        if fusion_row["ai_confidence"] is not None
+                        else None
+                    ),
+                    "ai_risk_flags": fusion_row["ai_risk_flags"],
+                    "tie_break_applied": fusion_row["tie_break_applied"],
+                    "risk_escalation_applied": fusion_row["risk_escalation_applied"],
+                    "final_action": fusion_row["final_action"],
+                    "fusion_reason": fusion_row["fusion_reason"],
+                }
+                if fusion_row is not None
                 else None
             ),
         },
