@@ -103,10 +103,12 @@ def create_app() -> FastAPI:
     # ─── Routes ───────────────────────────────────────────────────────────────
     from apps.api.routers import (
         audit,
+        customers,
         events,
         experiments,
         health,
         incidents,
+        missions,
         payments,
         razorpay_webhooks,
         risk,
@@ -117,9 +119,11 @@ def create_app() -> FastAPI:
     app.include_router(events.router, prefix="/v1/events", tags=["Events"])
     app.include_router(risk.router, prefix="/v1/risk", tags=["Risk"])
     app.include_router(payments.router, prefix="/v1/payments", tags=["Payments"])
+    app.include_router(customers.router, prefix="/v1/customers", tags=["Customers"])
     app.include_router(audit.router, prefix="/v1/audit", tags=["Audit"])
     app.include_router(experiments.router, prefix="/v1/experiments", tags=["Evaluation"])
     app.include_router(incidents.router, prefix="/v1/incidents", tags=["Incidents"])
+    app.include_router(missions.router, prefix="/v1/missions", tags=["Missions"])
     app.include_router(razorpay_webhooks.router, prefix="/webhooks/razorpay", tags=["Webhooks"])
 
     # /v1/simulate only enabled in demo mode

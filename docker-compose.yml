@@ -76,6 +76,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
       DATABASE_URL_SYNC: postgresql://recoveryos:${RECOVERYOS_APP_ROLE_PASSWORD}@postgres:5432/recoveryos
+      DIAGNOSER_DATABASE_URL: postgresql+asyncpg://diagnoser:${RECOVERYOS_DIAGNOSER_ROLE_PASSWORD}@postgres:5432/recoveryos
+      INFERENCE_DATABASE_URL: postgresql+asyncpg://inference:${RECOVERYOS_INFERENCE_ROLE_PASSWORD}@postgres:5432/recoveryos
       REDIS_URL: redis://redis:6379/0
       ENV: demo
     ports:

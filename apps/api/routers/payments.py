@@ -136,6 +136,26 @@ async def payment_detail(
             .first()
         )
 
+    # ─── AI FUSION (Phase 11) ────────────────────────────────────────────
+    fusion_row = None
+    if policy_decision_row is not None:
+        fusion_row = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT deterministic_chosen_action, deterministic_chosen_evi_paise, "
+                        "near_tied_candidates, tie_tolerance_bps, ai_recommended_action, "
+                        "ai_confidence, ai_risk_flags, tie_break_applied, risk_escalation_applied, "
+                        "final_action, fusion_reason "
+                        "FROM decision_fusion_trace WHERE decision_id = :did"
+                    ),
+                    {"did": policy_decision_row["decision_id"]},
+                )
+            )
+            .mappings()
+            .first()
+        )
+
     recovery_history_rows = (
         (
             await session.execute(
@@ -236,6 +256,27 @@ async def payment_detail(
             if policy_decision_row is not None
             else None
         ),
+        "ai_fusion": (
+            {
+                "deterministic_chosen_action": fusion_row["deterministic_chosen_action"],
+                "deterministic_chosen_evi_paise": fusion_row["deterministic_chosen_evi_paise"],
+                "near_tied_candidates": fusion_row["near_tied_candidates"],
+                "tie_tolerance_bps": fusion_row["tie_tolerance_bps"],
+                "ai_recommended_action": fusion_row["ai_recommended_action"],
+                "ai_confidence": (
+                    float(fusion_row["ai_confidence"])
+                    if fusion_row["ai_confidence"] is not None
+                    else None
+                ),
+                "ai_risk_flags": fusion_row["ai_risk_flags"],
+                "tie_break_applied": fusion_row["tie_break_applied"],
+                "risk_escalation_applied": fusion_row["risk_escalation_applied"],
+                "final_action": fusion_row["final_action"],
+                "fusion_reason": fusion_row["fusion_reason"],
+            }
+            if fusion_row is not None
+            else None
+        ),
         "recovery_history": [
             {
                 "recovery_id": r["recovery_id"],
@@ -249,5 +290,95 @@ async def payment_detail(
                 "stopping_rule_triggered": r["stopping_rule_triggered"],
             }
             for r in recovery_history_rows
+        ],
+    }
+
+
+@router.get("/{payment_id}/mission", summary="Recovery mission + full ordered event trace")
+async def payment_mission(
+    payment_id: str,
+    merchant: Merchant = Depends(verify_api_key),
+    session: AsyncSession = Depends(get_app_session),
+):
+    """
+    Phase 12/13 -- the payment's most recent RecoveryMission (migration
+    0022, services/recovery_engine/mission.py) plus its full, ordered
+    mission_events trace. This is the endpoint the Payment Detail hero
+    screen polls while a mission is non-terminal: every event here is a
+    real, already-committed row (services/pipeline/consumer.py,
+    workers/execution_worker.py, services/pipeline/reconciliation.py all
+    write to mission_events through the same code-owned state machine) --
+    nothing here is synthesized for display.
+
+    Scoped to the authenticated merchant, same 404-on-missing-or-wrong-
+    merchant discipline as /{payment_id}/detail. A payment with no mission
+    at all (e.g. seeded directly, bypassing services.pipeline.consumer) also
+    404s -- there is nothing to show, not an empty mission.
+    """
+    payment = await session.get(Payment, payment_id)
+    if payment is None or payment.merchant_id != merchant.merchant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found.")
+
+    mission_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT mission_id, state, objective, max_investigation_rounds, "
+                    "max_attempts, max_mission_duration_seconds, max_money_exposure_paise, "
+                    "current_round, current_attempt, started_at, expires_at, ended_at "
+                    "FROM recovery_missions WHERE payment_id = :pid "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if mission_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No recovery mission for this payment."
+        )
+
+    event_rows = (
+        (
+            await session.execute(
+                text(
+                    "SELECT sequence_number, state, event_type, actor, payload, created_at "
+                    "FROM mission_events WHERE mission_id = :mid ORDER BY sequence_number"
+                ),
+                {"mid": mission_row["mission_id"]},
+            )
+        )
+        .mappings()
+        .all()
+    )
+
+    return {
+        "payment_id": payment_id,
+        "mission": {
+            "mission_id": mission_row["mission_id"],
+            "state": mission_row["state"],
+            "objective": mission_row["objective"],
+            "max_investigation_rounds": mission_row["max_investigation_rounds"],
+            "max_attempts": mission_row["max_attempts"],
+            "max_mission_duration_seconds": mission_row["max_mission_duration_seconds"],
+            "max_money_exposure_paise": mission_row["max_money_exposure_paise"],
+            "current_round": mission_row["current_round"],
+            "current_attempt": mission_row["current_attempt"],
+            "started_at": mission_row["started_at"].isoformat(),
+            "expires_at": mission_row["expires_at"].isoformat(),
+            "ended_at": mission_row["ended_at"].isoformat() if mission_row["ended_at"] else None,
+        },
+        "events": [
+            {
+                "sequence_number": e["sequence_number"],
+                "state": e["state"],
+                "event_type": e["event_type"],
+                "actor": e["actor"],
+                "payload": e["payload"],
+                "created_at": e["created_at"].isoformat(),
+            }
+            for e in event_rows
         ],
     }

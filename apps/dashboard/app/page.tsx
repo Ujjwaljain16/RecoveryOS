@@ -31,14 +31,36 @@ type RiskSummary = {
   recovery_queue: QueueItem[];
 };
 
+type ActiveMission = {
+  mission_id: string;
+  payment_id: string;
+  state: string;
+  current_attempt: number;
+  max_attempts: number;
+  current_round: number;
+  amount_paise: number;
+  bank: string;
+  method: string;
+  started_at: string;
+};
+
 const POLL_MS = 3000;
+
+const SCENARIOS: { key: string; label: string; title: string }[] = [
+  { key: "recover_via_replan", label: "RECOVER VIA REPLAN", title: "Fails once, replans, succeeds" },
+  { key: "safety_escalation", label: "SAFETY ESCALATION", title: "Risk flag halts execution, zero money moved" },
+  { key: "world_changed", label: "WORLD CHANGED", title: "External webhook resolves mid-mission" },
+];
 
 export default function ControlTowerPage() {
   const [summary, setSummary] = useState<RiskSummary | null>(null);
+  const [missions, setMissions] = useState<ActiveMission[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isDemo, setIsDemo] = useState(false);
   const [degrading, setDegrading] = useState(false);
   const [degradeResult, setDegradeResult] = useState<string | null>(null);
+  const [triggeringScenario, setTriggeringScenario] = useState<string | null>(null);
+  const [scenarioError, setScenarioError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -47,6 +69,12 @@ export default function ControlTowerPage() {
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to reach the backend.");
+    }
+    try {
+      const { data } = await apiGet<{ missions: ActiveMission[] }>("v1/missions/active");
+      setMissions(data.missions);
+    } catch {
+      // active-missions failures shouldn't blank out the rest of the page
     }
   }, []);
 
@@ -62,6 +90,20 @@ export default function ControlTowerPage() {
       .then((body) => setIsDemo(body.env === "demo"))
       .catch(() => setIsDemo(false));
   }, []);
+
+  async function handleTriggerScenario(scenarioKey: string) {
+    setTriggeringScenario(scenarioKey);
+    setScenarioError(null);
+    try {
+      const { data } = await apiPost<{ payment_id: string }>("v1/simulate/scenario", {
+        scenario: scenarioKey,
+      });
+      window.location.href = `/payments/${data.payment_id}`;
+    } catch (err) {
+      setScenarioError(err instanceof ApiError ? err.message : "Failed to reach the backend.");
+      setTriggeringScenario(null);
+    }
+  }
 
   async function handleSimulateDegrade() {
     setDegrading(true);
@@ -104,6 +146,28 @@ export default function ControlTowerPage() {
           {degrading ? "Simulating…" : "SIMULATE DEGRADATION"}
         </button>
       </div>
+
+      {isDemo && (
+        <div className="chain-step" style={{ marginTop: "1rem" }}>
+          <div className="section-title" style={{ marginTop: 0 }}>Trigger Scenario</div>
+          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+            {SCENARIOS.map((s) => (
+              <button
+                key={s.key}
+                className="secondary"
+                disabled={triggeringScenario !== null}
+                onClick={() => handleTriggerScenario(s.key)}
+                title={s.title}
+              >
+                {triggeringScenario === s.key ? "Starting…" : s.label}
+              </button>
+            ))}
+          </div>
+          {scenarioError && (
+            <div className="error-banner" style={{ marginTop: "0.5rem" }}>{scenarioError}</div>
+          )}
+        </div>
+      )}
 
       {error && <div className="error-banner">{error}</div>}
       {degradeResult && <div className="error-banner" style={{ color: "var(--accent)", borderColor: "var(--accent)" }}>{degradeResult}</div>}
@@ -196,6 +260,42 @@ export default function ControlTowerPage() {
                     <td>
                       <span className="badge neutral">{q.status}</span>
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <div className="section-title">Active Recovery Missions</div>
+          {missions.length === 0 ? (
+            <p style={{ color: "var(--text-dim)" }}>No missions currently in flight.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Payment</th>
+                  <th>Bank</th>
+                  <th>Amount</th>
+                  <th>State</th>
+                  <th>Attempt</th>
+                  <th>Round</th>
+                  <th>Started</th>
+                </tr>
+              </thead>
+              <tbody>
+                {missions.map((m) => (
+                  <tr key={m.mission_id}>
+                    <td>
+                      <Link href={`/payments/${m.payment_id}`}>{m.payment_id.slice(0, 8)}…</Link>
+                    </td>
+                    <td>{m.bank}</td>
+                    <td>{formatPaise(m.amount_paise)}</td>
+                    <td>
+                      <span className="badge neutral">{m.state}</span>
+                    </td>
+                    <td>{m.current_attempt}/{m.max_attempts}</td>
+                    <td>{m.current_round}</td>
+                    <td>{new Date(m.started_at).toLocaleTimeString()}</td>
                   </tr>
                 ))}
               </tbody>

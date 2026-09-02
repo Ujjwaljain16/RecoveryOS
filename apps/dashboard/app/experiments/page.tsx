@@ -3,6 +3,15 @@
 import { useEffect, useState } from "react";
 import { apiGet, ApiError, formatPaise } from "@/lib/api";
 
+type AiContribution = {
+  recommendations_available: number;
+  near_tie_decisions: number;
+  ai_tie_breaks: number;
+  risk_escalations: number;
+  ai_outcome_delta_total: number;
+  ai_outcome_delta_rate: number | null;
+};
+
 type LiveExperiment = {
   run_id: "live";
   dataset_size: number;
@@ -10,6 +19,7 @@ type LiveExperiment = {
   recoveryos: { recovered_paise: number; interventions: number; unnecessary_interventions: number };
   incremental_recovery_paise: number;
   recovery_rate_bps: number;
+  ai_contribution: AiContribution;
 };
 
 type Phase8Seed = {
@@ -178,6 +188,111 @@ export default function ExperimentsPage() {
           payments with simulator ground truth run through the live pipeline.
         </p>
       )}
+
+      {live && (
+        <>
+          <div className="section-title">AI Contribution</div>
+          <p style={{ color: "var(--text-dim)" }}>
+            Bounded AI fusion only ever wins an economic tie-break already cleared by EVI/policy,
+            or triggers a deterministic escalation rule — it can never invent an action. These
+            counts are real, from every decision this merchant&apos;s traffic has produced.
+          </p>
+          <div className="stat-grid">
+            <div className="stat-card">
+              <div className="label">Recommendations Available</div>
+              <div className="value">{live.ai_contribution.recommendations_available}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">Near-Tie Decisions</div>
+              <div className="value">{live.ai_contribution.near_tie_decisions}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">AI Tie-Breaks</div>
+              <div className="value">{live.ai_contribution.ai_tie_breaks}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">Risk Escalations</div>
+              <div className="value">{live.ai_contribution.risk_escalations}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">AI Changed Final Outcome</div>
+              <div className="value positive">{live.ai_contribution.ai_outcome_delta_total}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">AI Outcome-Change Rate</div>
+              <div className="value">
+                {live.ai_contribution.ai_outcome_delta_rate !== null
+                  ? `${(live.ai_contribution.ai_outcome_delta_rate * 100).toFixed(1)}%`
+                  : "—"}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="section-title">AI Authority Boundary</div>
+      <div className="chain-step">
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.75rem" }}>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
+            {["Diagnose", "Recommend", "Risk Signal"].map((label) => (
+              <div
+                key={label}
+                style={{
+                  border: "1px solid var(--accent)",
+                  borderRadius: "8px",
+                  padding: "0.5rem 1rem",
+                  fontSize: "0.85rem",
+                  color: "var(--accent)",
+                }}
+              >
+                AI: {label}
+              </div>
+            ))}
+          </div>
+          <div style={{ color: "var(--text-dim)", fontSize: "1.2rem" }}>↓</div>
+          <div
+            style={{
+              border: "1px solid var(--text)",
+              borderRadius: "8px",
+              padding: "0.6rem 1.5rem",
+              fontWeight: 700,
+              letterSpacing: "0.03em",
+            }}
+          >
+            DETERMINISTIC CONTROL PLANE (EVI + Policy)
+          </div>
+          <div style={{ color: "var(--text-dim)", fontSize: "1.2rem" }}>↓</div>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
+            <div
+              style={{
+                border: "1px solid var(--green)",
+                borderRadius: "8px",
+                padding: "0.5rem 1rem",
+                fontSize: "0.85rem",
+                color: "var(--green)",
+              }}
+            >
+              ALLOWED → EXECUTION
+            </div>
+            <div
+              style={{
+                border: "1px solid var(--red)",
+                borderRadius: "8px",
+                padding: "0.5rem 1rem",
+                fontSize: "0.85rem",
+                color: "var(--red)",
+              }}
+            >
+              BLOCKED
+            </div>
+          </div>
+        </div>
+        <ul style={{ marginTop: "1.25rem", paddingLeft: "1.25rem", fontSize: "0.9rem", color: "var(--text-dim)" }}>
+          <li>✓ AI cannot bypass EVI — it may only win a tie already inside the disclosed tolerance.</li>
+          <li>✓ AI cannot bypass policy — every candidate it can pick from was already policy-cleared.</li>
+          <li>✓ AI cannot set execution parameters — it never supplies amounts, routes, or timing directly.</li>
+        </ul>
+      </div>
     </main>
   );
 }

@@ -184,7 +184,69 @@ async def _live_experiment(merchant: Merchant, session: AsyncSession) -> dict:
             "attributable_to_better_decisions_paise": attributable_to_better_decisions,
         }
 
+    result["ai_contribution"] = await _ai_contribution(merchant, session)
+
     return result
+
+
+async def _ai_contribution(merchant: Merchant, session: AsyncSession) -> dict:
+    """
+    Phase 11's real, load-bearing answer to "did the AI actually change
+    anything" -- same queries as tests/evaluation/ai_ablation_runner.py's
+    collect_metrics(), scoped to one merchant instead of a whole ablation
+    run, against decision_fusion_trace (written by
+    services/recovery_engine/orchestrator.py's _apply_ai_fusion whenever
+    ai_recommendation_fusion_enabled was on for that decision -- empty/
+    zeroed, never fabricated, if it never ran for this merchant).
+
+    near_tie_decisions is the honest denominator: how many decisions had a
+    GENUINE economic near-tie for the AI to possibly influence, not just how
+    many times a recommendation existed. ai_outcome_delta_total mirrors
+    recoveryos/metrics.py's own counter definition exactly (tie-breaks +
+    risk escalations) -- the one number this whole block leads with.
+    """
+    row = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT
+                    COUNT(*) FILTER (WHERE dft.ai_recommended_action IS NOT NULL)
+                        AS recommendations_available,
+                    COUNT(*) FILTER (WHERE jsonb_array_length(dft.near_tied_candidates) > 1)
+                        AS near_tie_decisions,
+                    COUNT(*) FILTER (WHERE dft.tie_break_applied) AS ai_tie_breaks,
+                    COUNT(*) FILTER (WHERE dft.risk_escalation_applied) AS risk_escalations
+                FROM decision_fusion_trace dft
+                JOIN policy_decisions pd ON pd.decision_id = dft.decision_id
+                JOIN payments p ON p.payment_id = pd.payment_id
+                WHERE p.merchant_id = :merchant_id
+                """
+                ),
+                {"merchant_id": merchant.merchant_id},
+            )
+        )
+        .mappings()
+        .one()
+    )
+
+    recommendations_available = int(row["recommendations_available"])
+    ai_tie_breaks = int(row["ai_tie_breaks"])
+    risk_escalations = int(row["risk_escalations"])
+    ai_outcome_delta_total = ai_tie_breaks + risk_escalations
+
+    return {
+        "recommendations_available": recommendations_available,
+        "near_tie_decisions": int(row["near_tie_decisions"]),
+        "ai_tie_breaks": ai_tie_breaks,
+        "risk_escalations": risk_escalations,
+        "ai_outcome_delta_total": ai_outcome_delta_total,
+        "ai_outcome_delta_rate": (
+            ai_outcome_delta_total / recommendations_available
+            if recommendations_available > 0
+            else None
+        ),
+    }
 
 
 def _phase8_baseline_experiment() -> dict:
