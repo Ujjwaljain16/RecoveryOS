@@ -290,8 +290,19 @@ async def test_recover_via_replan_scenario_closes_the_loop(migrated_db, redis_cl
         # next poll cycle -- picks up the reschedule row schedule_reevaluation_sync
         # just wrote (due immediately, cooldown=0), re-runs a real
         # investigation/decision, and enqueues round 2's job for real.
+        #
+        # Not asserted as == 1: this shared testcontainers Postgres can carry
+        # OTHER tests' own scheduled_reevaluations rows too (real rows this
+        # test doesn't own), and patching clock.utcnow() to real time above
+        # makes any of THEIRS that are already past-due become due here as
+        # well -- harmless (_process_one safely CANCELs any whose mission has
+        # already moved past OBSERVING_OUTCOME), but means the exact count
+        # isn't this test's own to assert. Confirmed CI-only (full-suite,
+        # shared DB): processed == 3 there, == 1 run in isolation locally.
+        # This test's own correctness is verified below by payment_id's own
+        # mission actually reaching RECOVERED with the right event sequence.
         processed = await run_once(redis_client)
-        assert processed == 1
+        assert processed >= 1
 
         # Round 2: wait for the fake execution_worker to process THAT job
         # and land the mission in its final RECOVERED state.

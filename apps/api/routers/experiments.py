@@ -304,7 +304,9 @@ def _phase8_baseline_experiment() -> dict:
             "failed_payments": s["failed_payments"],
             "recoveryos_total_paise": s["recoveryos"]["recovered_revenue_paise"],
             "baseline_total_paise": s["compliance_aware_fair_baseline"]["recovered_revenue_paise"],
-            "incremental_recovery_paise": s["incremental_recoveryos_vs_compliance_aware_fair_paise"],
+            "incremental_recovery_paise": s[
+                "incremental_recoveryos_vs_compliance_aware_fair_paise"
+            ],
             "recovery_rate": s["recoveryos"]["recovered_count"] / s["failed_payments"],
         }
         for s in per_seed
