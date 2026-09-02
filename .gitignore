@@ -63,6 +63,12 @@ models/**/*.bin
 !tests/evaluation/artifacts/phase8_payment_outcomes.csv
 !tests/evaluation/artifacts/phase8_payment_outcomes.parquet
 
+# ─── Local scratch backups ──────────────────────────────────────────────────────
+# One-off local safety-net copy of data/ made before regenerating the
+# Phase-2 dataset (the seed-decorrelation/calibration fix) -- never meant
+# to be committed, just a personal rollback point.
+data_pre_step3_backup/
+
 # ─── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/settings.json
 .idea/
