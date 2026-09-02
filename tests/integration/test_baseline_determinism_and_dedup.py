@@ -37,6 +37,8 @@ from recoveryos.database import get_app_session_factory
 from services.pipeline.baseline import (
     PIPELINE_BASELINE_EXPERIMENT_ID,
     compute_and_persist_baseline_run,
+    compute_and_persist_compliance_aware_baseline_run,
+    compute_and_persist_fair_baseline_run,
 )
 from tests.integration.conftest import seed_merchant_and_customer, to_async_url
 
@@ -158,3 +160,59 @@ async def test_concurrent_baseline_runs_for_the_same_payment_converge_to_one_row
     assert (
         len(rows) == 1
     ), f"exactly one baseline_runs row must exist despite the concurrent race, got {rows}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Adversarial sweep scenario #36 -- baseline computation cannot mutate
+# RecoveryOS decision tables
+# ═══════════════════════════════════════════════════════════════════════
+
+_DECISION_TABLES = ("policy_decisions", "candidate_actions", "diagnoses", "recoveries", "recovery_ledger")
+
+
+async def _count_rows(engine, table: str) -> int:
+    async with engine.connect() as conn:
+        return (await conn.execute(text(f"SELECT count(*) FROM {table}"))).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_baseline_computation_never_touches_recoveryos_decision_tables(migrated_db):
+    """
+    Every baseline comparator (single-attempt, compliance-blind fair,
+    compliance-aware fair) reads payments/simulator_latent_state and writes
+    ONLY to baseline_runs -- it must never insert/update/delete a row in any
+    table RecoveryOS's own real decision/execution path owns
+    (policy_decisions, candidate_actions, diagnoses, recoveries,
+    recovery_ledger). This was proven empirically across the 5-seed
+    compliance-aware benchmark (blocked_by_rule column's own docstring); this
+    test makes that proof a permanent regression check rather than a one-off
+    evaluation-run observation.
+    """
+    payment_id = await _seed_payment_with_latent_state(migrated_db, true_recovery_prob_bps=5000)
+    engine = create_async_engine(to_async_url(migrated_db))
+
+    before = {table: await _count_rows(engine, table) for table in _DECISION_TABLES}
+
+    session_factory = get_app_session_factory()
+    async with session_factory() as session:
+        await compute_and_persist_baseline_run(session, payment_id)
+    async with session_factory() as session:
+        await compute_and_persist_fair_baseline_run(session, payment_id)
+    async with session_factory() as session:
+        await compute_and_persist_compliance_aware_baseline_run(session, payment_id)
+
+    after = {table: await _count_rows(engine, table) for table in _DECISION_TABLES}
+    await engine.dispose()
+
+    assert before == after, (
+        "baseline computation must never mutate RecoveryOS's own decision/execution "
+        f"tables -- before={before} after={after}"
+    )
+
+    # And it must have actually done its job (three distinct experiment rows),
+    # not passed the isolation check by silently doing nothing.
+    async with create_async_engine(to_async_url(migrated_db)).connect() as conn:
+        n_baseline_rows = (
+            await conn.execute(text("SELECT count(*) FROM baseline_runs WHERE payment_id = :pid"), {"pid": payment_id})
+        ).scalar_one()
+    assert n_baseline_rows == 3, f"expected 3 baseline_runs rows (one per comparator), got {n_baseline_rows}"
