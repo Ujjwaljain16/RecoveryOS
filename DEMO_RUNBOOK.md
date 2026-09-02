@@ -1,9 +1,12 @@
 # RecoveryOS — Final Demo Runbook
 
-**Status: planning document only. No code changed to produce this.** Everything below is derived
-from reading `apps/api/routers/simulate.py`, `apps/dashboard/app/payments/[id]/page.tsx`,
-`docker-compose.yml`, `docker-compose.override.ai_fusion.yml`, and the mission/scheduler/AI code
-already audited earlier this session. Nothing here is invented UI or capability.
+**Status: corrected against real, live-verified behavior.** The original version of this document
+was a planning document derived purely from reading code, before the demo scenario engine had
+actually been rehearsed live. Live rehearsal surfaced two real bugs in
+`apps/api/routers/simulate.py` (both fixed, both verified against the actual running stack) that
+changed how `recover_via_replan` and `world_changed` actually work — this revision corrects every
+passage below that described the pre-fix mechanism. See the git history for
+`apps/api/routers/simulate.py` and `integrations/razorpay/adapter.py` for the exact fixes.
 
 ---
 
@@ -15,9 +18,26 @@ already audited earlier this session. Nothing here is invented UI or capability.
 - **`recover_via_replan`** and **`world_changed`** run the payment through the **real, live**
   pipeline — real `diagnose_and_persist` (the real AI investigator, including a real Gemini call
   if `GEMINI_API_KEY` is configured, which it is in the dev `.env`), real EVI/policy, real
-  enqueue. Only the *outcome* of each attempt (FAILED then SUCCESS) is driven deterministically,
-  through the exact same `reconcile_pending_recovery` path a genuine Razorpay webhook would use —
-  not a fake UI transition.
+  enqueue. The two scenarios now get their determinism through **different** mechanisms, because
+  `SimulatorAdapter` (the default provider) resolves an attempt directly to SUCCESS/FAILED via a
+  real dice roll — it never produces an intermediate PENDING state on its own:
+  - **`recover_via_replan`** seeds attempt 1's own ground-truth recovery probability at 0 —
+    a real, deterministic loss through the SAME dice-roll function every other payment in this
+    system resolves through, not a special case. From there, nothing in `simulate.py` drives
+    anything further: the real Phase 13 closed loop (`workers/execution_worker.py`'s
+    `_advance_mission_after_outcome` scheduling a real re-evaluation, picked up organically by the
+    always-running `retry_scheduler` container within ~5s) does the rest, exactly like a genuine
+    production failure would. Attempt 2 (and, if it also organically fails, attempt 3) is a real,
+    unforced dice roll — very likely to succeed given the seeded latents, but not guaranteed. A
+    live rehearsal run actually took 3 attempts, not 2 — see §4.
+  - **`world_changed`** instead seeds an opt-in flag
+    (`simulator_latent_state.force_pending_until_reconciled`, migration 0026) that makes
+    `SimulatorAdapter` skip its dice roll and return a real PENDING outcome — giving this one
+    scenario a genuine PENDING window, which `simulate.py`'s own background task then resolves via
+    the exact same `reconcile_pending_recovery` path a real webhook would use, ~4s later ("the
+    world changes").
+  - Neither mechanism is a fake UI transition — both route through real, unmodified production
+    code; they differ only in *how* each scenario gets a demo-deterministic starting point.
 - **`safety_escalation`** is different on purpose: the diagnosis/recommendation content is
   pre-scripted (`risk_flags=["HIGH_FRAUD_RISK"]`), specifically for reliability — but everything
   *after* that (`AIRiskSignalEscalationRule`, the fusion boundary, the mission transition to
@@ -28,11 +48,13 @@ already audited earlier this session. Nothing here is invented UI or capability.
   `docker-compose.override.ai_fusion.yml`.
 - **Real Gemini quota is genuinely consumed by `recover_via_replan`/`world_changed`** — each
   round of real investigation costs up to 2-3 Gemini calls (`MAX_INVESTIGATION_ROUNDS=2` +
-  1 finalize call), and `recover_via_replan` runs TWO full rounds (initial + replan). Budget for
-  this explicitly — see §13.
+  1 finalize call). `world_changed` runs ONE round. `recover_via_replan` runs at least TWO full
+  rounds (initial + one guaranteed replan), and POSSIBLY A THIRD if attempt 2 also organically
+  fails (the demo policy config allows up to 3 attempts) — budget for the worst case, not just the
+  common case. See §13.
 - The hero payment is real and specific: **₹8,420** (`842_000` paise, `_seed_scenario_payment`'s
-  default), card payment, a randomly-suffixed `DEMO_BANK_xxxxxxxx` bank. `recover_via_replan`'s
-  and `world_changed`'s scripted SUCCESS resolution recovers exactly this amount.
+  default), card payment, a randomly-suffixed `DEMO_BANK_xxxxxxxx` bank. Whichever attempt
+  `recover_via_replan`/`world_changed` finally succeeds on recovers exactly this amount.
 - The mission timeline UI auto-polls every 3 seconds until a terminal state
   (`app/payments/[id]/page.tsx`) — no manual refresh needed during recording.
 
@@ -42,9 +64,9 @@ already audited earlier this session. Nothing here is invented UI or capability.
 
 One story, told once, real: **a payment fails, RecoveryOS investigates it for real, a deterministic
 guard decides what's allowed, the first attempt fails, the system notices and replans without
-being told to, the second attempt succeeds — and separately, the benchmark proves this pattern
-creates positive incremental revenue across 5 independent seeds, honestly compared against a
-baseline that obeys the same rules.**
+being told to, and it eventually recovers the payment (attempt 2, usually — occasionally attempt
+3) — and separately, the benchmark proves this pattern creates positive incremental revenue across
+5 independent seeds, honestly compared against a baseline that obeys the same rules.**
 
 The AI story is told carefully: real investigation is shown live (`recover_via_replan`), and the
 "AI can't authorize money movement even when it flags something serious" story is told through a
@@ -79,9 +101,14 @@ benchmark, never conflated with it.
    §6 on which). Response includes `payment_id`.
 5. **[1:15]** Navigate to `http://localhost:3000/payments/{payment_id}`.
 6. Let the Recovery Mission timeline visibly populate in real time (auto-polling, no refresh) —
-   `MISSION_CREATED` → `HYPOTHESIS_UPDATED` → `AI_RECOMMENDATION` → `POLICY_AUTHORIZED` →
-   (attempt 1 fails) → `RECOVERY_FAILED` → `REINVESTIGATION_STARTED` → `HYPOTHESIS_UPDATED` →
-   `AI_RECOMMENDATION` → `POLICY_AUTHORIZED` → (attempt 2) → `RECOVERY_SUCCEEDED`.
+   real, live-verified event sequence (`mission_events.event_type`, actor in parens):
+   `MISSION_CREATED` (system) → `HYPOTHESIS_UPDATED` (ai) → `INVESTIGATION_CONCLUDED` (system) →
+   `PLANNING_CONCLUDED` (system) → `POLICY_AUTHORIZED` (policy_engine) → `RECOVERY_FAILED`
+   (execution_worker) → `REINVESTIGATION_STARTED` (system) → [same
+   HYPOTHESIS_UPDATED/INVESTIGATION_CONCLUDED/PLANNING_CONCLUDED/POLICY_AUTHORIZED block again] →
+   `RECOVERY_SUCCEEDED` (execution_worker) → `MISSION_RECOVERED` (system). If attempt 2 also
+   organically fails, the RECOVERY_FAILED/REINVESTIGATION_STARTED block repeats a second time
+   before the final RECOVERY_SUCCEEDED — don't be surprised by a 3-round timeline, see §4.
 7. **[2:30]** Scroll to the "AI Recommendation → Fusion" section on this same page — show the
    recommendation, confidence, and fusion reason for one of the two rounds.
 8. Cut to a **second, pre-triggered** `safety_escalation` mission's Payment Detail page (a
@@ -113,16 +140,33 @@ benchmark, never conflated with it.
   recommendation pipeline is genuinely live, not that the AI changed which action won — with
   costs skewed this far apart, no near-tie is possible. That's a deliberate demo-reliability
   choice, not something to hide (see §6).
-- Attempt 1 is driven to `FAILED` via the real webhook-reconciliation path.
-- Because the demo policy config sets `retry_cooldown_hours=0`, the replan fires immediately once
-  `workers/retry_scheduler.run_once` is invoked (done for you, in the background task) — this is
-  a genuine second investigation round, not a replay.
-- Attempt 2 is driven to `SUCCESS`, ₹8,420 recovered, via the same real reconciliation path.
+- Attempt 1 is a real, deterministic loss: `_seed_scenario_payment` seeds this payment's ground-
+  truth recovery probability at exactly 0, so the SAME dice-roll function every payment in this
+  system resolves through genuinely returns FAILED — not scripted around, actually forced through
+  the real mechanism.
+- That real FAILED outcome hits `workers/execution_worker.py`'s own real Phase 13 code
+  (`_advance_mission_after_outcome`), which schedules a real re-evaluation — due immediately,
+  since the demo policy config sets `retry_cooldown_hours=0`. Nothing in `simulate.py` invokes
+  anything further: the **always-running `retry_scheduler` container** picks this up on its own
+  next poll cycle (`POLL_INTERVAL_SECONDS=5`) and runs a genuinely fresh second investigation
+  round — organically, exactly like production.
+- Attempt 2 is a real, unforced dice roll against this payment's seeded latents (patience 0.8,
+  bank health 0.9, `TEMPORARY_GATEWAY_TIMEOUT`) — very likely to succeed, but not guaranteed. If it
+  succeeds: ₹8,420 recovered, mission `RECOVERED`, two rounds total. **If it also fails** (real,
+  live-observed behavior, not a hypothetical): the same real closed loop fires again, producing a
+  genuine third investigation round and attempt — the demo policy config allows up to 3 attempts,
+  so this still resolves, just one round later and a few seconds slower. Either ending is a real,
+  honest outcome; don't be thrown by a 3-round timeline on camera, and don't narrate a fixed
+  "attempt 2 succeeds" script that could be contradicted by what's actually on screen — narrate
+  what's actually happening (see §10's phrasing, which already avoids committing to attempt 2
+  specifically).
 
 **Why this is the right hero scenario**, not a fabricated one: every step routes through the same
-functions production traffic uses (`services/pipeline/consumer.py`, `services/recovery_engine/orchestrator.py`, `services/pipeline/reconciliation.py`) — the only scripted parts are *when* the
-outcome resolves and to what, which is exactly what a demo needs to be deterministic and
-repeatable without becoming fake.
+functions production traffic uses (`services/pipeline/consumer.py`,
+`services/recovery_engine/orchestrator.py`, `workers/execution_worker.py`,
+`workers/retry_scheduler.py`) — the only scripted part is forcing attempt 1's own dice roll to
+land on FAILED, which is exactly what a demo needs to be deterministic and repeatable without
+becoming fake; everything downstream of that single seeded value is completely real and unforced.
 
 ---
 
@@ -160,23 +204,27 @@ repeatable without becoming fake.
 - **Visible state:** `RECOVERY_FAILED` appears, then `REINVESTIGATION_STARTED`
   ("Previous attempt failed — reinvestigating with new evidence"), then a fresh
   `HYPOTHESIS_UPDATED`/`AI_RECOMMENDATION` pair.
-- **Backend event:** real reconciliation to FAILED → `retry_scheduler.run_once()` fires the
-  reschedule → a genuinely fresh second investigation round.
+- **Backend event:** a real FAILED outcome (attempt 1's ground-truth probability was seeded at 0)
+  schedules a real re-evaluation, picked up by the always-running `retry_scheduler` container's
+  own next poll cycle (within ~5s) → a genuinely fresh second investigation round.
 - **Technical significance:** this is the closed loop — a second, independent decision, not a
   scripted retry count.
 - **Business significance:** "it didn't just try the same thing twice — it reconsidered."
 - **Narration:** *"The first attempt failed. RecoveryOS noticed, gathered fresh evidence, and
   replanned — automatically."*
-- **Duration:** ~25s.
-- **Failure recovery:** if the replan doesn't fire within ~30s, `run_once()` may have hit a real
-  Gemini timeout on round 2's investigation — the deterministic fallback still produces a result,
-  just check the timeline caught up before moving on.
+- **Duration:** ~10-15s (the scheduler's own poll interval, not a webhook wait).
+- **Failure recovery:** if the replan doesn't fire within ~20s, check
+  `docker compose logs retry_scheduler` — confirm the container is actually running before
+  assuming a real bug (see §14 preflight).
 
 ### Screen 4 — Payment Detail, terminal state
 - **Visible state:** `RECOVERY_SUCCEEDED` ("Attempt succeeded — ₹8,420.00 recovered"), mission
   badge `RECOVERED`.
-- **Backend event:** real reconciliation to SUCCESS.
-- **Narration:** *"Second strategy, same payment, and it recovered."*
+- **Backend event:** a real, unforced outcome from `SimulatorAdapter`'s dice roll against this
+  payment's seeded latents — very likely SUCCESS, but genuinely possible to be a second FAILED
+  (see §4), in which case the timeline shows one more replan cycle before this screen.
+- **Narration:** *"And it recovered — ₹8,420 back."* (Avoid committing to "second strategy"
+  specifically on camera; say "eventually" or "on this attempt" if a third round happened.)
 - **Duration:** ~10s.
 
 ### Screen 5 — AI Recommendation → Fusion section (same page, scroll)
@@ -263,12 +311,15 @@ proven the same way — it needs a public URL (ngrok or a real deployment) regis
 Razorpay dashboard, which this repo has never set up or tested. Introducing that live, untested
 dependency into a one-shot recording is exactly the kind of risk §9 exists to avoid.
 
-`recover_via_replan`/`world_changed` already drive outcomes through the *identical*
-`reconcile_pending_recovery` function a real webhook would call — so the recording demonstrates
-the real reconciliation code path, just with a deterministic trigger instead of a live external
-service. Mention this honestly in the narration or the README appendix, not as something to hide:
-*"the outcome resolution here runs through the same code a real Razorpay webhook uses — we're not
-depending on a live external service for this recording."*
+`world_changed` drives its outcome through the *identical* `reconcile_pending_recovery` function a
+real webhook would call — so demonstrating it exercises the real reconciliation code path, just
+with a deterministic trigger instead of a live external service. `recover_via_replan` does NOT use
+this path at all (see §0/§4) — its replan/recovery happens entirely through the real Phase 13
+closed loop (`execution_worker` + `retry_scheduler`), no webhook-shaped code involved. Keep these
+claims separate on camera: for `world_changed`, it's fair to say *"the outcome resolution here runs
+through the same code a real Razorpay webhook uses"*; for `recover_via_replan`, say instead
+*"this replan happens through the real production scheduler, the same one that would fire for a
+genuine failed payment — nothing here is simulated timing."*
 
 If a live Razorpay webhook demonstration is wanted for a future recording, that's real,
 independent follow-up work (ngrok tunnel + dashboard webhook registration + a fresh end-to-end
@@ -331,7 +382,8 @@ either way — but confirm this for yourself before the final pass, don't just t
 | If this happens | Do this |
 |---|---|
 | Gemini call times out / quota exhausted mid-recording | The system already falls back to a deterministic diagnosis automatically — the mission still proceeds. Narrate: *"and if the AI path is ever unavailable, the deterministic fallback keeps the mission moving — never a hang."* This is true and turns a failure into a feature. |
-| `recover_via_replan`'s webhook doesn't arrive (background task's poll times out at 20s) | This means `execution_worker` didn't process the enqueued job in time — check `docker compose logs execution_worker` before recording; if it happens live, cut to the pre-triggered `safety_escalation` mission instead and explain the replan beat using the already-rehearsed timing-run footage/description. |
+| `recover_via_replan` takes a 3rd round instead of 2 (attempt 2 also organically fails) | Real, expected, not a bug (§4) — just slower by ~10-15s and one more replan cycle on the timeline. If pre-triggering ahead of the camera (recommended, §9 timing row below), this is invisible either way. If triggering live, don't panic-narrate; the mission still resolves. |
+| `retry_scheduler` container isn't running / hasn't picked up the reschedule | Check `docker compose logs retry_scheduler` and `docker compose ps` before recording — this container must be healthy for `recover_via_replan`'s replan to ever fire (see §14 preflight). If it happens live, cut to the pre-triggered `safety_escalation` mission instead and explain the replan beat using the already-rehearsed timing-run footage/description. |
 | Worker delayed / mission stuck in an intermediate state | Wait one more 3s poll cycle before reacting on camera — the UI catches up automatically, no refresh needed. |
 | UI looks stale | Confirm the browser tab is actually the dashboard's own polling page, not a cached screenshot from an earlier take — reload once, off camera, before starting. |
 | Mission takes longer than storyboarded | Pre-trigger the hero scenario ~60-90 seconds before "Action" so the interesting middle section is already ready to show when the camera gets there — don't trigger it live on camera unless the timing run proved it's consistently fast enough. |
@@ -362,7 +414,9 @@ evaluated it, and authorized the first recovery attempt."
 **[1:55]** "That attempt failed. Watch what RecoveryOS does next — not retry the same thing, but
 notice, gather fresh evidence, and replan."
 
-**[2:20]** "Second strategy — and this time, it recovered ₹8,420."
+**[2:20]** "And it recovered — ₹8,420 back." *(If the timeline shows a third round because attempt
+2 also failed organically, that's fine — say "it kept trying, and it recovered" instead. Don't
+script a fixed attempt count; narrate what's actually on screen — see §4.)*
 
 **[2:30]** "Every one of those decisions is fully auditable — here's exactly what the AI
 recommended, what the deterministic engine decided, and why."
@@ -426,6 +480,7 @@ mission. That's RecoveryOS."
 | Stale/messy demo DB visible on camera | P0 | `docker compose down -v` + fresh seed before the final recording session — see §8 |
 | `execution_worker` not running / job never processed | P0 | Confirm `docker compose ps` shows all workers healthy before every rehearsal and before recording |
 | Mission timing runs longer than storyboarded | P1 | Pre-trigger 60-90s before the camera needs it, per §9 |
+| `recover_via_replan` takes a real 3rd round (attempt 2 also fails) instead of the common 2-round case | P2 | Real and understood, not a bug (§4) — adds ~10-15s. Pre-triggering (above) absorbs this either way; only a risk if triggering live on a tight cue |
 | Browser shows dev artifacts (console errors, raw IDs, localhost debug params) | P1 | Clean browser profile, no devtools open, check §14 checklist |
 | `AI_RECOMMENDATION_FUSION_ENABLED` accidentally false on recording day | P0 | Explicit preflight check — see §14 |
 | Live Razorpay dependency introduced late and fails | P0 (if attempted) | Don't attempt it — §7 |
@@ -476,18 +531,21 @@ Benchmark integrity
 
 **B — READY AFTER SMALL DEMO PREPARATION.**
 
-The demo *mechanism* is not the gap — `simulate.py`'s scenario engine is already real,
-already wired to the actual production code paths, and already more honest than a typical scripted
-demo would be. What's missing before recording is purely *preparation*, not engineering:
+The demo *mechanism* is not the gap — `simulate.py`'s scenario engine is already real, already
+wired to the actual production code paths, and already more honest than a typical scripted demo
+would be. Live rehearsal already found and fixed the two real bugs that existed in that engine
+(§0/§4) — this is no longer an unverified plan, both hero scenarios have been confirmed to resolve
+correctly against the actual running stack. What's left before recording is purely *preparation*,
+not engineering:
 
-1. A fresh demo DB reset (§8) — not yet done as of this runbook.
-2. One full rehearsal at real timing, to confirm the numbers in §2/§5 hold up in practice (some
-   durations here are estimates from reading the code, not measured wall-clock).
+1. A fresh demo DB reset (§8) — not yet done as of this revision.
+2. One full rehearsal at real timing, to confirm the durations in §2/§5 hold up in practice under
+   the corrected mechanism (some are still estimates, now from a code path that's been verified
+   live but not stopwatch-timed end to end).
 3. Confirming Gemini quota is available on recording day (§13's P0 risk).
-4. Actually capturing the screenshots the README already flags as missing — useful for the
-   written submission even though the video doesn't strictly need them.
+4. ~~Actually capturing the screenshots the README already flags as missing~~ — **done**: real,
+   live-captured screenshots are in `docs/images/` and embedded in the README.
 
-Nothing in this runbook requires new engineering. The recommended next step is exactly what you
-proposed: run the clean-room reset, do the technical rehearsal, and report back what actually
-happens end to end — at that point this runbook can be corrected against real measured timings
-before the final recording.
+Nothing in this runbook requires new engineering. The recommended next step is exactly what was
+proposed before: run the clean-room reset, do the technical rehearsal, and confirm the corrected
+timings above hold up end to end before the final recording.
