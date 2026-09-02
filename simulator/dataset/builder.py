@@ -6,11 +6,12 @@ Layout:
     ├── train/
     │   ├── features.parquet   ← visible features only (VISIBLE_FEATURE_COLUMNS)
     │   └── labels.parquet     ← actual_recovered, optimal_recovery_action
-    ├── val_random/            ← same seed as train, random sample
-    ├── val_temporal/          ← same seed, later clock timestamps
+    ├── val_random/            ← decorrelated seed (train_seed + offset), random sample
+    ├── val_temporal/          ← same seed as train, later clock timestamps
     ├── test_random/           ← seed=999
-    ├── test_temporal/         ← seed=999, later clock timestamps
-    └── manifest.json          ← seed, sizes, schema version, created_at
+    ├── test_temporal/         ← same seed as test_random, later clock timestamps
+    ├── test_scenario/         ← decorrelated seed (test_seed + offset), OOD scenario weights
+    └── manifest.json          ← per-split seed, sizes, schema version, created_at
 
 Leakage invariant: features.parquet is asserted free of latent/label columns
 before writing. Tested in tests/unit/test_dataset_schema.py.
@@ -176,6 +177,8 @@ class DatasetBuilder:
         test_scenario_episodes: list[RecoveryEpisode],
         train_seed: int,
         test_seed: int,
+        val_seed: int | None = None,
+        test_scenario_seed: int | None = None,
     ) -> DatasetManifest:
         print(f"[DatasetBuilder] Writing splits to {self.output_dir.resolve()}")
         split_manifests: list[SplitManifest] = []
@@ -192,9 +195,12 @@ class DatasetBuilder:
             m.seed = train_seed
             split_manifests.append(m)
 
-        # Val random: explicitly provided val episodes
+        # Val random: explicitly provided val episodes. gaps.md sec:C.2 -- this
+        # used to be generated with train_seed (a literal duplicate of train's
+        # leading episodes); it now has its own decorrelated seed, recorded
+        # here rather than mislabeled as train_seed.
         m = write_split(val_episodes, "val_random", self.output_dir)
-        m.seed = train_seed
+        m.seed = val_seed if val_seed is not None else train_seed
         split_manifests.append(m)
 
         # Test random + temporal: from seed=999
@@ -208,10 +214,13 @@ class DatasetBuilder:
             m.seed = test_seed
             split_manifests.append(m)
             
-        # Test scenario: out-of-distribution scenario params
+        # Test scenario: out-of-distribution scenario params. gaps.md sec:C.2
+        # -- this used to reuse test_seed (near-fully correlated with
+        # test_random, same underlying draws); it now has its own
+        # decorrelated seed, recorded here rather than mislabeled as test_seed.
         if test_scenario_episodes:
             m = write_split(test_scenario_episodes, "test_scenario", self.output_dir)
-            m.seed = test_seed
+            m.seed = test_scenario_seed if test_scenario_seed is not None else test_seed
             split_manifests.append(m)
 
         manifest = DatasetManifest(

@@ -12,6 +12,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
+from simulator.calibration.loader import load_calibration
 from simulator.core.clock import SimClock
 from simulator.core.ids import DeterministicIdGenerator
 from simulator.core.rng import SimRng
@@ -87,6 +88,12 @@ class EpisodeGenerator:
         self.latent_function = latent_function
         self.dist_sampler = PaymentDistributionSampler(rng)
         self.max_retries = max_retries
+        # gaps.md sec:C.2 -- this floor used to be a hardcoded 0.03 that fought
+        # NormalFailureScenario's own (calibrated) rate via max(base_prob,
+        # scenario_rate): fixing only the scenario's rate left this floor
+        # clamping the effective failure rate back to 0.03 regardless. Loaded
+        # once here (lru_cache'd anyway), not per-episode.
+        self._baseline_failure_rate = load_calibration().baseline_failure_rate
         # LTV decile cuts (must be fit on train split only — injected externally)
         # Default: uniform deciles of a typical Pareto LTV distribution
         self.ltv_decile_cuts: list[int] = ltv_decile_cuts or [
@@ -143,7 +150,7 @@ class EpisodeGenerator:
             )
 
             # Evaluate composable scenarios
-            failure_prob = 0.03
+            failure_prob = self._baseline_failure_rate
             latent_bank_health = 1.0
             active_scenarios: list[ScenarioModifier] = []
             scenario_rates: list[float] = []
@@ -213,7 +220,7 @@ class EpisodeGenerator:
                     timestamp=current_time,
                 )
                 retry_bank_health = 1.0
-                retry_fail_prob = 0.03
+                retry_fail_prob = self._baseline_failure_rate
                 retry_scenarios: list[ScenarioModifier] = []
                 retry_rates: list[float] = []
                 for scenario in self.scenarios:

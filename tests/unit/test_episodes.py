@@ -252,6 +252,99 @@ class TestCalibrationLoader:
         # NPCI H1 FY24-25 UPI share ≈ 57%
         assert 0.50 <= params.upi_transaction_share <= 0.70
 
+    def test_payment_generator_floor_reads_configured_calibration_not_hardcoded(self, monkeypatch):
+        """
+        gaps.md sec:C.2 -- PaymentGenerator used to hardcode a local
+        `failure_prob = 0.03` floor that silently fought any calibrated
+        NormalFailureScenario rate via max(base_prob, scenario_rate): fixing
+        only the scenario's own rate would have left this floor clamping the
+        effective rate back to 0.03 regardless. Patching load_calibration to
+        an extreme value and observing the empirical failure rate move proves
+        the floor is actually READ from calibration at generation time, not
+        merely equal to it by coincidence.
+        """
+        import types
+        from datetime import UTC, datetime
+
+        import simulator.payments.generator as payments_generator_module
+        from simulator.core.clock import SimClock
+        from simulator.core.ids import DeterministicIdGenerator
+        from simulator.core.rng import SimRng
+        from simulator.customers.generator import CustomerGenerator
+        from simulator.failures.observation_noise import ObservationNoisePipeline
+        from simulator.merchants.models import MerchantGenerator
+        from simulator.outcomes.ground_truth import LatentRecoverabilityFunction
+        from simulator.payments.generator import PaymentGenerator
+
+        fake_calib = types.SimpleNamespace(baseline_failure_rate=0.9)
+        monkeypatch.setattr(payments_generator_module, "load_calibration", lambda: fake_calib)
+
+        seed = 321
+        id_gen = DeterministicIdGenerator(seed)
+        rng = SimRng(seed)
+        clock = SimClock(datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC))
+        merchants = MerchantGenerator(id_gen, rng, clock.get_time()).generate_merchants()
+        customers = CustomerGenerator(id_gen, rng, clock.get_time()).generate_customers(100, merchants)
+        noise = ObservationNoisePipeline(rng, ambiguity_rate=0.10)
+        latent_fn = LatentRecoverabilityFunction(rng)
+
+        gen = PaymentGenerator(
+            id_gen=id_gen,
+            rng=rng,
+            clock=clock,
+            merchants=merchants,
+            customers=customers,
+            scenarios=[],  # no scenarios active -- failure_prob stays at the floor, untouched
+            noise_pipeline=noise,
+            latent_function=latent_fn,
+        )
+        assert gen._baseline_failure_rate == 0.9, (
+            "PaymentGenerator did not pick up the patched calibration value"
+        )
+
+        batch = gen.generate_batch(400, "sim-test")
+        observed_rate = sum(1 for p in batch.payments if p.status == "failed") / len(batch.payments)
+        assert observed_rate > 0.6, (
+            f"observed failure rate {observed_rate:.3f} did not move toward the patched "
+            f"calibration value (0.9) -- the floor is not actually reading load_calibration()"
+        )
+
+    def test_episode_generator_floor_reads_configured_calibration_not_hardcoded(self, monkeypatch):
+        """Same wiring, same gaps.md sec:C.2 bug shape, for EpisodeGenerator's
+        two floors (attempt-1 and per-retry) -- see the PaymentGenerator
+        version of this test for the full rationale."""
+        import types
+
+        import simulator.episodes.generator as episodes_generator_module
+        from simulator.episodes.generator import EpisodeGenerator
+
+        fake_calib = types.SimpleNamespace(baseline_failure_rate=0.9)
+        monkeypatch.setattr(episodes_generator_module, "load_calibration", lambda: fake_calib)
+
+        gen, merchants, customers, manifest = self._build_episode_gen_scenarios_shared()
+        ep_gen = EpisodeGenerator(
+            payment_generator=gen,
+            id_gen=gen.id_gen,
+            rng=gen.rng,
+            clock=gen.clock,
+            merchants=merchants,
+            customers=customers,
+            scenarios=[],
+            noise_pipeline=gen.noise_pipeline,
+            latent_function=gen.latent_function,
+        )
+        assert ep_gen._baseline_failure_rate == 0.9, (
+            "EpisodeGenerator did not pick up the patched calibration value"
+        )
+
+    @staticmethod
+    def _build_episode_gen_scenarios_shared():
+        from datetime import UTC, datetime
+
+        from simulator.run import build_simulator
+
+        return build_simulator(seed=321, scenario_config={}, customer_count=100, start_time=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC))
+
 
 # ─── Episode engine smoke test ────────────────────────────────────────────────
 

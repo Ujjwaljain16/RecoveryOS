@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
 
+from simulator.calibration.loader import load_calibration
 from simulator.core.clock import SimClock
 from simulator.core.ids import DeterministicIdGenerator
 from simulator.core.rng import SimRng
@@ -82,6 +83,11 @@ class PaymentGenerator:
         self.noise_pipeline = noise_pipeline
         self.latent_function = latent_function
         self.dist_sampler = PaymentDistributionSampler(rng)
+        # gaps.md sec:C.2 -- see EpisodeGenerator's identical comment: this
+        # floor used to hardcode 0.03 and fight NormalFailureScenario's own
+        # (calibrated) rate via max(base_prob, scenario_rate). Loaded once
+        # here (lru_cache'd anyway), not per-payment.
+        self._baseline_failure_rate = load_calibration().baseline_failure_rate
 
     def _sample_bank(self, timestamp: datetime) -> str:
         """
@@ -149,7 +155,7 @@ class PaymentGenerator:
             )
 
             # 3. Evaluate active composable scenarios
-            failure_prob = 0.03  # default baseline
+            failure_prob = self._baseline_failure_rate
             latent_bank_health = 1.0
 
             active_scenarios: list[ScenarioModifier] = []
