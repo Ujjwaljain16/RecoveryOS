@@ -1,38 +1,38 @@
 {
   "leakage_gate": {
-    "lr_auc": 0.8357,
-    "ci_lo": 0.8291,
-    "ci_hi": 0.8421
+    "lr_auc": 0.8325,
+    "ci_lo": 0.8261,
+    "ci_hi": 0.8387
   },
   "models": {
     "logistic_regression": {
-      "auc_actual_recovered": 0.8356,
-      "auc_optimal_action": 0.7978
+      "auc_actual_recovered": 0.8324,
+      "auc_optimal_action": 0.8145
     },
     "lightgbm": {
-      "auc_actual_recovered": 0.8757,
-      "auc_optimal_action": 0.818,
-      "best_iteration": 499,
+      "auc_actual_recovered": 0.8324,
+      "auc_optimal_action": 0.8173,
+      "best_iteration": 75,
       "feature_importances": {
-        "amount_paise": 20233,
-        "method": 1428,
-        "bank": 2417,
-        "is_returning_customer": 1187,
-        "customer_ltv_decile": 7701,
-        "initial_failure_code": 139885,
-        "initial_failure_class": 28185,
-        "hour_of_day": 11512,
-        "day_of_week": 6567,
-        "merchant_id": 2624
+        "amount_paise": 3776,
+        "method": 680,
+        "bank": 435,
+        "is_returning_customer": 256,
+        "customer_ltv_decile": 1289,
+        "initial_failure_code": 135962,
+        "initial_failure_class": 29158,
+        "hour_of_day": 2052,
+        "day_of_week": 1065,
+        "merchant_id": 468
       }
     },
     "mlp": {
-      "auc_actual_recovered": 0.8439,
-      "auc_optimal_action": 0.8048,
-      "n_iter": 23
+      "auc_actual_recovered": 0.8316,
+      "auc_optimal_action": 0.8191,
+      "n_iter": 13
     }
   },
   "gate3_suspicion": false,
-  "duration_sec": 14.73,
-  "best_model": "lightgbm"
+  "duration_sec": 15.26,
+  "best_model": "logistic_regression"
 }

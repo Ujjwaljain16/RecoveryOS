@@ -52,20 +52,26 @@ FORBIDDEN_FEATURE_COLUMNS = frozenset(
     }
 )
 
-# gaps.md §C.2's fix: train.py's own "best_model" selection ran on
-# val_random, later proven 58.8% duplicate-of-train rows. On the one split
-# verified to have zero overlap with train (test_temporal), LightGBM does
-# not clear TRD §3.3's >0.03-AUC-lift gate over LR, so LR is the correct
-# certified production default. No retraining -- both artifacts already
-# existed from Phase 2.
+# gaps.md §C.2's fix (re-verified 2026-09-02): the dataset's val_random and
+# test_scenario splits used to be re-seeded duplicates of train/test_random,
+# and the simulator's calibration YAML was only partially wired in --
+# simulator/run.py, simulator/episodes/generator.py, and
+# simulator/payments/generator.py have since been fixed and the Phase-2
+# dataset regenerated clean. Retrained and re-evaluated on that clean
+# dataset: on test_temporal -- the split used for certification -- LightGBM
+# does not clear TRD §3.3's >0.03-AUC-lift gate over LR (lift=0.0001,
+# essentially noise), so LR remains the correct certified production
+# default. This was not an artifact of the old data contamination -- the
+# clean-data result confirms the same conclusion the old (contaminated)
+# result did, just for the right reason this time.
 MODEL_SELECTED_FOR_PRODUCTION = "lr"
 MODEL_SELECTION_REASON = (
-    "train.py's best_model ('lightgbm') was picked on val_random, later found "
-    "58.8% duplicate-of-train rows (gaps.md §C.2). On test_temporal -- the only "
-    "split verified to have zero overlap with train -- LightGBM does not clear "
-    "TRD §3.3's >0.03 AUC lift gate over LR (0.8374 vs 0.8378), so "
-    "services/recovery_engine/propensity.py loads model_lr.pkl in production, "
-    "not the model this certificate's 'best_model' field names."
+    "train.py's best_model ('logistic_regression') was picked on the now-clean "
+    "val_random split (gaps.md §C.2's dataset re-seeding and calibration fixes, "
+    "verified 2026-09-02). On test_temporal -- the split used for certification "
+    "-- LightGBM's AUC (0.8365) is statistically indistinguishable from LR's "
+    "(0.8364), a lift of 0.0001 against TRD §3.3's >0.03 gate, so "
+    "services/recovery_engine/propensity.py loads model_lr.pkl in production."
 )
 
 
