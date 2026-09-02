@@ -11,6 +11,7 @@ Connection roles:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 from collections.abc import AsyncGenerator, Generator
@@ -190,7 +191,19 @@ def advisory_lock(conn: Connection, key: str) -> Generator[None, None, None]:
     conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
     try:
         yield
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception -- pg_advisory_lock is SESSION-scoped
+        # (a COMMIT/ROLLBACK does NOT release it; only an explicit unlock,
+        # or the connection closing, does), so ANY unhandled path out of
+        # the wrapped block that leaves the transaction FAILED must still
+        # be rolled back before the finally block's own unlock statement
+        # below can run at all (Postgres refuses every command, the unlock
+        # included, until a failed transaction is rolled back) -- narrowing
+        # this to `Exception` would silently skip that rollback for
+        # KeyboardInterrupt/SystemExit, leaking this lock on this pooled
+        # connection for as long as the connection itself stays alive
+        # (found live: a leaked lock this way permanently deadlocked every
+        # later caller of the SAME key, with zero exception ever logged).
         conn.rollback()
         raise
     finally:
@@ -209,13 +222,81 @@ async def advisory_lock_async(session: AsyncSession, key: str) -> AsyncGenerator
     passed in must be held for the entire check-then-act-then-write
     sequence, not a fresh session per statement) — see the sync version's
     docstring for the full reasoning, not duplicated here.
+
+    Three failure modes the sync version doesn't have to worry about, all
+    found live (a genuine, permanent deadlock: every later caller for the
+    same key blocked forever on SELECT pg_advisory_lock, zero exception
+    ever logged anywhere -- the connection that actually held the lock
+    just sat in the pool "idle", never touched again):
+      - The big one: `session` is an ORM AsyncSession, not a raw Core
+        Connection -- and AsyncSession.commit() (unlike Connection.commit())
+        releases its DBAPI connection back to the pool, checking out a
+        (possibly DIFFERENT) one for the session's next statement. Callers
+        that commit `session` WHILE still inside this lock -- deliberately,
+        to make their whole check-then-act-then-write sequence atomic
+        (services/pipeline/reconciliation.py's reconcile_pending_recovery,
+        services/risk_engine/anomaly.py's persist_anomaly_window) -- would
+        silently sever the SESSION-scoped lock from whatever connection
+        later serves this function's own unlock call: confirmed live,
+        pg_advisory_unlock running on a DIFFERENT backend pid than the one
+        that actually acquired the lock, returning false ("not held by
+        this session") with no error, while the true holder went back to
+        the pool still holding it. Fixed by never touching `session`'s own
+        connection for the lock/unlock calls at all -- a genuinely separate
+        connection, held for exactly this function's lifetime, immune to
+        whatever `session` does with its own transaction.
+
+        That separate connection deliberately comes from get_sync_engine()
+        (run off-loop via asyncio.to_thread), not from wrapping `session`'s
+        own async engine in a second AsyncEngine(...) -- an earlier version
+        of this fix did exactly that and it's individually correct, but
+        broke this codebase's OWN documented test-isolation contract:
+        tests/integration/conftest.py's patch_settings fixture rebuilds
+        recoveryos.database's async engine singletons fresh every test
+        specifically because "an asyncpg engine/pool created under a
+        previous test's (now-closed) loop breaks the next test with opaque
+        errors deep in asyncpg/proactor internals" (that comment predates
+        this fix). A second AsyncEngine wrapper constructed per call, even
+        around a same-test engine, tripped that exact failure mode two
+        tests later. get_sync_engine()'s psycopg2 connections have no
+        event-loop affinity at all, sidestepping the whole class of risk --
+        and a session-scoped lock doesn't care which role/engine acquired
+        it; Postgres advisory locks serialize across every connection to
+        the cluster regardless of which one holds them.
+      - `except Exception` doesn't catch `asyncio.CancelledError` (a
+        BaseException since Python 3.8) -- a task cancelled while the
+        wrapped block is mid-write (e.g. a server shutdown, or a caller
+        this session's own demo endpoints spawn via BackgroundTasks that
+        outlives the request that scheduled it) would skip the rollback
+        entirely.
+      - The finally block's own `await` is itself cancellable -- a
+        cancellation landing there (not inside the wrapped block) would
+        skip the unlock outright. asyncio.shield gives that specific
+        statement immunity to the cancellation that's actively unwinding
+        this frame; suppress keeps a genuinely broken connection (rather
+        than a live one just needing the unlock) from masking whatever
+        exception is already propagating.
     """
     lock_key = _advisory_lock_key(key)
-    await session.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
+    lock_conn = await asyncio.to_thread(get_sync_engine().connect)
     try:
-        yield
-    except Exception:
-        await session.rollback()
-        raise
+        await asyncio.to_thread(
+            lock_conn.execute, text("SELECT pg_advisory_lock(:key)"), {"key": lock_key}
+        )
+        try:
+            yield
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(session.rollback())
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        lock_conn.execute,
+                        text("SELECT pg_advisory_unlock(:key)"),
+                        {"key": lock_key},
+                    )
+                )
     finally:
-        await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
+        await asyncio.to_thread(lock_conn.close)
