@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from recoveryos import clock
 from services.pipeline.consumer import process_payment_failure
 from tests.integration.conftest import seed_merchant_and_customer, to_async_url
 
@@ -48,7 +49,17 @@ async def _seed_payment_with_ground_truth(
                 "pid": payment_id,
                 "mid": merchant_id,
                 "cid": customer_id,
-                "ts": datetime.now(UTC) - timedelta(hours=1),
+                # Must come from recoveryos.clock.utcnow(), not real wall-clock
+                # datetime.now(UTC): resolve_decision_now() (orchestrator.py)
+                # uses THIS payment's own failed_at as "now" for a synthetic
+                # payment's first decision, bypassing clock.utcnow() (and
+                # therefore tests/conftest.py's session-wide
+                # _pinned_clock_for_determinism fixture) entirely. Seeding
+                # from real time here made this UPI RETRY_NOW-expecting test
+                # non-deterministically hit AutopayExecutionWindowRule's NPCI
+                # peak-window BLOCK depending on what real IST hour the
+                # suite happened to run at.
+                "ts": clock.utcnow() - timedelta(hours=1),
             },
         )
         sim_id = str(uuid.uuid4())
