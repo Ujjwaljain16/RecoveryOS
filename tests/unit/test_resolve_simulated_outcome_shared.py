@@ -52,7 +52,10 @@ def test_monkeypatching_the_shared_resolver_changes_both_call_sites(monkeypatch)
 
     class _FakeMappingsResult:
         def first(self):
-            return _FakeRow(true_recovery_prob_bps=1)  # near-zero, irrelevant once patched
+            # force_pending_until_reconciled=False -- the real, near-universal
+            # default (migration 0026) -- so this fake row takes the same
+            # dice-roll branch a real unflagged simulator_latent_state row does.
+            return _FakeRow(true_recovery_prob_bps=1, force_pending_until_reconciled=False)
 
     class _FakeResult:
         def mappings(self):

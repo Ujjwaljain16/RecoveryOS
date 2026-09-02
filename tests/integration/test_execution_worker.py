@@ -476,3 +476,122 @@ def test_provider_adapter_swap_is_config_only(monkeypatch):
 
     monkeypatch.setenv("PAYMENT_PROVIDER_ADAPTER", "simulator")
     get_settings.cache_clear()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# test_simulator_adapter_force_pending_override
+#
+# Migration 0026's simulator_latent_state.force_pending_until_reconciled
+# column, direct DB-level proof: with it set true, SimulatorAdapter.retry()
+# must skip its own dice roll and return a real PENDING + non-null
+# provider_ref even though ground truth exists (the fix apps/api/routers/
+# simulate.py's "world_changed" scenario now depends on); with it left at
+# its default false, the SAME row (same latents, same true_recovery_prob_bps)
+# must resolve normally -- proving the flag actually gates the behavior
+# rather than PENDING being some new unconditional default.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+async def _seed_payment_with_latent_state(
+    migrated_db: str,
+    *,
+    true_recovery_prob_bps: int = 9500,
+    force_pending_until_reconciled: bool = False,
+) -> str:
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    merchant_id = str(uuid.uuid4())
+    customer_id = str(uuid.uuid4())
+    await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
+
+    payment_id = str(uuid.uuid4())
+    simulation_id = str(uuid.uuid4())
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO payments (payment_id, merchant_id, customer_id, amount_paise, "
+                "method, bank, status, failure_code, is_synthetic, created_at, failed_at) "
+                "VALUES (:pid, :mid, :cid, 500000, 'upi', 'HDFC', 'failed', 'TIMEOUT', true, now(), now())"
+            ),
+            {"pid": payment_id, "mid": merchant_id, "cid": customer_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO simulator_manifests (simulation_id, seed, generator_version, "
+                "scenario_config, latent_function_version, total_payments) "
+                "VALUES (:sim_id, 1, 'test', '{}'::jsonb, 'test-v1', 1)"
+            ),
+            {"sim_id": simulation_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO simulator_latent_state (latent_id, simulation_id, payment_id, "
+                "customer_patience_score, bank_latent_health, latent_network_noise, "
+                "latent_customer_propensity, true_recovery_prob_bps, true_failure_type, "
+                "force_pending_until_reconciled) "
+                "VALUES (:lid, :sim_id, :pid, 0.8, 0.9, 0.1, 0.2, :prob, "
+                "'TEMPORARY_GATEWAY_TIMEOUT', :force_pending)"
+            ),
+            {
+                "lid": str(uuid.uuid4()),
+                "sim_id": simulation_id,
+                "pid": payment_id,
+                "prob": true_recovery_prob_bps,
+                "force_pending": force_pending_until_reconciled,
+            },
+        )
+    await engine.dispose()
+    return payment_id
+
+
+def test_simulator_adapter_force_pending_override(migrated_db):
+    import asyncio
+
+    from integrations.razorpay.adapter import SimulatorAdapter
+
+    payment_id = asyncio.run(
+        _seed_payment_with_latent_state(
+            migrated_db, true_recovery_prob_bps=9500, force_pending_until_reconciled=True
+        )
+    )
+
+    engine = create_engine(migrated_db, pool_pre_ping=True)
+    adapter = SimulatorAdapter()
+    with engine.connect() as conn:
+        result = adapter.retry(conn, payment_id, 500_000, 1)
+    engine.dispose()
+
+    assert result.outcome == "PENDING"
+    assert result.provider_ref is not None, (
+        "a forced-pending result must still carry a real, non-null provider_ref -- "
+        "a null one is indistinguishable from the 'no latent state at all' case "
+        "(apps/api/routers/simulate.py's own bug #1 docstring)"
+    )
+    assert result.recovered_amount_paise == 0
+
+
+def test_simulator_adapter_resolves_normally_when_not_forced_pending(migrated_db):
+    """Same latents, same true_recovery_prob_bps=9500 (near-certain SUCCESS)
+    as the forced-pending case above, but the flag is left at its default
+    false -- must resolve through the real dice roll like any other
+    simulated payment, not PENDING. Proves the new column actually gates
+    the behavior rather than SimulatorAdapter always returning PENDING now."""
+    import asyncio
+
+    from integrations.razorpay.adapter import SimulatorAdapter
+
+    payment_id = asyncio.run(
+        _seed_payment_with_latent_state(
+            migrated_db, true_recovery_prob_bps=9500, force_pending_until_reconciled=False
+        )
+    )
+
+    engine = create_engine(migrated_db, pool_pre_ping=True)
+    adapter = SimulatorAdapter()
+    with engine.connect() as conn:
+        result = adapter.retry(conn, payment_id, 500_000, 1)
+    engine.dispose()
+
+    assert result.outcome in ("SUCCESS", "FAILED")
+    assert result.provider_ref is not None

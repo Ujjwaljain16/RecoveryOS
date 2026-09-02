@@ -204,6 +204,13 @@ class SimulatorAdapter:
     non-synthetic payment has none), there is no ground truth to sample
     from — this is a real gap for a "demo mode against real payments"
     scenario, not silently faked: it returns PENDING rather than guessing.
+
+    A latent state row with force_pending_until_reconciled=true (migration
+    0026) also returns PENDING, deliberately skipping the dice roll even
+    though ground truth exists -- an opt-in demo-only escape hatch so a
+    scenario can get a real PENDING window to reconcile later through, the
+    same two-phase shape RazorpayTestAdapter naturally has. Never set by
+    the real simulator/episode/benchmark pipeline.
     """
 
     def retry(
@@ -213,7 +220,8 @@ class SimulatorAdapter:
             conn.execute(
                 text(
                     "SELECT true_recovery_prob_bps, customer_patience_score, bank_latent_health, "
-                    "latent_customer_propensity, true_failure_type FROM simulator_latent_state "
+                    "latent_customer_propensity, true_failure_type, "
+                    "force_pending_until_reconciled FROM simulator_latent_state "
                     "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
                 ),
                 {"pid": payment_id},
@@ -229,6 +237,27 @@ class SimulatorAdapter:
                 payment_id,
             )
             return ProviderResult(outcome="PENDING", provider_ref=None, recovered_amount_paise=0)
+
+        if row["force_pending_until_reconciled"]:
+            # Demo-only, opt-in escape hatch (migration 0026) -- default
+            # false for every row the real simulator/episode/benchmark
+            # pipeline ever writes, so this branch never fires outside a
+            # scenario that explicitly sets it (apps/api/routers/
+            # simulate.py's "world_changed"). Skips the dice roll entirely
+            # rather than resolving it and pretending otherwise: this
+            # payment genuinely has no outcome yet, by design, so a later
+            # webhook-shaped call (services/pipeline/reconciliation.py::
+            # reconcile_pending_recovery) can resolve it for real -- the
+            # same two-phase shape RazorpayTestAdapter naturally has and
+            # SimulatorAdapter otherwise doesn't. Does not touch
+            # resolve_simulated_outcome/_recompute_attempt_aware_prob_bps,
+            # so TRD §7's shared-resolver invariant between this adapter
+            # and services/pipeline/baseline.py is untouched.
+            return ProviderResult(
+                outcome="PENDING",
+                provider_ref=f"sim_{uuid.uuid4().hex[:16]}",
+                recovered_amount_paise=0,
+            )
 
         seed_key = f"{payment_id}:{attempt_number}"
 

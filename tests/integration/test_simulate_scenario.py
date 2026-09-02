@@ -17,13 +17,19 @@ provider adapter (apps/api/routers/simulate.py's own module docstring
 explains why -- it used to race this SAME process's execution_worker
 container in a real deployment and lose). Instead they let whichever
 consumer processes an enqueued job do so with whatever provider is
-configured, then drive FAILED/SUCCESS through the real
-reconcile_pending_recovery path. This test's own ASGITransport-based client
-has no real execution_worker container running alongside it, so
-_run_fake_execution_worker below stands in for one -- polling
-stream:recovery_jobs and processing whatever lands there with an injected
-stub provider, concurrently with the request (an asyncio.Task, not a
-sequential step), exactly mirroring how the real container behaves.
+configured. "world_changed" then drives its own SUCCESS transition through
+the real reconcile_pending_recovery path (a real webhook stand-in);
+"recover_via_replan" drives nothing itself -- it relies entirely on the
+REAL Phase 13 closed loop (workers/execution_worker.py's
+_advance_mission_after_outcome + workers/retry_scheduler.py) reacting to
+whatever outcome the provider actually returns, same as production. This
+test's own ASGITransport-based client has no real execution_worker or
+retry_scheduler container running alongside it, so _run_fake_execution_worker
+below stands in for the former (polling stream:recovery_jobs and processing
+whatever lands there with an injected stub provider, concurrently with the
+request -- an asyncio.Task, not a sequential step) and an explicit
+workers.retry_scheduler.run_once(...) call stands in for the latter's next
+poll cycle, exactly mirroring how the real containers behave.
 """
 
 from __future__ import annotations
@@ -45,10 +51,10 @@ class _AlwaysPending:
     """Stub PaymentProvider for _run_fake_execution_worker: every attempt
     resolves PENDING, the same shape a fresh real order/attempt always has
     (integrations/razorpay/adapter.py's RazorpayTestAdapter.retry() --
-    "a created order is not itself a completed payment"). Both
-    "recover_via_replan" and "world_changed" drive their own FAILED/SUCCESS
-    transitions afterward via reconcile_pending_recovery, independent of
-    what actually processed the job -- see this module's own docstring."""
+    "a created order is not itself a completed payment"). "world_changed"
+    drives its own SUCCESS transition afterward via
+    reconcile_pending_recovery, independent of what actually processed the
+    job -- see this module's own docstring."""
 
     def retry(self, conn, payment_id, amount_paise, attempt_number):
         from integrations.razorpay.adapter import ProviderResult
@@ -60,17 +66,49 @@ class _AlwaysPending:
         )
 
 
-async def _run_fake_execution_worker(migrated_db: str, redis_client) -> None:
+class _FailsOnceThenSucceeds:
+    """Stub PaymentProvider for "recover_via_replan": resolves attempt 1
+    straight to FAILED and attempt 2+ straight to SUCCESS -- no PENDING
+    window, the same immediate-outcome shape the REAL default
+    SimulatorAdapter.retry() uses once a simulator_latent_state row exists
+    (integrations/razorpay/adapter.py). Mirrors apps/api/routers/
+    simulate.py's own true_recovery_prob_bps=0 seed for this scenario
+    (attempt 1 is genuinely, deterministically forced to fail there too --
+    this stub isn't inventing new behavior, just avoiding this test's
+    dependence on the real, only-probably-favorable attempt-2 dice roll a
+    live demo run accepts)."""
+
+    def retry(self, conn, payment_id, amount_paise, attempt_number):
+        from integrations.razorpay.adapter import ProviderResult
+
+        if attempt_number <= 1:
+            return ProviderResult(
+                outcome="FAILED",
+                provider_ref=f"fake_worker_{uuid.uuid4().hex[:12]}",
+                recovered_amount_paise=0,
+            )
+        return ProviderResult(
+            outcome="SUCCESS",
+            provider_ref=f"fake_worker_{uuid.uuid4().hex[:12]}",
+            recovered_amount_paise=amount_paise,
+        )
+
+
+async def _run_fake_execution_worker(migrated_db: str, redis_client, provider=None) -> None:
     """Runs until cancelled -- start as an asyncio.Task alongside the
-    triggering POST (NOT awaited sequentially after it: the POST itself
-    blocks until its BackgroundTasks continuation fully completes, which is
-    exactly what's waiting on this loop to process jobs in the first
-    place), and cancel it once the test is done with it."""
+    triggering POST. For "world_changed" the POST itself blocks until its
+    BackgroundTasks continuation fully completes, which is exactly what's
+    waiting on this loop to process jobs in the first place. "recover_via_
+    replan" no longer has a BackgroundTasks continuation at all (see
+    apps/api/routers/simulate.py's own module docstring) -- its caller
+    polls for this loop's real, persisted effects instead. Cancel this task
+    once the test is done with it either way."""
     from workers.execution_worker import process_job
 
     engine = create_engine(migrated_db, pool_pre_ping=True)
     seen_ids: set[str] = set()
-    provider = _AlwaysPending()
+    if provider is None:
+        provider = _AlwaysPending()
     try:
         while True:
             entries = await redis_client.xrange("stream:recovery_jobs", min="-", max="+")
@@ -172,20 +210,38 @@ async def test_scenario_refuses_when_fusion_disabled(migrated_db):
         get_settings.cache_clear()
 
 
+async def _poll_until(predicate, *, timeout: float = 10.0, interval: float = 0.2) -> bool:
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        if predicate():
+            return True
+        if asyncio.get_event_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(interval)
+
+
 @pytest.mark.asyncio
 async def test_recover_via_replan_scenario_closes_the_loop(migrated_db, redis_client):
     """The real demo money shot, hit over HTTP: a payment fails, the real
-    pipeline investigates and authorizes RETRY_NOW, round 1 resolves PENDING
-    (via _run_fake_execution_worker standing in for the real, always-running
-    execution_worker container -- see this module's own docstring),
-    apps/api/routers/simulate.py's background continuation reconciles it to
-    FAILED for real (the same path a genuine payment.failed webhook would
-    take), Phase 13 reschedules for real (cooldown=0 via the demo
-    policy_config), the scheduler fires it live, round 2 resolves PENDING
-    and gets reconciled to SUCCESS. Same trajectory
+    pipeline investigates and authorizes RETRY_NOW, round 1 resolves
+    straight to FAILED (via _run_fake_execution_worker standing in for the
+    real, always-running execution_worker container, using
+    _FailsOnceThenSucceeds -- the same immediate-outcome shape the real
+    default SimulatorAdapter uses, no PENDING window -- see this module's
+    own docstring). workers/execution_worker.py's own real Phase 13 code
+    (_advance_mission_after_outcome's FAILED branch) reschedules a
+    re-evaluation for real (cooldown=0 via the demo policy_config, due
+    immediately); this test then calls workers/retry_scheduler.run_once
+    directly, standing in for the real, always-running retry_scheduler
+    container's own poll loop the same way _run_fake_execution_worker
+    stands in for execution_worker's -- apps/api/routers/simulate.py no
+    longer drives any of this itself for recover_via_replan (see its own
+    module docstring for why: SimulatorAdapter never produces the PENDING
+    window the old scripted continuation depended on). Round 2 resolves
+    straight to SUCCESS the same way. Same trajectory
     tests/integration/test_recovery_mission_lifecycle.py already proves at
-    the function level -- this proves the HTTP trigger + background-task
-    continuation wiring around it.
+    the function level -- this proves the HTTP trigger + real closed-loop
+    wiring around it, end to end.
 
     workers/execution_worker.py computes scheduled_for from REAL wall-clock
     time (datetime.now(UTC), by design), while workers/retry_scheduler.py's
@@ -202,12 +258,15 @@ async def test_recover_via_replan_scenario_closes_the_loop(migrated_db, redis_cl
 
     import recoveryos.clock as clock_module
     from recoveryos.config import get_settings
+    from workers.retry_scheduler import run_once
 
     original_utcnow = clock_module.utcnow
     clock_module.utcnow = lambda: datetime.now(UTC)
 
     client = await _demo_client(ai_recommendation_fusion_enabled=True)
-    worker_task = asyncio.create_task(_run_fake_execution_worker(migrated_db, redis_client))
+    worker_task = asyncio.create_task(
+        _run_fake_execution_worker(migrated_db, redis_client, provider=_FailsOnceThenSucceeds())
+    )
     try:
         _merchant_id, api_key = await _seeded_merchant(migrated_db)
         resp = await client.post(
@@ -220,9 +279,30 @@ async def test_recover_via_replan_scenario_closes_the_loop(migrated_db, redis_cl
         payment_id = body["payment_id"]
         mission_id = body["mission_id"]
 
-        # Exactly ONE mission for this payment -- proving the background
-        # continuation's REINVESTIGATION_STARTED reuse worked (Phase 12's
-        # "was_created alone decides" logic), not a spurious second mission.
+        # Round 1: wait for the fake execution_worker to process the
+        # already-enqueued job and land the real FAILED-branch event.
+        settled_round_1 = await _poll_until(
+            lambda: "RECOVERY_FAILED" in [e[0] for e in _mission_events(migrated_db, payment_id)]
+        )
+        assert settled_round_1, "round 1 never resolved to RECOVERY_FAILED in time"
+
+        # Stand in for the real, always-running retry_scheduler container's
+        # next poll cycle -- picks up the reschedule row schedule_reevaluation_sync
+        # just wrote (due immediately, cooldown=0), re-runs a real
+        # investigation/decision, and enqueues round 2's job for real.
+        processed = await run_once(redis_client)
+        assert processed == 1
+
+        # Round 2: wait for the fake execution_worker to process THAT job
+        # and land the mission in its final RECOVERED state.
+        settled_round_2 = await _poll_until(
+            lambda: (_mission_state(migrated_db, payment_id) or {}).get("state") == "RECOVERED"
+        )
+        assert settled_round_2, "round 2 never resolved to RECOVERED in time"
+
+        # Exactly ONE mission for this payment -- proving the real
+        # REINVESTIGATION_STARTED reuse worked (Phase 12's "was_created
+        # alone decides" logic), not a spurious second mission.
         engine = create_engine(migrated_db, pool_pre_ping=True)
         with engine.connect() as conn:
             mission_count = conn.execute(
@@ -247,15 +327,13 @@ async def test_recover_via_replan_scenario_closes_the_loop(migrated_db, redis_cl
             "INVESTIGATION_CONCLUDED",
             "PLANNING_CONCLUDED",
             "POLICY_AUTHORIZED",
-            "OUTCOME_PENDING",
-            "EXTERNAL_RESOLUTION",
+            "RECOVERY_FAILED",
             "REINVESTIGATION_STARTED",
             "HYPOTHESIS_UPDATED",
             "INVESTIGATION_CONCLUDED",
             "PLANNING_CONCLUDED",
             "POLICY_AUTHORIZED",
-            "OUTCOME_PENDING",
-            "EXTERNAL_RESOLUTION",
+            "RECOVERY_SUCCEEDED",
             "MISSION_RECOVERED",
         ]
 

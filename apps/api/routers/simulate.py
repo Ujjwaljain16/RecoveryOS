@@ -204,22 +204,58 @@ async def simulate_degrade(
 #     (AIRiskSignalEscalationRule, the deterministic fusion boundary, the
 #     mission transition) is the real Phase 11 code path, unmodified.
 #
-# "recover_via_replan" and "world_changed" do NOT force a scripted
-# provider adapter -- an earlier version did (DemoScriptedAdapter /
-# AlwaysPendingProvider), racing this container's own always-running
-# execution_worker for the right to process each enqueued job. That
-# consumer wins the race almost every time in a real multi-container
-# deployment (it's already blocked on XREADGROUP when the job lands), a
-# gap the single-process test suite never exercises. Instead, both
-# scenarios let WHICHEVER consumer processes a job do so with whatever
-# settings.payment_provider_adapter is actually configured (a fresh
-# order/attempt always resolves PENDING, real Razorpay test-mode adapter
-# included), poll for that real, persisted outcome, and then drive the
-# FAILED/SUCCESS transition themselves through the SAME real
-# webhook-reconciliation path a genuine Razorpay webhook would use
-# (services/pipeline/reconciliation.py::reconcile_pending_recovery) --
-# see _continue_recover_via_replan's and _continue_world_changed's own
-# docstrings.
+# "world_changed" does NOT force a scripted provider adapter -- an earlier
+# version did (DemoScriptedAdapter / AlwaysPendingProvider), racing this
+# container's own always-running execution_worker for the right to process
+# each enqueued job. That consumer wins the race almost every time in a
+# real multi-container deployment (it's already blocked on XREADGROUP when
+# the job lands), a gap the single-process test suite never exercises.
+# Instead it lets WHICHEVER consumer processes the job do so with whatever
+# settings.payment_provider_adapter is actually configured, polls for that
+# real, persisted PENDING outcome, and then drives the SUCCESS transition
+# itself through the SAME real webhook-reconciliation path a genuine
+# Razorpay webhook would use (services/pipeline/reconciliation.py::
+# reconcile_pending_recovery) -- see _continue_world_changed's own
+# docstring.
+#
+# Found via live rehearsal, same as bug #1/#2 above: this only actually
+# reaches a PENDING row under a provider that naturally reports one (real
+# Razorpay test-mode adapter). Under the deployment's actual default
+# settings.payment_provider_adapter=simulator, SimulatorAdapter.retry()
+# (integrations/razorpay/adapter.py) resolves straight to SUCCESS/FAILED
+# once a simulator_latent_state row exists for the payment -- never
+# PENDING on its own. Rather than reintroducing a scripted adapter (the
+# thing that lost the container race before) or leaving this scenario's
+# webhook-arrives story undemonstrated, _seed_scenario_payment seeds this
+# scenario's row with force_pending_until_reconciled=true (migration
+# 0026) -- a narrow, opt-in flag SimulatorAdapter checks BEFORE its dice
+# roll and, only when set, honors by returning a real PENDING + real
+# provider_ref instead of resolving. Every other row (recover_via_replan,
+# safety_escalation, and every real simulated/benchmark payment this
+# system has ever written) leaves this flag at its default false and is
+# completely unaffected -- see the migration's own docstring.
+#
+# "recover_via_replan" deliberately does NOT rely on any of the above.
+# SimulatorAdapter resolving straight to SUCCESS/FAILED (no PENDING window
+# to reconcile through) means there is no honest way to force a scripted
+# FAILED-then-SUCCESS sequence through the webhook-reconciliation path for
+# this scenario either -- so it doesn't try to. Instead,
+# _seed_scenario_payment seeds attempt 1's true_recovery_prob_bps at 0,
+# which -- through the SAME real LatentRecoverabilityFunction dice roll
+# every other payment in this system resolves through, not a special case
+# -- deterministically fails attempt 1. workers/execution_worker.py's
+# existing, already-real Phase 13 closed-loop code
+# (_advance_mission_after_outcome's FAILED branch calls
+# schedule_reevaluation_sync) reschedules it for real, due immediately
+# under this merchant's demo policy_config (retry_cooldown_hours=0), and
+# the persistent retry_scheduler container (workers/retry_scheduler.py,
+# already running, POLL_INTERVAL_SECONDS=5) picks it up organically within
+# a few seconds -- producing a real second investigation, decision, and
+# execution attempt with no scripted continuation at all. Attempt 2's
+# outcome is then a genuine, un-forced draw against this payment's already
+# fairly-recoverable seeded latents (patience 0.8, bank health 0.9,
+# TEMPORARY_GATEWAY_TIMEOUT) -- likely but not guaranteed to succeed,
+# same honesty tradeoff every other seeded outcome in this system makes.
 #
 # Requires settings.ai_recommendation_fusion_enabled=True (off by default,
 # Phase 11) -- both "safety_escalation" and "recover_via_replan" (which
@@ -312,8 +348,43 @@ async def _ensure_retry_now_favored_action_costs(session: AsyncSession, merchant
 
 
 async def _seed_scenario_payment(
-    session: AsyncSession, merchant_id: str, amount_paise: int = 842_000
+    session: AsyncSession,
+    merchant_id: str,
+    amount_paise: int = 842_000,
+    true_recovery_prob_bps: int = 9500,
+    force_pending_until_reconciled: bool = False,
 ) -> tuple[str, str]:
+    """
+    Real bug, found via live rehearsal (not caught by any existing test):
+    this used to insert only the `payments` row. SimulatorAdapter.retry()
+    (integrations/razorpay/adapter.py) -- the real, default
+    payment_provider_adapter -- looks up `simulator_latent_state` for the
+    payment; finding none, it correctly returns outcome=PENDING,
+    provider_ref=None (its own documented "no ground truth to sample from"
+    behavior for a genuinely non-simulated payment). But
+    _wait_for_pending_recovery's poll query below only checks that a row
+    exists (`row is not None`), not that its provider_ref is non-null --
+    with provider_ref=None it returns None either way, which
+    _continue_world_changed reads as "poll timed out, give up" and silently
+    abandons the mission in OBSERVING_OUTCOME forever, attempt 1 stuck
+    PENDING. Seeding a real (if throwaway) simulator_latent_state row here
+    closes that gap -- it only needs to exist so SimulatorAdapter returns a
+    real, non-null provider_ref.
+
+    true_recovery_prob_bps controls attempt 1's real dice roll (default
+    9500, the same "very likely to succeed" value this demo has always
+    used) -- recover_via_replan overrides it to 0 to deterministically fail
+    attempt 1 and trigger a real replan; see this module's own docstring
+    above for why that's the honest way to get that scenario's story rather
+    than scripting the outcome directly.
+
+    force_pending_until_reconciled (migration 0026) makes SimulatorAdapter
+    skip the dice roll entirely and return a real PENDING outcome instead,
+    even though ground truth exists -- world_changed sets this true so it
+    gets a genuine PENDING window to reconcile later through (see this
+    module's own docstring above for why that scenario needs one and the
+    other two don't).
+    """
     customer_id = await _ensure_synthetic_customer(session, merchant_id)
     bank = f"DEMO_BANK_{uuid.uuid4().hex[:8]}"
     payment_id = str(uuid.uuid4())
@@ -334,6 +405,34 @@ async def _seed_scenario_payment(
             "ts": now - timedelta(hours=1),
         },
     )
+
+    simulation_id = str(uuid.uuid4())
+    await session.execute(
+        text(
+            "INSERT INTO simulator_manifests (simulation_id, seed, generator_version, "
+            "scenario_config, latent_function_version, total_payments) "
+            "VALUES (:sim_id, 0, 'demo-scenario', '{}'::jsonb, 'demo-scenario-v1', 1)"
+        ),
+        {"sim_id": simulation_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO simulator_latent_state (latent_id, simulation_id, payment_id, "
+            "customer_patience_score, bank_latent_health, latent_network_noise, "
+            "latent_customer_propensity, true_recovery_prob_bps, true_failure_type, "
+            "force_pending_until_reconciled) "
+            "VALUES (:lid, :sim_id, :pid, 0.8, 0.9, 0.1, 0.2, :prob_bps, "
+            "'TEMPORARY_GATEWAY_TIMEOUT', :force_pending)"
+        ),
+        {
+            "lid": str(uuid.uuid4()),
+            "sim_id": simulation_id,
+            "pid": payment_id,
+            "prob_bps": true_recovery_prob_bps,
+            "force_pending": force_pending_until_reconciled,
+        },
+    )
+
     await session.commit()
     return payment_id, bank
 
@@ -373,7 +472,12 @@ async def simulate_scenario(
 
     await _ensure_demo_policy_config(session, merchant.merchant_id)
     await _ensure_retry_now_favored_action_costs(session, merchant.merchant_id)
-    payment_id, bank = await _seed_scenario_payment(session, merchant.merchant_id)
+    payment_id, bank = await _seed_scenario_payment(
+        session,
+        merchant.merchant_id,
+        true_recovery_prob_bps=0 if payload.scenario == "recover_via_replan" else 9500,
+        force_pending_until_reconciled=payload.scenario == "world_changed",
+    )
 
     if payload.scenario == "safety_escalation":
         mission_id = await _run_safety_escalation_scenario(payment_id)
@@ -383,7 +487,7 @@ async def simulate_scenario(
     # live pipeline pass (real diagnosis, real EVI/policy, real enqueue) --
     # returns once the first job is enqueued, so the caller gets a
     # mission_id fast and can start polling GET /v1/payments/{id}/mission
-    # to watch the rest unfold live via the background task below.
+    # to watch the rest unfold live.
     from services.pipeline.consumer import process_payment_failure
 
     redis_client = _new_redis_client(settings)
@@ -394,9 +498,12 @@ async def simulate_scenario(
 
     mission_id = await _current_mission_id(session, payment_id)
 
-    if payload.scenario == "recover_via_replan":
-        background_tasks.add_task(_continue_recover_via_replan, payment_id, settings)
-    elif payload.scenario == "world_changed":
+    # recover_via_replan needs no background continuation here -- attempt
+    # 1's guaranteed FAILED outcome (true_recovery_prob_bps=0 above) drives
+    # the real Phase 13 reschedule/retry_scheduler loop entirely on its
+    # own, out-of-process, same as any other real failed payment. See this
+    # module's own docstring above.
+    if payload.scenario == "world_changed":
         background_tasks.add_task(_continue_world_changed, payment_id, settings)
 
     return {"payment_id": payment_id, "mission_id": mission_id, "scenario": payload.scenario}
@@ -434,6 +541,16 @@ async def _wait_for_pending_recovery(
     sitting in OBSERVING_OUTCOME (see its docstring) and does not re-
     transition into it, so calling reconcile_pending_recovery before that
     transition lands would corrupt the trace and orphan the attempt.
+
+    Found via live rehearsal: a matched row whose own provider_ref is NULL
+    (SimulatorAdapter.retry()'s real, documented behavior when no
+    simulator_latent_state exists for the payment -- see
+    _seed_scenario_payment's docstring, now fixed to always provide one)
+    used to be indistinguishable from "no row yet" -- `row[0]` is None
+    either way, and the caller reads None as "poll timed out, give up,"
+    silently abandoning the mission. Only a genuinely usable (non-null)
+    ref counts as found; anything else keeps polling until the real
+    timeout elapses.
     """
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     async with session_factory() as session:
@@ -449,68 +566,12 @@ async def _wait_for_pending_recovery(
                     {"pid": payment_id, "n": attempt_number},
                 )
             ).first()
-            if row is not None:
+            if row is not None and row[0] is not None:
                 return row[0]
             if asyncio.get_event_loop().time() >= deadline:
                 return None
             await asyncio.sleep(0.5)
             session.expire_all()
-
-
-async def _continue_recover_via_replan(payment_id: str, settings) -> None:
-    """
-    Background continuation for "recover via replan". Round 1's job was
-    already enqueued by the real, live pipeline pass above -- whichever
-    consumer actually processes it (this container's own execution_worker
-    is a persistent, always-polling competitor for the same Redis consumer
-    group and typically wins that race; letting it win is fine, see below)
-    resolves it to outcome=PENDING, same as any freshly created order.
-
-    Rather than racing that consumer for the right to call a demo-scripted
-    provider directly (the previous version of this function did, and lost
-    reliably against an always-running execution_worker container -- a real
-    gap the single-process test suite never exercises), this drives the
-    FAILED-then-SUCCESS shape through the SAME real webhook-reconciliation
-    path a genuine payment.failed/payment.captured webhook would use
-    (services.pipeline.reconciliation.reconcile_pending_recovery) -- the
-    identical mechanism "world_changed" already uses for its own SUCCESS
-    resolution, called here with FAILED first to trigger a genuine replan.
-
-    FAILED wires into Phase 13's real reschedule logic
-    (reconciliation._advance_mission_on_external_resolution's FAILED
-    branch), due immediately under the demo policy_config's
-    retry_cooldown_hours=0 -- workers/retry_scheduler.run_once then fires
-    it for real, producing round 2's real second investigation, decision,
-    and enqueue. Round 2's job resolves to PENDING the same way round 1's
-    did, and gets reconciled to SUCCESS.
-    """
-    from recoveryos.database import get_app_session_factory
-    from services.pipeline.reconciliation import reconcile_pending_recovery
-    from workers.retry_scheduler import run_once
-
-    session_factory = get_app_session_factory()
-
-    ref1 = await _wait_for_pending_recovery(session_factory, payment_id, attempt_number=1)
-    if ref1 is None:
-        return
-    async with session_factory() as session:
-        await reconcile_pending_recovery(
-            session, order_id=ref1, outcome="FAILED", recovered_amount_paise=0
-        )
-
-    redis_client = _new_redis_client(settings)
-    try:
-        await run_once(redis_client)
-    finally:
-        await redis_client.aclose()
-
-    ref2 = await _wait_for_pending_recovery(session_factory, payment_id, attempt_number=2)
-    if ref2 is None:
-        return
-    async with session_factory() as session:
-        await reconcile_pending_recovery(
-            session, order_id=ref2, outcome="SUCCESS", recovered_amount_paise=842_000
-        )
 
 
 async def _continue_world_changed(payment_id: str, settings) -> None:

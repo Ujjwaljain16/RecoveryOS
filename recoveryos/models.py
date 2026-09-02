@@ -1144,6 +1144,9 @@ class SimulatorLatentState(Base):
     latent_customer_propensity: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False)
     true_recovery_prob_bps: Mapped[int] = mapped_column(BigInteger, nullable=False)
     true_failure_type: Mapped[str] = mapped_column(Text, nullable=False)
+    force_pending_until_reconciled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )
