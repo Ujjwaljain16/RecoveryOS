@@ -159,6 +159,24 @@ class Settings(BaseSettings):
             "bps sensitivity sweep."
         ),
     )
+    ai_tie_break_min_confidence: float = Field(
+        default=0.5,
+        description=(
+            "AI Architecture Gap Audit gap (P1): RecoveryRecommendation.confidence used to be "
+            "computed, guard-capped, and persisted, but never actually read by "
+            "_apply_ai_fusion()'s tie-break decision -- a confidence-0.05 and a confidence-0.95 "
+            "recommendation were equally eligible to win a tie-break. This is the floor: below "
+            "it, a recommendation is rejected from the tie-break (reject_reason="
+            "'confidence_below_floor') regardless of how close its EVI is to the winner's. Does "
+            "NOT gate risk-flag escalation (AIRiskSignalEscalationRule) -- a safety signal is "
+            "categorical, not graded by confidence, and stays unconditional on presence. "
+            "0.5 is a pre-committed engineering safety/quality floor chosen BEFORE any "
+            "measurement -- not a learned, benchmarked, or statistically optimized threshold. "
+            "It is fixed in advance specifically so the safety boundary is never tuned against "
+            "the benchmark's own outcomes, same discipline ai_tie_break_tolerance_bps's own "
+            "default already follows -- see docs/phase11_ai_ablation.md."
+        ),
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Phase 12 -- Recovery Mission hard envelope. Code-set at mission

@@ -311,6 +311,7 @@ def test_fusion_never_selects_a_candidate_whose_own_verdict_is_not_allow(
         recommendation=recommendation,
         ai_risk_flags=frozenset(),
         tie_tolerance_bps=100,
+        min_confidence=0.5,
     )
 
     assert fused_nba.chosen_action == "RETRY_NOW"  # unchanged
@@ -355,6 +356,7 @@ def test_fusion_never_selects_a_near_tied_candidate_individually_blocked_while_w
         recommendation=recommendation,
         ai_risk_flags=frozenset(),
         tie_tolerance_bps=100,
+        min_confidence=0.5,
     )
 
     assert fused_nba.chosen_action == "ALT_ROUTE"  # unchanged -- RETRY_NOW never gets in

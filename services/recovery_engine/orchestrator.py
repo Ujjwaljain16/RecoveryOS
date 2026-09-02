@@ -286,6 +286,7 @@ def _apply_ai_fusion(
     recommendation: _RecommendationContext | None,
     ai_risk_flags: frozenset[str],
     tie_tolerance_bps: int,
+    min_confidence: float,
 ) -> tuple[NextBestActionResult, PolicyDecisionResult, dict]:
     """
     Phase 11 -- the ONLY function allowed to change chosen_action based on an
@@ -301,12 +302,15 @@ def _apply_ai_fusion(
           reports that outcome; it never itself decides ESCALATE.
 
       (b) tie-break: only entered when the deterministic verdict is ALLOW
-          (i.e. no risk escalation and nothing else blocked it) and the AI's
-          recommended_action lands inside find_near_tied_candidates()'s set
-          -- candidates that already cleared the EVI floor -- AND that exact
-          candidate is ALSO individually policy-ALLOWED on its own re-
-          evaluation. AI can never select a candidate policy has rejected,
-          and can never change a decisive (non-near-tied) winner.
+          (i.e. no risk escalation and nothing else blocked it), the
+          recommendation's confidence clears min_confidence (AI Architecture
+          Gap Audit gap, closed here -- confidence used to be persisted but
+          never actually load-bearing), and the AI's recommended_action
+          lands inside find_near_tied_candidates()'s set -- candidates that
+          already cleared the EVI floor -- AND that exact candidate is ALSO
+          individually policy-ALLOWED on its own re-evaluation. AI can never
+          select a candidate policy has rejected, and can never change a
+          decisive (non-near-tied) winner.
 
     Always returns a complete fusion_provenance dict (never None), even when
     nothing about the outcome changed, so persist_decision can write a
@@ -358,6 +362,14 @@ def _apply_ai_fusion(
         return nba_result, decision, provenance
     if recommendation.recommended_action == nba_result.chosen_action:
         provenance["fusion_reason"] = "AI recommendation matches the deterministic winner"
+        return nba_result, decision, provenance
+
+    if recommendation.confidence < min_confidence:
+        provenance["reject_reason"] = "confidence_below_floor"
+        provenance["fusion_reason"] = (
+            f"AI confidence {recommendation.confidence:.2f} below floor "
+            f"{min_confidence:.2f} -- tie-break not considered"
+        )
         return nba_result, decision, provenance
 
     near_tied_actions = {c.action_type for c in near_tied}
@@ -553,6 +565,7 @@ async def build_decision(
             recommendation=recommendation,
             ai_risk_flags=ai_risk_flags,
             tie_tolerance_bps=settings.ai_tie_break_tolerance_bps,
+            min_confidence=settings.ai_tie_break_min_confidence,
         )
 
     context = {

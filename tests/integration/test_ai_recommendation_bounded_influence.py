@@ -156,6 +156,36 @@ async def test_tie_break_applies_for_near_tied_policy_allowed_recommendation(
 
 
 @pytest.mark.asyncio
+async def test_tie_break_rejected_when_recommendation_confidence_below_floor(
+    migrated_db, monkeypatch
+):
+    """AI Architecture Gap Audit gap (P1), closed: the exact same near-tied,
+    individually-policy-ALLOWED setup as
+    test_tie_break_applies_for_near_tied_policy_allowed_recommendation above
+    -- RETRY_NOW 82.00 vs ALT_ROUTE 81.70, AI recommends ALT_ROUTE -- but
+    with confidence=0.3, below Settings.ai_tie_break_min_confidence's default
+    floor (0.5). The tie-break must NOT apply; the deterministic winner
+    stands. Proves confidence is now genuinely load-bearing in the fusion
+    decision, not merely persisted."""
+    payment_id, _, _ = await _insert_payment(migrated_db)
+    diagnosis_id = await _insert_diagnosis_and_recommendation(
+        migrated_db, payment_id=payment_id, recommended_action="ALT_ROUTE", confidence=0.3
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "generate_candidate_actions",
+        _fixed_candidates({"RETRY_NOW": 8_200, "ALT_ROUTE": 8_170, "REMINDER": 1_000, "ESCALATE": 500}),
+    )
+    _enable_fusion(monkeypatch)
+
+    nba_result, decision, context = await build_decision(payment_id, diagnosis_id=diagnosis_id)
+
+    assert nba_result.chosen_action == "RETRY_NOW"  # unchanged -- floor blocked the tie-break
+    assert context["fusion_provenance"]["tie_break_applied"] is False
+    assert context["fusion_provenance"]["reject_reason"] == "confidence_below_floor"
+
+
+@pytest.mark.asyncio
 async def test_tie_break_does_not_apply_for_decisive_winner(migrated_db, monkeypatch):
     """The user's own second worked example: RETRY_NOW ₹82 vs ALT_ROUTE ₹64 --
     a decisive ~22% delta. AI recommends ALT_ROUTE anyway; it must be
