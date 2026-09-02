@@ -1,8 +1,9 @@
 """
 Policy Engine rule DSL — TRD §3.4, gaps.md §B.3.
 
-ALL rules (10, as of Task COMPLIANCE1 — 7 original + 3 real regulatory
-compliance rules) are pure functions of already-hydrated dataclasses. Zero I/O:
+ALL rules (11, as of Phase 11 — 7 original + 3 real regulatory compliance
+rules (Task COMPLIANCE1) + 1 AI-risk-signal escalation rule (Phase 11)) are
+pure functions of already-hydrated dataclasses. Zero I/O:
 no db, no sqlalchemy, no redis, no requests, no httpx import anywhere in
 this file — enforced both by convention here AND by
 test_policy_engine_module_has_zero_forbidden_imports (AST-parses this exact
@@ -51,6 +52,13 @@ class PaymentContext:
 class CandidateContext:
     action_type: str  # RETRY_NOW|RETRY_LATER|ALT_ROUTE|REMINDER|ESCALATE|DO_NOTHING
     expected_value_paise: int
+    # Phase 11 -- a closed-set signal from services/diagnosis_engine/schemas.py's
+    # RiskFlag enum (or empty), pre-fetched by the caller exactly like every
+    # other field on this dataclass. AIRiskSignalEscalationRule below is the
+    # ONLY rule that reads this -- the AI supplies a bounded signal, never a
+    # decision; the rule decides ESCALATE, not the AI. Defaulted so every
+    # existing CandidateContext(...) call site/test keeps working unchanged.
+    ai_risk_flags: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -118,6 +126,36 @@ class OptOutRule(PolicyRule):
         if payment.opted_out_at is not None:
             return RuleResult(False, f"customer opted out at {payment.opted_out_at.isoformat()}")
         return RuleResult(True, "customer has not opted out")
+
+
+class AIRiskSignalEscalationRule(PolicyRule):
+    """
+    Phase 11 -- a closed-set AI risk_flags signal
+    (services/diagnosis_engine/schemas.py's RiskFlag enum) forces ESCALATE,
+    same semantics as RetryLimitRule's own escalate-without-EVI-check below:
+    a safety intervention doesn't need positive expected value to be the
+    right call. Authority stays entirely inside policy_engine -- this rule,
+    not the AI, decides ESCALATE; the AI only ever supplies the bounded
+    signal on CandidateContext.ai_risk_flags (never free text, never able to
+    directly authorize RETRY_NOW/ALT_ROUTE/any money-moving action).
+
+    Placed early (after OptOutRule, before CooldownRule/the economic rules):
+    if a real risk signal is present, cooldown/amount/EVI state is
+    irrelevant -- this payment needs a human, now, regardless of which
+    action was being evaluated.
+    """
+
+    name = "AIRiskSignalEscalationRule"
+    escalates_on_fail = True
+
+    def check(self, payment, candidate, policy_config) -> RuleResult:
+        if not candidate.ai_risk_flags:
+            return RuleResult(True, "no AI risk signal present")
+        return RuleResult(
+            False,
+            f"AI risk signal(s) present: {sorted(candidate.ai_risk_flags)} — "
+            "routing to human review",
+        )
 
 
 class CooldownRule(PolicyRule):
@@ -370,10 +408,12 @@ class MinExpectedValueRule(PolicyRule):
         )
 
 
-# Ordered, short-circuit on first BLOCK/ESCALATE — TRD §3.4's exact list.
+# Ordered, short-circuit on first BLOCK/ESCALATE — TRD §3.4's exact list,
+# plus AIRiskSignalEscalationRule (Phase 11) inserted after OptOutRule.
 RULES: tuple[PolicyRule, ...] = (
     EligibilityRule(),
     OptOutRule(),
+    AIRiskSignalEscalationRule(),
     CooldownRule(),
     RetryLimitRule(),
     AmountLimitRule(),

@@ -58,6 +58,11 @@ def _mock_investigation_responses():
                 "evidence": [
                     {"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}
                 ],
+                "recommended_action": "RETRY_LATER",
+                "recommended_delay_minutes": 45,
+                "recommendation_confidence": 0.75,
+                "risk_flags": [],
+                "recovery_rationale": "cohort failure rate is elevated -- wait for it to recover",
             }
         if user_content["round_number"] == 1:
             return {
@@ -123,6 +128,9 @@ async def test_diagnose_runs_investigator_and_returns_investigation_result(
     assert output.model_version.startswith("investigator-gemini-")
     assert len(investigation.steps) == 1
     assert investigation.steps[0].tool_name == "get_cohort_failure_rate"
+    assert investigation.recommendation.recommended_action.value == "RETRY_LATER"
+    assert investigation.recommendation.recommended_delay_minutes == 45
+    assert investigation.recommendation.confidence == 0.70  # capped at LIKELY's 0.70
 
 
 @pytest.mark.asyncio
@@ -181,6 +189,18 @@ async def test_diagnose_and_persist_writes_hypotheses_and_investigation_steps(
             .mappings()
             .first()
         )
+        recommendation_row = (
+            conn.execute(
+                text(
+                    "SELECT payment_id, recommended_action, recommended_delay_minutes, "
+                    "confidence, risk_flags, model_version "
+                    "FROM recovery_recommendations WHERE diagnosis_id = :did"
+                ),
+                {"did": diagnosis.diagnosis_id},
+            )
+            .mappings()
+            .first()
+        )
     sync_engine.dispose()
 
     assert hyp_count == 1  # only the final round's hypothesis set is persisted
@@ -190,6 +210,14 @@ async def test_diagnose_and_persist_writes_hypotheses_and_investigation_steps(
     assert float(step_row["tool_cost"]) == pytest.approx(1.5)  # real registry constant, not guessed
     assert step_row["latency_ms"] is not None
     assert float(step_row["investigation_score"]) == pytest.approx(7.0 - 1.5 - 0.025)
+
+    assert recommendation_row is not None
+    assert str(recommendation_row["payment_id"]) == payment_id
+    assert recommendation_row["recommended_action"] == "RETRY_LATER"
+    assert recommendation_row["recommended_delay_minutes"] == 45
+    assert float(recommendation_row["confidence"]) == pytest.approx(0.70)
+    assert recommendation_row["risk_flags"] == []
+    assert recommendation_row["model_version"] == diagnosis.model_version
 
 
 @pytest.mark.asyncio
@@ -231,7 +259,12 @@ async def test_redelivery_does_not_duplicate_investigation_rows(migrated_db, mon
             text("SELECT count(*) FROM investigation_steps WHERE diagnosis_id = :did"),
             {"did": diagnosis_1.diagnosis_id},
         ).scalar_one()
+        recommendation_count = conn.execute(
+            text("SELECT count(*) FROM recovery_recommendations WHERE diagnosis_id = :did"),
+            {"did": diagnosis_1.diagnosis_id},
+        ).scalar_one()
     sync_engine.dispose()
 
     assert hyp_count == 1
     assert step_count == 1
+    assert recommendation_count == 1

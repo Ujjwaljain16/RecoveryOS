@@ -44,7 +44,7 @@ import re
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Domain Audit finding F3: failure_code is real prompt-reaching content,
 # not the free-text-free field this module's docstrings used to claim.
@@ -179,3 +179,62 @@ class DiagnosisOutput(BaseModel):
                 f"got {self.confidence}"
             )
         return self
+
+
+class RecommendedAction(StrEnum):
+    """Closed enum, deliberately identical to the 6 action_type strings
+    services.recovery_engine.next_best_action.ACTION_TYPES /
+    services.recovery_engine.evi.VALID_ACTION_TYPES already score for every
+    payment. The investigator does not get its own action vocabulary — it
+    can only ever point at one of the SAME candidates the deterministic
+    engine has already computed EVI for (Phase 11 design doc, "AI may
+    resolve ambiguity, but it may never create permission")."""
+
+    RETRY_NOW = "RETRY_NOW"
+    RETRY_LATER = "RETRY_LATER"
+    ALT_ROUTE = "ALT_ROUTE"
+    REMINDER = "REMINDER"
+    ESCALATE = "ESCALATE"
+    DO_NOTHING = "DO_NOTHING"
+
+
+class RiskFlag(StrEnum):
+    """Closed enum, NOT free text — services/policy_engine/rules.py's
+    AIRiskSignalEscalationRule only ever sees one of these five values (or
+    an empty set). The model cannot invent a risk category and cannot smuggle
+    free-form text into a deterministic rule's input."""
+
+    HIGH_FRAUD_RISK = "HIGH_FRAUD_RISK"
+    CUSTOMER_HARM_RISK = "CUSTOMER_HARM_RISK"
+    DUPLICATE_PAYMENT_RISK = "DUPLICATE_PAYMENT_RISK"
+    PROVIDER_UNCERTAIN = "PROVIDER_UNCERTAIN"
+    MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
+
+
+class RecoveryRecommendation(BaseModel):
+    """
+    Phase 11 -- the ONLY shape a recovery recommendation is ever produced in.
+    Advisory input to services/recovery_engine/orchestrator.py's bounded
+    fusion step, never authority: recommended_action can only ever be
+    considered when it already matches a candidate the deterministic EVI/
+    policy machinery independently cleared (near-tie) or when risk_flags
+    triggers the deterministic AIRiskSignalEscalationRule -- see the module
+    docstring for the full boundary.
+
+    extra="forbid": a finalize response carrying extra fields (e.g. a
+    smuggled amount/customer_id/order_id) is REJECTED, not silently
+    ignored -- defense in depth on top of the fact that nothing downstream
+    ever reads unknown fields off this model anyway.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    recommended_action: RecommendedAction
+    # Advisory only -- services/recovery_engine/timing.py's
+    # compute_retry_delay() remains the sole source of the actual RETRY_LATER
+    # schedule. This field is persisted for audit/rationale, never read by
+    # the orchestrator's scheduling path (Phase 11 design doc, invariant 5).
+    recommended_delay_minutes: int = Field(default=0, ge=0, le=10_080)
+    confidence: float = Field(ge=0.0, le=1.0)
+    risk_flags: list[RiskFlag] = Field(default_factory=list, max_length=5)
+    recovery_rationale: str = Field(max_length=500)

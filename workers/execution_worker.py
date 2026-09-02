@@ -29,7 +29,7 @@ import os
 import socket
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import redis as sync_redis
@@ -161,6 +161,202 @@ def _compute_stopping_rule(
     if attempt_number >= config_row["max_retries"]:
         return STOPPING_RULE_MAX_RETRIES
     return None
+
+
+def _fetch_retry_cooldown_hours(conn: Connection, decision_id: str) -> int:
+    """This merchant's actual retry_cooldown_hours, via the same
+    policy_decisions -> policy_configs join _compute_stopping_rule uses.
+    Phase 13's rescheduled re-evaluation waits this long before firing, so
+    it finds a genuinely CooldownRule-eligible payment rather than
+    immediately re-blocking on the same cooldown a fresh decision cycle
+    would enforce anyway."""
+    row = conn.execute(
+        text(
+            "SELECT pc.retry_cooldown_hours FROM policy_configs pc "
+            "JOIN policy_decisions pd ON pd.policy_config_id = pc.policy_config_id "
+            "WHERE pd.decision_id = :decision_id"
+        ),
+        {"decision_id": decision_id},
+    ).first()
+    return row[0] if row is not None else 12  # matches PolicyConfig.retry_cooldown_hours' own default
+
+
+def _advance_mission_after_outcome(
+    conn: Connection,
+    *,
+    mission_id: str,
+    payment_id: str,
+    decision_id: str,
+    action_type: str,
+    attempt_number: int,
+    result: ProviderResult,
+) -> None:
+    """
+    Phase 12/13 -- advances the mission from EXECUTING once a real outcome
+    is known. RETRY_NOW/ALT_ROUTE are the only "retryable" (money-moving)
+    actions in the Phase 13 closed-loop sense: a FAILED attempt with
+    mission AND policy budget still remaining schedules a re-evaluation
+    (services.recovery_engine.scheduling.schedule_reevaluation_sync) at
+    now + the SAME retry_cooldown_hours CooldownRule would enforce anyway --
+    this IS the gap this phase closes (see services/recovery_engine/
+    mission.py's module docstring): before Phase 13, a FAILED immediate
+    retry was a dead end unless some unrelated new event happened to arrive
+    for this payment.
+
+    REMINDER/ESCALATE always report outcome=SUCCESS (services/
+    execution_engine/notification.py, human_handoff.py) but neither one
+    recovered any money -- mapped to TERMINATED/ESCALATED respectively,
+    never RECOVERED, which is reserved for a genuine RETRY_NOW/ALT_ROUTE
+    SUCCESS.
+    """
+    from services.recovery_engine.mission import check_budget, transition_mission_sync
+    from services.recovery_engine.scheduling import schedule_reevaluation_sync
+
+    now = _now()
+    is_money_moving = action_type in ("RETRY_NOW", "ALT_ROUTE")
+
+    if is_money_moving and result.outcome == "SUCCESS":
+        transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="OBSERVING_OUTCOME",
+            event_type="RECOVERY_SUCCEEDED",
+            actor="execution_worker",
+            payload={"action_type": action_type, "recovered_amount_paise": result.recovered_amount_paise},
+            increment_attempt=True,
+            now=now,
+        )
+        transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="RECOVERED",
+            event_type="MISSION_RECOVERED",
+            actor="system",
+            payload={"recovered_amount_paise": result.recovered_amount_paise},
+            now=now,
+        )
+        return
+
+    if is_money_moving and result.outcome == "FAILED":
+        stopping_rule = _compute_stopping_rule(conn, decision_id, attempt_number, result.outcome)
+        mission = transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="OBSERVING_OUTCOME",
+            event_type="RECOVERY_FAILED",
+            actor="execution_worker",
+            payload={"action_type": action_type, "stopping_rule_triggered": stopping_rule},
+            increment_attempt=True,
+            now=now,
+        )
+        if stopping_rule is not None:
+            # The deterministic policy's own retry limit already said stop --
+            # the mission's own budget check below is moot; terminate now.
+            transition_mission_sync(
+                conn,
+                mission_id=mission_id,
+                to_state="TERMINATED",
+                event_type="STOPPING_RULE_TRIGGERED",
+                actor="policy_engine",
+                payload={"stopping_rule": stopping_rule},
+                now=now,
+            )
+            return
+
+        budget = check_budget(
+            current_round=0,  # round budget is enforced at investigation entry (services/pipeline/consumer.py), not here
+            max_investigation_rounds=mission["max_investigation_rounds"],
+            current_attempt=mission["current_attempt"],
+            max_attempts=mission["max_attempts"],
+            started_at=mission["started_at"],
+            max_mission_duration_seconds=mission["max_mission_duration_seconds"],
+            now=now,
+        )
+        if budget.exhausted:
+            transition_mission_sync(
+                conn,
+                mission_id=mission_id,
+                to_state="TERMINATED",
+                event_type="MISSION_BUDGET_EXHAUSTED",
+                actor="system",
+                payload={"reason": budget.reason},
+                now=now,
+            )
+            return
+
+        cooldown_hours = _fetch_retry_cooldown_hours(conn, decision_id)
+        schedule_reevaluation_sync(
+            conn,
+            payment_id=payment_id,
+            decision_id=decision_id,
+            diagnosis_id=None,
+            source_event_id=None,
+            scheduled_for=now + timedelta(hours=cooldown_hours),
+            mission_id=mission_id,
+        )
+        # Mission stays in OBSERVING_OUTCOME -- workers/retry_scheduler.py
+        # firing this re-evaluation later is what advances it to
+        # INVESTIGATING again (Phase 13's shared closed-loop transition).
+        return
+
+    if action_type == "REMINDER":
+        transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="OBSERVING_OUTCOME",
+            event_type="REMINDER_SENT",
+            actor="execution_worker",
+            payload={},
+            increment_attempt=True,
+            now=now,
+        )
+        transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="TERMINATED",
+            event_type="MISSION_TERMINATED",
+            actor="system",
+            payload={"reason": "reminder sent -- no further automated action scheduled"},
+            now=now,
+        )
+        return
+
+    if action_type == "ESCALATE":
+        transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="OBSERVING_OUTCOME",
+            event_type="HANDOFF_CREATED",
+            actor="execution_worker",
+            payload={},
+            increment_attempt=True,
+            now=now,
+        )
+        transition_mission_sync(
+            conn,
+            mission_id=mission_id,
+            to_state="ESCALATED",
+            event_type="MISSION_ESCALATED",
+            actor="system",
+            payload={"reason": "handoff created"},
+            now=now,
+        )
+        return
+
+    # A money-moving action's PENDING outcome (e.g. RazorpayTestAdapter's
+    # "order created, not yet paid") -- not terminal yet; a webhook resolves
+    # it later via services/pipeline/reconciliation.py, out of scope here.
+    # Mission stays in OBSERVING_OUTCOME.
+    transition_mission_sync(
+        conn,
+        mission_id=mission_id,
+        to_state="OBSERVING_OUTCOME",
+        event_type="OUTCOME_PENDING",
+        actor="execution_worker",
+        payload={"action_type": action_type, "outcome": result.outcome},
+        increment_attempt=True,
+        now=now,
+    )
 
 
 def _upsert_recovery(
@@ -303,9 +499,23 @@ def process_job(
     production callers omit them and get the real config-selected/demo
     implementations. `provider` is resolved LAZILY -- a REMINDER/ESCALATE
     job never needs a configured payment provider at all.
+
+    Phase 12/13: mission_id is looked up (never created here under normal
+    operation -- services/pipeline/consumer.py already created/transitioned
+    the mission to EXECUTING before this job was ever enqueued) OUTSIDE the
+    idempotency boundary, same as this function's own RECOVERY_SCHEDULED
+    event below (a read-then-maybe-insert lookup is safe to repeat on
+    redelivery). The actual mission STATE transition
+    (EXECUTING -> OBSERVING_OUTCOME -> terminal/reschedule) happens INSIDE
+    action_fn, after the same commit that backs _upsert_recovery's write --
+    execute_with_idempotency's own get_existing() check means a redelivery
+    that finds an already-committed recoveries row never re-enters action_fn
+    at all, so the mission transition inherits the exact same
+    at-most-once guarantee every other write in this function already has.
     """
     from services.execution_engine.human_handoff import get_human_handoff_service
     from services.execution_engine.notification import get_notification_service
+    from services.recovery_engine.mission import find_mission_for_payment_sync
 
     payment_id = job["payment_id"]
     idempotency_key = job["idempotency_key"]
@@ -316,6 +526,26 @@ def process_job(
 
     notification_service = notification_service or get_notification_service()
     human_handoff_service = human_handoff_service or get_human_handoff_service()
+
+    # Read-only, never creates (find_mission_for_payment_sync, not
+    # get_or_create_mission_sync -- see that function's own docstring for
+    # why: execution_worker never originates a mission, only reacts to a
+    # job services/pipeline/consumer.py already decided to run). A job that
+    # reaches here whose mission is missing entirely (a test/direct
+    # process_job() call that never went through consumer.py) or in ANY
+    # state other than EXECUTING (already terminal -- a genuinely
+    # redelivered job for an already-completed mission, Redis's normal
+    # at-least-once guarantee) is not a state transition_mission_sync's
+    # ALLOWED_TRANSITIONS table can legally apply -- skip mission tracking
+    # for this job entirely rather than raise InvalidMissionTransitionError
+    # and strand the message in an infinite redelivery loop, or spuriously
+    # create a second, orphaned mission. Same defensive discipline as
+    # services/pipeline/consumer.py's own mission_trackable guard; the
+    # actual execution/idempotency logic below is completely unaffected
+    # either way.
+    mission_row = find_mission_for_payment_sync(conn, payment_id)
+    mission_id = mission_row["mission_id"] if mission_row is not None else None
+    mission_trackable = mission_row is not None and mission_row["state"] == "EXECUTING"
 
     _emit_event(
         conn,
@@ -414,6 +644,24 @@ def process_job(
             # no-execution BLOCK/DO_NOTHING case) is the one place that
             # writes recovery_ledger + audit_log for an executed job.
             _write_ledger_and_audit(conn, payment_id, decision_id, action_type, result)
+
+        # Phase 12/13 -- advance the mission from EXECUTING now that a real
+        # outcome is known. Inside action_fn (not process_job's top level):
+        # execute_with_idempotency's own get_existing() check means a
+        # redelivery that finds recoveries already committed never re-
+        # enters action_fn at all, so this mutation inherits the exact same
+        # at-most-once guarantee _upsert_recovery's own write already has.
+        # Guarded on mission_trackable -- see its definition above.
+        if mission_trackable:
+            _advance_mission_after_outcome(
+                conn,
+                mission_id=mission_id,
+                payment_id=payment_id,
+                decision_id=decision_id,
+                action_type=action_type,
+                attempt_number=attempt_number,
+                result=result,
+            )
 
         return saved
 

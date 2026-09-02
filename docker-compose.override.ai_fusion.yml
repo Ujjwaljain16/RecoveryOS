@@ -1,0 +1,17 @@
+# Phase 11 -- AI-on/AI-off ablation override. Deliberately does NOT touch
+# AI_DIAGNOSER_PROVIDER/GEMINI_API_KEY the way docker-compose.override.baseline.yml
+# does: the ablation needs REAL recommendations to compare fusion on vs off
+# against, so the investigator must actually run (normal `docker compose up`
+# already keeps Gemini live) -- only the fusion gate and tie-break tolerance
+# are overridden here.
+#
+# Used via: docker compose -f docker-compose.yml -f docker-compose.override.ai_fusion.yml up -d --build
+# AI_RECOMMENDATION_FUSION_ENABLED / AI_TIE_BREAK_TOLERANCE_BPS are read from
+# the invoking shell's environment (tests/evaluation/ai_ablation_runner.py
+# sets them before each `docker compose up`), defaulting to fusion OFF /
+# 100 bps if unset.
+services:
+  pipeline_orchestrator:
+    environment:
+      AI_RECOMMENDATION_FUSION_ENABLED: ${AI_RECOMMENDATION_FUSION_ENABLED:-false}
+      AI_TIE_BREAK_TOLERANCE_BPS: ${AI_TIE_BREAK_TOLERANCE_BPS:-100}

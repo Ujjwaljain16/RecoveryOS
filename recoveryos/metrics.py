@@ -143,6 +143,32 @@ ai_diagnoser_fallback_total = Counter(
     "an honest reliability signal for how often the LLM path degrades",
 )
 
+# ─── Phase 11: bounded AI recommendation fusion ─────────────────────────────
+ai_recommendation_available_total = Counter(
+    "ai_recommendation_available_total",
+    "A RecoveryRecommendation was successfully produced and available for a decision cycle "
+    "(regardless of whether fusion is enabled or the recommendation was ultimately accepted).",
+)
+ai_tie_break_applied_total = Counter(
+    "ai_tie_break_applied_total",
+    "AI's recommended action won an economic near-tie and became the final chosen_action.",
+)
+ai_tie_break_rejected_total = Counter(
+    "ai_tie_break_rejected_total",
+    "AI's recommended action did NOT change the outcome, by reason.",
+    ["reason"],  # outside_tolerance | tie_break_rejected_policy
+)
+ai_risk_escalations_total = Counter(
+    "ai_risk_escalations_total",
+    "AIRiskSignalEscalationRule fired -- a closed-set AI risk_flags signal forced ESCALATE.",
+)
+ai_outcome_delta_total = Counter(
+    "ai_outcome_delta_total",
+    "THE headline Phase 11 number: how many decisions ended with a different final action "
+    "solely because AI recommendation fusion was enabled, by cause.",
+    ["cause"],  # tie_break | risk_escalation
+)
+
 # ─── Pre-registration of known label values ────────────────────────────────
 # prometheus_client only emits a metric family's HELP/TYPE lines (and thus
 # the whole series) once at least one label combination has actually been
@@ -171,6 +197,7 @@ _KNOWN_ACTION_TYPES = (
 _KNOWN_POLICY_RULES = (
     "EligibilityRule",
     "OptOutRule",
+    "AIRiskSignalEscalationRule",
     "CooldownRule",
     "RetryLimitRule",
     "AmountLimitRule",
@@ -182,6 +209,8 @@ _KNOWN_POLICY_RULES = (
 )
 _KNOWN_STOPPING_REASONS = ("MAX_RETRIES", "STOP_AFTER_SUCCESS")
 _KNOWN_BANKS = ("HDFC", "ICICI", "SBI", "AXIS", "KOTAK", "YESB")
+_KNOWN_TIE_BREAK_REJECT_REASONS = ("outside_tolerance", "tie_break_rejected_policy")
+_KNOWN_AI_OUTCOME_DELTA_CAUSES = ("tie_break", "risk_escalation")
 
 for _action in _KNOWN_ACTION_TYPES:
     recovery_attempts_total.labels(action_type=_action)
@@ -192,3 +221,7 @@ for _reason in _KNOWN_STOPPING_REASONS:
     stopping_rule_triggers_total.labels(reason=_reason)
 for _bank in _KNOWN_BANKS:
     systemic_degradation_events_total.labels(bank=_bank)
+for _tie_reason in _KNOWN_TIE_BREAK_REJECT_REASONS:
+    ai_tie_break_rejected_total.labels(reason=_tie_reason)
+for _cause in _KNOWN_AI_OUTCOME_DELTA_CAUSES:
+    ai_outcome_delta_total.labels(cause=_cause)

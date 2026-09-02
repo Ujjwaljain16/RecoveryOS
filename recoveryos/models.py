@@ -445,6 +445,83 @@ class InvestigationStep(Base):
     diagnosis: Mapped[Diagnosis] = relationship(back_populates="investigation_steps")
 
 
+class RecoveryRecommendation(Base):
+    """
+    Phase 11 -- the AI investigator's bounded, advisory recovery
+    recommendation. Written by services/diagnosis_engine/diagnoser.py's
+    persist_investigation, alongside diagnosis_hypotheses/investigation_steps.
+    recommended_action is one of the SAME six action_type strings
+    candidate_actions already uses -- the recommendation cannot name an
+    action the deterministic engine hasn't already scored.
+    """
+
+    __tablename__ = "recovery_recommendations"
+    __table_args__ = (
+        Index("idx_recovery_recommendations_diagnosis", "diagnosis_id"),
+        CheckConstraint(
+            "recommended_action IN ('RETRY_NOW','RETRY_LATER','ALT_ROUTE','REMINDER',"
+            "'ESCALATE','DO_NOTHING')",
+            name="ck_recovery_recommendations_action",
+        ),
+    )
+
+    recommendation_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_uuid
+    )
+    diagnosis_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("diagnoses.diagnosis_id"), nullable=False
+    )
+    payment_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("payments.payment_id"), nullable=True
+    )
+    recommended_action: Mapped[str] = mapped_column(Text, nullable=False)
+    recommended_delay_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    risk_flags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    recovery_rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    model_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class DecisionFusionTrace(Base):
+    """
+    Phase 11 -- persisted provenance for exactly how (or whether) an AI
+    recommendation influenced one policy_decision. Written for EVERY
+    decision once ai_recommendation_fusion_enabled is on, including
+    "no recommendation available"/"fusion disabled" rows -- see
+    services/recovery_engine/orchestrator.py and migration 0021's docstring
+    for why this is unconditional, not only written on an accepted
+    recommendation.
+    """
+
+    __tablename__ = "decision_fusion_trace"
+    __table_args__ = (Index("idx_decision_fusion_trace_decision", "decision_id"),)
+
+    fusion_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    decision_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("policy_decisions.decision_id"), nullable=False, unique=True
+    )
+    recommendation_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("recovery_recommendations.recommendation_id"), nullable=True
+    )
+    deterministic_chosen_action: Mapped[str] = mapped_column(Text, nullable=False)
+    deterministic_chosen_evi_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    near_tied_candidates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    tie_tolerance_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    ai_recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    ai_risk_flags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    tie_break_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    risk_escalation_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    final_action: Mapped[str] = mapped_column(Text, nullable=False)
+    fusion_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
 class DiagnosisOutcome(Base):
     """Closes the loop (Task AGENT1, agent-design review point 4): one row
     per diagnosis, written once a terminal outcome exists. diagnosis_correct
@@ -715,6 +792,103 @@ class ScheduledReevaluation(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="PENDING")
     claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     fired_source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    # Phase 12/13 -- which mission this re-evaluation belongs to, so
+    # workers/retry_scheduler.py can REUSE (not recreate) that mission on
+    # firing. Nullable: rows written before Phase 12, or by a caller that
+    # doesn't track missions, still insert cleanly.
+    mission_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("recovery_missions.mission_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class RecoveryMission(Base):
+    """
+    Phase 12 -- one row per payment's mission lifecycle: an explicit,
+    code-owned state machine wrapping however many investigate -> decide ->
+    execute -> observe rounds it takes to reach a terminal state. See
+    services/recovery_engine/mission.py for the transition table and budget
+    enforcement -- this row's state/current_round/current_attempt columns
+    are the ONLY place "what round/attempt are we on" lives; nothing
+    upstream (including the AI) writes to them directly.
+
+    Mutable in place (state/current_round/current_attempt/ended_at/
+    updated_at) -- the one exception to this system's append-only
+    discipline for the same reason ScheduledReevaluation's status/claimed_at
+    already are: a mission's CURRENT state is something calling code reads/
+    updates atomically, not just a fact reconstructable from mission_events'
+    history (which stays genuinely append-only).
+    """
+
+    __tablename__ = "recovery_missions"
+    __table_args__ = (
+        Index("idx_recovery_missions_payment", "payment_id"),
+        CheckConstraint(
+            "state IN ('OBSERVED','INVESTIGATING','PLANNING','AWAITING_AUTHORIZATION',"
+            "'EXECUTING','OBSERVING_OUTCOME','RECOVERED','ESCALATED','TERMINATED')",
+            name="ck_recovery_missions_state",
+        ),
+    )
+
+    mission_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    payment_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("payments.payment_id"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="OBSERVED")
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    max_investigation_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    max_mission_duration_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=604_800
+    )
+    max_money_exposure_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    current_round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, nullable=False, server_default=func.now()
+    )
+
+
+class MissionEvent(Base):
+    """
+    Phase 12 -- the append-only, ordered trace of everything that happened
+    to a RecoveryMission. This IS the "open one payment, see its entire
+    autonomous trajectory" artifact -- one row per meaningful transition
+    (PAYMENT_FAILED, MISSION_CREATED, INVESTIGATION_STARTED,
+    HYPOTHESIS_UPDATED, AI_RECOMMENDATION, POLICY_AUTHORIZED,
+    ACTION_EXECUTING, RECOVERY_SUCCEEDED/FAILED, REINVESTIGATION_STARTED,
+    MISSION_RECOVERED/ESCALATED/TERMINATED), each attributed to a real actor
+    (system|ai|policy_engine|execution_worker), never mutated after
+    insert -- same discipline as audit_log/events (migration 0002 REVOKEs
+    UPDATE, DELETE from app_role on those; this table follows the same
+    intent even though the grant itself is only SELECT/INSERT here).
+    """
+
+    __tablename__ = "mission_events"
+    __table_args__ = (
+        Index("idx_mission_events_mission", "mission_id", "sequence_number"),
+        UniqueConstraint("mission_id", "sequence_number", name="uq_mission_events_sequence"),
+    )
+
+    event_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    mission_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("recovery_missions.mission_id"), nullable=False
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

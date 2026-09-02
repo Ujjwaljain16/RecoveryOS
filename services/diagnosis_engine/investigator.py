@@ -41,7 +41,14 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.diagnosis_engine.guards import apply_adversarial_guards
-from services.diagnosis_engine.schemas import DiagnosisInput, Evidence, RootCause
+from services.diagnosis_engine.schemas import (
+    DiagnosisInput,
+    Evidence,
+    RecommendedAction,
+    RecoveryRecommendation,
+    RiskFlag,
+    RootCause,
+)
 from services.diagnosis_engine.tools import TOOL_REGISTRY, call_tool
 
 logger = logging.getLogger(__name__)
@@ -111,8 +118,33 @@ _FINALIZE_SCHEMA = {
                 "required": ["fact", "source"],
             },
         },
+        # Phase 11 -- a bounded RecoveryRecommendation, advisory only. See
+        # services/diagnosis_engine/schemas.py's RecoveryRecommendation
+        # docstring: this can only ever be considered by the deterministic
+        # fusion step (services/recovery_engine/orchestrator.py) when it
+        # already matches a candidate EVI/policy independently cleared, or
+        # when risk_flags triggers a deterministic escalation rule -- never
+        # authority on its own.
+        "recommended_action": {"type": "string", "enum": [a.value for a in RecommendedAction]},
+        "recommended_delay_minutes": {"type": "integer", "minimum": 0, "maximum": 10_080},
+        "recommendation_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "risk_flags": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {"type": "string", "enum": [f.value for f in RiskFlag]},
+        },
+        "recovery_rationale": {"type": "string"},
     },
-    "required": ["selected_cause", "confidence_band", "evidence"],
+    "required": [
+        "selected_cause",
+        "confidence_band",
+        "evidence",
+        "recommended_action",
+        "recommended_delay_minutes",
+        "recommendation_confidence",
+        "risk_flags",
+        "recovery_rationale",
+    ],
 }
 
 _ROUND_SYSTEM_PROMPT = (
@@ -137,7 +169,20 @@ _FINALIZE_SYSTEM_PROMPT = (
     "and an honest confidence_band. Use CONFLICTING_SIGNALS when two hypotheses have "
     "comparable strong support that contradicts each other, and INSUFFICIENT_EVIDENCE or "
     "ESCALATE when nothing clearly stands out -- never invent certainty. Every evidence "
-    "entry must cite a SPECIFIC fact gathered during the investigation, not vague reasoning."
+    "entry must cite a SPECIFIC fact gathered during the investigation, not vague reasoning. "
+    "\n\n"
+    "You must also produce a recovery recommendation. This is ADVISORY, not a decision you "
+    "are making: recommended_action must be one of the same six actions the recovery system "
+    "already scores for every payment (RETRY_NOW, RETRY_LATER, ALT_ROUTE, REMINDER, ESCALATE, "
+    "DO_NOTHING) -- a deterministic economic/policy engine independently evaluates your "
+    "recommendation and will only ever act on it when it agrees your pick is at least as good "
+    "as its own choice, or when it independently confirms a real safety concern; it can and "
+    "often will disagree with you, and that is expected, not a failure. recommendation_confidence "
+    "is your honest confidence in recommended_action specifically (separate from confidence_band, "
+    "which is about selected_cause). recommended_delay_minutes only matters when you recommend "
+    "RETRY_LATER; use 0 otherwise. risk_flags must be empty unless a SPECIFIC, evidence-backed "
+    "concern genuinely applies -- never add a flag defensively 'just in case', since each flag "
+    "forces a mandatory human-review escalation regardless of the economics involved."
 )
 
 
@@ -169,6 +214,11 @@ class InvestigationResult:
     confidence_band: str
     confidence: float  # CONFIDENCE_BAND_TO_FLOAT[confidence_band] -- disclosed mapping
     evidence: list[Evidence]
+    # Phase 11 -- always present when the investigation itself succeeded
+    # (required in _FINALIZE_SCHEMA, same fail-closed discipline as
+    # selected_cause/confidence_band/evidence: a malformed recommendation
+    # fails the whole investigation, not just this field).
+    recommendation: RecoveryRecommendation
     steps: list[InvestigationStep] = field(default_factory=list)
 
 
@@ -378,12 +428,30 @@ async def _run_investigation(
         diagnosis_input, root_cause, confidence, evidence
     )
 
+    # Phase 11 -- ValidationError here (bad enum value, extra field, out-of-
+    # range number) propagates up through investigate()'s existing
+    # try/except boundary exactly like a malformed selected_cause/evidence
+    # would -- the whole investigation fails closed to None, never a
+    # half-valid recommendation.
+    recommendation = RecoveryRecommendation(
+        recommended_action=final_raw["recommended_action"],
+        recommended_delay_minutes=final_raw["recommended_delay_minutes"],
+        # Capped at the (possibly guard-reduced) diagnosis confidence: a
+        # diagnosis that adversarial guards just downgraded (e.g. missing
+        # bank metadata, conflicting signals) must not carry a falsely-high
+        # recommendation confidence into the fusion tie-break math.
+        confidence=min(float(final_raw["recommendation_confidence"]), confidence),
+        risk_flags=final_raw["risk_flags"],
+        recovery_rationale=final_raw["recovery_rationale"],
+    )
+
     return InvestigationResult(
         hypotheses=hypotheses,
         selected_cause=root_cause,
         confidence_band=confidence_band,
         confidence=confidence,
         evidence=evidence,
+        recommendation=recommendation,
         steps=steps,
     )
 

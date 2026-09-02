@@ -1,27 +1,41 @@
 """
-Domain Audit finding F1, Option A (own the separation, prove it in code) --
-the single test the audit's own recommendation says a judge should see:
+Domain Audit finding F1, deliberately superseded by Phase 11 (Option B, per
+this file's own original docstring: "if this is intentional, this test must
+be deliberately updated/removed, not silently broken").
 
-    Given identical payment/customer/anomaly/policy inputs, the recovery
-    decision must be byte-identical regardless of what diagnosis exists
-    (or doesn't exist) for that payment.
+F1 originally established: services/recovery_engine/orchestrator.py's
+build_decision() never reads anything the AI Diagnoser produces --
+deleting services/diagnosis_engine entirely wouldn't change a single
+outcome. Phase 11 deliberately changes that, but bounded: build_decision()
+now accepts an OPTIONAL diagnosis_id, and only when it's given AND
+recoveryos.config.Settings.ai_recommendation_fusion_enabled is True does a
+RecoveryRecommendation get fetched and passed through
+_apply_ai_fusion() -- which can change chosen_action ONLY via an economic
+near-tie that's already independently policy-ALLOWED, or via a closed-set
+risk_flags signal a real PolicyRule interprets into ESCALATE. See
+services/recovery_engine/ai_fusion.py and _apply_ai_fusion's docstring.
 
-This isn't a new behavior -- services/recovery_engine/orchestrator.py's
-build_decision() has never read the diagnoses table. This test makes that
-fact a permanent, enforced regression guard instead of something only
-provable by reading the code, so a future change that DOES wire diagnosis
-into the decision path would have to consciously delete or rewrite this
-test, not silently break an unstated invariant.
+The invariant this file now proves has TWO parts instead of one:
 
-Two layers of proof, matching the audit's own two framings:
-  1. Structural: build_decision()/select_next_best_action()/policy_engine's
-     evaluate() (and the 10 PolicyRule.check() methods) contain zero
-     reference to "diagnos"/"confidence" in their source -- an AST/text
-     scan, not a claim.
-  2. Behavioral: call build_decision() three times for the SAME payment --
-     with no diagnosis row, with a high-confidence diagnosis, and with a
-     low-confidence/UNKNOWN diagnosis -- and assert the resulting
-     chosen_action, EVI, and policy verdict are identical every time.
+  1. What must STILL be true, unconditionally (the part of F1 that
+     survives): the pure argmax in services/recovery_engine/
+     next_best_action.py, and the ORIGINAL 10 PolicyRule.check() methods in
+     services/policy_engine/rules.py, remain completely AI-blind -- zero
+     reference to diagnosis/confidence/recommendation in their source. This
+     is what makes it true that "AI can only ever change an outcome via a
+     mechanism the deterministic engine has already independently cleared,"
+     not "AI can quietly influence the core economics."
+
+  2. What must be true by DEFAULT (the backward-compatible part): calling
+     build_decision(payment_id) exactly as every pre-Phase-11 caller does
+     (diagnosis_id omitted) reproduces the exact prior behavior, byte-
+     identical, regardless of what diagnosis/recommendation rows exist for
+     that payment -- fusion never activates unless a caller explicitly
+     opts in by passing diagnosis_id AND the feature flag is on.
+
+The POSITIVE case -- proving AI recommendation fusion DOES change outcomes
+in the two bounded ways it's designed to -- lives in the sibling file
+tests/integration/test_ai_recommendation_bounded_influence.py, not here.
 """
 
 from __future__ import annotations
@@ -44,38 +58,91 @@ def _source_contains_any(source: str, needles: tuple[str, ...]) -> list[str]:
     return [n for n in needles if n.lower() in lowered]
 
 
-def test_build_decision_source_never_references_diagnosis_or_confidence():
-    """Structural proof: the function that computes chosen_action/EVI/verdict
-    contains zero reference to diagnosis output, in source -- not just "we
-    checked once," but a fact enforced every time this test runs."""
-    source = inspect.getsource(build_decision)
-    hits = _source_contains_any(source, ("diagnos", "confidence", "root_cause"))
+def test_select_next_best_action_source_never_references_ai_or_diagnosis():
+    """Phase 11 replacement for the old build_decision-level scan (which
+    necessarily now references diagnosis/recommendation by name -- see this
+    file's module docstring). The invariant that's actually still true and
+    load-bearing lives one layer down: the PURE argmax itself
+    (select_next_best_action/generate_candidate_actions,
+    services/recovery_engine/next_best_action.py) must remain completely
+    AI-blind -- Phase 11's fusion happens entirely in orchestrator.py,
+    AFTER this pure selection has already run, never inside it."""
+    import services.recovery_engine.next_best_action as nba_module
+
+    source = inspect.getsource(nba_module.select_next_best_action) + inspect.getsource(
+        nba_module.generate_candidate_actions
+    )
+    # NOT "confidence" here -- compute_action_confidence()'s own
+    # action_confidence is a pre-existing, deterministic EVI-margin
+    # heuristic (Task AGENT1), legitimately unrelated to AI/diagnosis
+    # confidence, and this module calls it. "diagnos"/"recommend"/"ai_risk"
+    # are the actually AI-specific identifiers this scan cares about.
+    hits = _source_contains_any(source, ("diagnos", "recommend", "ai_risk"))
     assert not hits, (
-        f"build_decision() now references {hits} -- if this is intentional (Option B), "
-        "this test must be deliberately updated/removed, not silently broken"
+        f"select_next_best_action/generate_candidate_actions now reference {hits} -- the pure "
+        "argmax must stay AI-blind by construction; fusion belongs in orchestrator.py's "
+        "_apply_ai_fusion, never here"
     )
 
 
-def test_policy_engine_rules_never_reference_diagnosis_or_confidence():
-    """Same structural proof for every PolicyRule.check() -- AST-parsed, not
-    grepped, so a reference hidden in a string literal doesn't false-negative
-    and a reference in an unrelated docstring doesn't false-positive."""
+def test_policy_engine_original_rules_never_reference_diagnosis_or_confidence():
+    """Same structural proof as before, scoped to the ORIGINAL 10
+    PolicyRule classes -- AIRiskSignalEscalationRule (Phase 11) is
+    deliberately excluded, named explicitly here rather than silently
+    carved out, and covered by its own assertion below instead."""
     import services.policy_engine.rules as rules_module
 
-    tree = ast.parse(inspect.getsource(rules_module))
-    identifiers: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            identifiers.add(node.id)
-        elif isinstance(node, ast.Attribute):
-            identifiers.add(node.attr)
-
-    forbidden = {"diagnosis", "diagnoses", "diagnosis_id", "confidence", "root_cause"}
-    hits = identifiers & forbidden
-    assert not hits, (
-        f"services/policy_engine/rules.py now references identifiers {hits} -- "
-        "if this is intentional (Option B), this test must be deliberately updated"
+    original_rule_classes = [
+        cls
+        for cls in vars(rules_module).values()
+        if isinstance(cls, type)
+        and issubclass(cls, rules_module.PolicyRule)
+        and cls is not rules_module.PolicyRule
+        and cls is not rules_module.AIRiskSignalEscalationRule
+    ]
+    assert len(original_rule_classes) == 10, (
+        f"expected exactly the 10 original PolicyRule classes (excluding "
+        f"AIRiskSignalEscalationRule), found {len(original_rule_classes)} -- update this test "
+        "deliberately if the original rule set itself changed"
     )
+
+    forbidden = {"diagnosis", "diagnoses", "diagnosis_id", "confidence", "root_cause", "recommend"}
+    for cls in original_rule_classes:
+        tree = ast.parse(inspect.getsource(cls))
+        identifiers: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                identifiers.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                identifiers.add(node.attr)
+        hits = identifiers & forbidden
+        assert not hits, (
+            f"{cls.__name__} now references identifiers {hits} -- if this is intentional, "
+            "this test must be deliberately updated"
+        )
+
+
+def test_ai_risk_signal_escalation_rule_is_the_only_ai_aware_rule():
+    """The explicit, named counterpart to the exclusion above: exactly ONE
+    rule is allowed to reference an AI-related identifier
+    (ai_risk_flags) -- AIRiskSignalEscalationRule -- and it's a
+    deterministic rule INTERPRETING a bounded signal, not the AI itself
+    deciding anything (Phase 11 design doc, invariant 4)."""
+    import services.policy_engine.rules as rules_module
+
+    all_rule_classes = [
+        cls
+        for cls in vars(rules_module).values()
+        if isinstance(cls, type)
+        and issubclass(cls, rules_module.PolicyRule)
+        and cls is not rules_module.PolicyRule
+    ]
+    ai_aware = [
+        cls
+        for cls in all_rule_classes
+        if "ai_risk" in inspect.getsource(cls).lower()
+    ]
+    assert [cls.__name__ for cls in ai_aware] == ["AIRiskSignalEscalationRule"]
 
 
 def test_policy_evaluate_never_references_diagnosis_or_confidence():

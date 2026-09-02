@@ -139,6 +139,36 @@ class Settings(BaseSettings):
         description="Gemini model id when ai_diagnoser_provider='gemini' -- flash-lite chosen "
         "deliberately for free-tier quota conservation over the heavier flash/pro variants.",
     )
+    ai_recommendation_fusion_enabled: bool = Field(
+        default=False,
+        description=(
+            "Phase 11 gate for the bounded AI tie-break/risk-escalation fusion step in "
+            "services/recovery_engine/orchestrator.py. Off by default -- ships dark, same "
+            "pattern as ai_diagnoser_provider gating the investigator itself. When off (or when "
+            "no diagnosis_id is passed to build_decision), the decision pipeline is byte-"
+            "identical to pre-Phase-11 behavior."
+        ),
+    )
+    ai_tie_break_tolerance_bps: int = Field(
+        default=100,
+        description=(
+            "Relative EVI tolerance, in basis points of the deterministic winner's EVI, within "
+            "which an AI-recommended, individually policy-ALLOWED candidate can win a tie-break "
+            "(100 = 1%). Must be fixed BEFORE running any ablation/measurement and never tuned "
+            "post-hoc to match a desired result -- see docs/phase11_ai_ablation.md's 0/100/500 "
+            "bps sensitivity sweep."
+        ),
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 12 -- Recovery Mission hard envelope. Code-set at mission
+    # creation (services/recovery_engine/mission.py) and never modified by
+    # anything downstream, including the AI recommendation -- see that
+    # module's check_budget().
+    # ─────────────────────────────────────────────────────────────────────────
+    mission_max_investigation_rounds: int = Field(default=3)
+    mission_max_attempts: int = Field(default=3)
+    mission_max_duration_seconds: int = Field(default=604_800)  # 7 days
 
     # ─────────────────────────────────────────────────────────────────────────
     # Policy defaults (can be overridden per merchant in policy_configs table)

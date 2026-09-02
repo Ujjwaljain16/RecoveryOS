@@ -13,7 +13,7 @@ from services.diagnosis_engine.investigator import (
     MAX_INVESTIGATION_ROUNDS,
     investigate,
 )
-from services.diagnosis_engine.schemas import DiagnosisInput, RootCause
+from services.diagnosis_engine.schemas import DiagnosisInput, RecommendedAction, RootCause
 
 
 def _base_input(**overrides) -> DiagnosisInput:
@@ -41,6 +41,11 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
                 "evidence": [
                     {"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}
                 ],
+                "recommended_action": "RETRY_LATER",
+                "recommended_delay_minutes": 30,
+                "recommendation_confidence": 0.8,
+                "risk_flags": [],
+                "recovery_rationale": "cohort failure rate is elevated -- wait for it to recover",
             }
         calls["round"].append(user_content["round_number"])
         if user_content["round_number"] == 1:
@@ -109,6 +114,10 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
     )  # cohort tool's real cost/latency
     assert len(result.hypotheses) >= 1
     assert calls["round"] == [1, 2]
+    assert result.recommendation.recommended_action == RecommendedAction.RETRY_LATER
+    assert result.recommendation.recommended_delay_minutes == 30
+    assert result.recommendation.confidence == 0.70  # capped at the guard-applied diagnosis confidence (LIKELY)
+    assert result.recommendation.risk_flags == []
 
 
 async def test_non_gemini_provider_returns_none_immediately(monkeypatch):
@@ -178,6 +187,11 @@ async def test_invalid_tool_name_stops_investigation_without_crashing(monkeypatc
                 "selected_cause": "unknown",
                 "confidence_band": "INSUFFICIENT_EVIDENCE",
                 "evidence": [{"fact": "investigation stopped early", "source": "system"}],
+                "recommended_action": "ESCALATE",
+                "recommended_delay_minutes": 0,
+                "recommendation_confidence": 0.3,
+                "risk_flags": [],
+                "recovery_rationale": "investigation stopped early, insufficient evidence to recommend a retry",
             }
         return {
             "hypotheses": [
@@ -225,6 +239,11 @@ async def test_adversarial_guard_applies_to_finalized_result(monkeypatch):
                 "selected_cause": "temporary_bank_degradation",
                 "confidence_band": "CONFIDENT",
                 "evidence": [{"fact": "gateway timeout", "source": "payment_data"}],
+                "recommended_action": "RETRY_NOW",
+                "recommended_delay_minutes": 0,
+                "recommendation_confidence": 0.9,
+                "risk_flags": [],
+                "recovery_rationale": "gateway timeout, likely transient",
             }
         return {
             "hypotheses": [
@@ -255,6 +274,10 @@ async def test_adversarial_guard_applies_to_finalized_result(monkeypatch):
 
     assert result is not None
     assert result.confidence <= MISSING_BANK_CONFIDENCE_CAP
+    # recommendation.confidence is capped at the (guard-reduced) diagnosis
+    # confidence too -- a downgraded diagnosis must not carry a falsely-high
+    # recommendation confidence into the fusion tie-break math.
+    assert result.recommendation.confidence <= MISSING_BANK_CONFIDENCE_CAP
 
 
 def test_max_investigation_rounds_is_small():

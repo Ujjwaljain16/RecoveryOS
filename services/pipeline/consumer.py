@@ -113,9 +113,27 @@ async def process_payment_failure(
     failing right after a successful run, per _process_batch below) writes
     into the SAME diagnosis/candidate_actions/policy_decision rows instead
     of creating duplicates -- see migrations/0013's UNIQUE constraints.
+
+    Phase 12/13: this function drives a payment's RecoveryMission through
+    OBSERVED/OBSERVING_OUTCOME -> INVESTIGATING -> PLANNING ->
+    AWAITING_AUTHORIZATION -> {EXECUTING | ESCALATED | TERMINATED}. It
+    doesn't need to know whether it's handling a brand-new PAYMENT_FAILED
+    event or a Phase-13 replan fired by workers/retry_scheduler.py --
+    get_or_create_mission_async's own lookup-by-payment_id finds the SAME
+    active mission either way, and was_created alone decides whether to log
+    MISSION_CREATED or REINVESTIGATION_STARTED. See services/recovery_engine/
+    mission.py's module docstring for the full state-ownership discipline.
     """
+    from recoveryos import clock
+    from recoveryos.config import get_settings
     from recoveryos.database import get_app_session_factory
     from services.pipeline.baseline import compute_and_persist_baseline_run
+    from services.recovery_engine.mission import (
+        get_or_create_mission_async,
+        transition_mission_async,
+    )
+
+    settings = get_settings()
 
     async with get_app_session_factory()() as session:
         await _run_anomaly_detection_for_payment(session, bank)
@@ -125,6 +143,68 @@ async def process_payment_failure(
         # baseline_runs row to already exist; execution_worker's sync path
         # only READS baseline_runs, it never computes one.
         await compute_and_persist_baseline_run(session, payment_id)
+        payment_row = (
+            (
+                await session.execute(
+                    text("SELECT amount_paise FROM payments WHERE payment_id = :pid"),
+                    {"pid": payment_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    amount_paise = payment_row["amount_paise"] if payment_row else 0
+
+    async with get_app_session_factory()() as session:
+        mission, was_created = await get_or_create_mission_async(
+            session,
+            payment_id=payment_id,
+            amount_paise=amount_paise,
+            now=clock.utcnow(),
+            max_investigation_rounds=settings.mission_max_investigation_rounds,
+            max_attempts=settings.mission_max_attempts,
+            max_mission_duration_seconds=settings.mission_max_duration_seconds,
+        )
+    mission_id = mission["mission_id"]
+    # A redelivery of the SAME triggering event can land here mid-flight --
+    # e.g. the xack call failing right after a fully successful prior run
+    # (same class of redelivery migrations/0013's UNIQUE constraints
+    # already guard diagnosis/decision rows against). If the mission's
+    # recorded state isn't one that legitimately precedes INVESTIGATING,
+    # this call is that kind of redelivery landing on an already-in-flight
+    # (or already-terminal, racing a fresh get_or_create) mission -- skip
+    # ALL mission-tracking calls for this invocation rather than let
+    # transition_mission_async raise on an illegal transition and strand
+    # the message in an infinite redelivery loop. The rest of the pipeline
+    # (diagnose/decide/execute) still runs and dedupes correctly on its own
+    # existing constraints regardless -- this only affects the mission
+    # audit trail's completeness for the rare redelivery case, never
+    # correctness or safety.
+    mission_trackable = mission["state"] in ("OBSERVED", "OBSERVING_OUTCOME")
+
+    if mission_trackable:
+        async with get_app_session_factory()() as session:
+            if was_created:
+                await transition_mission_async(
+                    session,
+                    mission_id=mission_id,
+                    to_state="INVESTIGATING",
+                    event_type="MISSION_CREATED",
+                    actor="system",
+                    payload={"payment_id": payment_id, "source_event_id": source_event_id},
+                    now=clock.utcnow(),
+                )
+            else:
+                await transition_mission_async(
+                    session,
+                    mission_id=mission_id,
+                    to_state="INVESTIGATING",
+                    event_type="REINVESTIGATION_STARTED",
+                    actor="system",
+                    payload={"source_event_id": source_event_id},
+                    increment_round=True,
+                    now=clock.utcnow(),
+                )
 
     # diagnose_and_persist opens its own diagnoser_role + app_role sessions
     # internally -- never raises merely because the LLM is unreachable/
@@ -132,9 +212,114 @@ async def process_payment_failure(
     diagnosis = await diagnose_and_persist(payment_id, source_event_id)
     diagnosis_id = diagnosis.diagnosis_id if diagnosis is not None else None
 
+    if mission_trackable:
+        async with get_app_session_factory()() as session:
+            await _log_investigation_events(session, mission_id=mission_id, diagnosis_id=diagnosis_id)
+            await transition_mission_async(
+                session,
+                mission_id=mission_id,
+                to_state="PLANNING",
+                event_type="INVESTIGATION_CONCLUDED",
+                actor="system",
+                payload={"diagnosis_id": diagnosis_id},
+                now=clock.utcnow(),
+            )
+            await transition_mission_async(
+                session,
+                mission_id=mission_id,
+                to_state="AWAITING_AUTHORIZATION",
+                event_type="PLANNING_CONCLUDED",
+                actor="system",
+                payload={},
+                now=clock.utcnow(),
+            )
+
+    async def _authorize_execution_before_enqueue(enqueue_ctx: dict) -> None:
+        # Runs INSIDE decide_and_persist, before the job it just built is
+        # enqueued -- committing this transition here (not after
+        # decide_and_persist returns, as it used to) closes a real race
+        # against workers/execution_worker.py's own near-instant pickup of
+        # that job. See decide_and_persist's own docstring for the full
+        # story; this is the ONLY case reaching that hook (RETRY_LATER
+        # returns from decide_and_persist before ever calling it; a
+        # verdict!=ALLOW/DO_NOTHING decision never enqueues at all), so
+        # to_state/event_type here are always EXECUTING/POLICY_AUTHORIZED.
+        async with get_app_session_factory()() as hook_session:
+            await transition_mission_async(
+                hook_session,
+                mission_id=mission_id,
+                to_state="EXECUTING",
+                event_type="POLICY_AUTHORIZED",
+                actor="policy_engine",
+                payload={
+                    "decision_id": enqueue_ctx["decision_id"],
+                    "verdict": "ALLOW",
+                    "chosen_action": enqueue_ctx["chosen_action"],
+                    "blocking_rule": None,
+                },
+                now=clock.utcnow(),
+            )
+
     result = await decide_and_persist(
-        payment_id, redis_client=redis, source_event_id=source_event_id, diagnosis_id=diagnosis_id
+        payment_id,
+        redis_client=redis,
+        source_event_id=source_event_id,
+        diagnosis_id=diagnosis_id,
+        before_enqueue=_authorize_execution_before_enqueue if mission_trackable else None,
     )
+
+    policy_payload = {
+        "decision_id": result["decision_id"],
+        "verdict": result["verdict"],
+        "chosen_action": result["chosen_action"],
+        "blocking_rule": result.get("blocking_rule"),
+    }
+    # already_authorized: the EXECUTING/POLICY_AUTHORIZED transition below
+    # was already committed by _authorize_execution_before_enqueue, inside
+    # decide_and_persist, before it enqueued the job -- true for every ALLOW
+    # decision that actually enqueues (RETRY_NOW/ALT_ROUTE/REMINDER/ESCALATE).
+    # RETRY_LATER never reaches the enqueue branch (decide_and_persist
+    # returns earlier for it), so its own EXECUTING->OBSERVING_OUTCOME pair
+    # below still needs to run here, same as before this fix.
+    already_authorized = False
+    if result["verdict"] != "ALLOW":
+        to_state = "ESCALATED" if result["verdict"] == "ESCALATE" else "TERMINATED"
+        event_type = "POLICY_ESCALATED" if result["verdict"] == "ESCALATE" else "POLICY_BLOCKED"
+    elif result["chosen_action"] == "DO_NOTHING":
+        to_state, event_type = "TERMINATED", "POLICY_DO_NOTHING"
+    else:
+        to_state, event_type = "EXECUTING", "POLICY_AUTHORIZED"
+        already_authorized = mission_trackable and result["chosen_action"] != "RETRY_LATER"
+
+    if mission_trackable and not already_authorized:
+        async with get_app_session_factory()() as session:
+            await transition_mission_async(
+                session,
+                mission_id=mission_id,
+                to_state=to_state,
+                event_type=event_type,
+                actor="policy_engine",
+                payload=policy_payload,
+                now=clock.utcnow(),
+            )
+            if result["verdict"] == "ALLOW" and result["chosen_action"] == "RETRY_LATER":
+                # "Executing" a deferred wait completes instantly -- the actual
+                # observation period is the wait itself, resolved later by
+                # workers/retry_scheduler.py firing (Phase 13's shared
+                # OBSERVING_OUTCOME -> INVESTIGATING loop, the same transition
+                # a FAILED immediate attempt's reschedule also resolves through).
+                await transition_mission_async(
+                    session,
+                    mission_id=mission_id,
+                    to_state="OBSERVING_OUTCOME",
+                    event_type="RETRY_LATER_SCHEDULED",
+                    actor="system",
+                    payload={
+                        "scheduled_reevaluation_id": result.get("scheduled_reevaluation_id"),
+                        "scheduled_for": result.get("scheduled_for"),
+                    },
+                    now=clock.utcnow(),
+                )
 
     if result["verdict"] != "ALLOW" or result["chosen_action"] == "DO_NOTHING":
         # No execution job was enqueued for this payment -- this IS the
@@ -156,6 +341,78 @@ async def process_payment_failure(
             )
     # else: ALLOW + an executing action -- workers/execution_worker.py owns
     # the terminal ledger/audit write once the job actually completes.
+
+
+async def _log_investigation_events(
+    session: AsyncSession, *, mission_id: str, diagnosis_id: str | None
+) -> None:
+    """Phase 12 -- HYPOTHESIS_UPDATED (always, when a diagnosis exists) and
+    AI_RECOMMENDATION (only when the investigator actually ran and produced
+    one, Phase 11). Narration only -- logged via log_mission_event_async,
+    which does NOT change recovery_missions.state; the mission is still
+    INVESTIGATING at this point."""
+    from services.recovery_engine.mission import log_mission_event_async
+
+    if diagnosis_id is None:
+        return
+
+    diag_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT root_cause, confidence, confidence_band, is_fallback "
+                    "FROM diagnoses WHERE diagnosis_id = :did"
+                ),
+                {"did": diagnosis_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if diag_row is not None:
+        await log_mission_event_async(
+            session,
+            mission_id=mission_id,
+            event_type="HYPOTHESIS_UPDATED",
+            actor="ai",
+            payload={
+                "diagnosis_id": diagnosis_id,
+                "root_cause": diag_row["root_cause"],
+                "confidence": (
+                    float(diag_row["confidence"]) if diag_row["confidence"] is not None else None
+                ),
+                "confidence_band": diag_row["confidence_band"],
+                "is_fallback": diag_row["is_fallback"],
+            },
+        )
+
+    rec_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT recommended_action, confidence, risk_flags, recovery_rationale "
+                    "FROM recovery_recommendations WHERE diagnosis_id = :did "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"did": diagnosis_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if rec_row is not None:
+        await log_mission_event_async(
+            session,
+            mission_id=mission_id,
+            event_type="AI_RECOMMENDATION",
+            actor="ai",
+            payload={
+                "recommended_action": rec_row["recommended_action"],
+                "confidence": float(rec_row["confidence"]),
+                "risk_flags": rec_row["risk_flags"],
+                "recovery_rationale": rec_row["recovery_rationale"],
+            },
+        )
 
 
 async def _record_backlog(redis: aioredis.Redis) -> None:

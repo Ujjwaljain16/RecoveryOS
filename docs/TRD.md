@@ -384,6 +384,31 @@ def evaluate(payment, candidate, policy_config) -> PolicyDecision:
 
 Every rule is a pure function with 100% branch coverage in unit tests — this table of rules × test cases is itself a strong artifact to show in an interview ("here's my policy engine test matrix, 7 rules × 4 edge cases each = 28 deterministic tests, all green").
 
+### 3.5 Phase 11 — Bounded AI Recovery Recommendation
+
+**Domain Audit finding F1** established that `Diagnosis.root_cause`/`confidence`/`evidence` had zero causal effect on `chosen_action` — deleting `services/diagnosis_engine` entirely would not change a single recovery outcome (enforced permanently by `tests/integration/test_diagnosis_has_no_decision_authority.py`). Phase 11 deliberately, visibly changes that — not by giving the LLM a vote on retries, but by extending §3.1's already-real EVI/policy machinery to accept a bounded, advisory `RecoveryRecommendation` as an additional input it can accept or reject on its own terms.
+
+**The authority hierarchy:**
+
+```
+1. Hard safety / regulatory constraints        (EMandateRetryComplianceRule, AutopayExecutionWindowRule, QuietHoursComplianceRule)
+2. Deterministic policy constraints             (EligibilityRule, OptOutRule, CooldownRule, RetryLimitRule, AmountLimitRule)
+3. AI-derived safety signal, interpreted BY
+   a deterministic rule (NOT the AI itself)     (AIRiskSignalEscalationRule)
+4. EVI eligibility                              (the pure argmax + floor, §3.1, unchanged)
+5. AI tie-break among eligible near-ties         (services/recovery_engine/ai_fusion.py + orchestrator._apply_ai_fusion)
+6. AI evidence / diagnosis / rationale           (informational only, unchanged since Phase 4)
+```
+
+**The governing invariant: AI may resolve ambiguity, but it may never create permission.** Concretely, the investigator (§3.6-equivalent multi-round loop, `services/diagnosis_engine/investigator.py`) now also emits a `RecoveryRecommendation` (`recommended_action` from the same closed 6-value set §3.1's candidates already use, `confidence`, a closed-set `risk_flags` enum, `recovery_rationale`) alongside its diagnosis. That recommendation can change `chosen_action` in exactly two bounded ways, both gated behind `Settings.ai_recommendation_fusion_enabled` (off by default):
+
+1. **Tie-break.** Among candidates that already cleared the EVI floor *and* are individually policy-`ALLOW`ed on their own re-evaluation *and* sit within a small, fixed, disclosed relative tolerance (`Settings.ai_tie_break_tolerance_bps`, default 100 bps = 1%) of the deterministic winner's EVI, the AI's recommended action wins the tie. A decisive winner (outside tolerance) is never overridden. A near-tied candidate the policy engine has independently rejected is never selected, even if the AI recommends it.
+2. **Risk-flag escalation.** `AIRiskSignalEscalationRule` (an ordinary, pure `PolicyRule`, 11th in the `RULES` tuple, positioned right after `OptOutRule`) forces `ESCALATE` whenever `risk_flags` is non-empty — a safety intervention, so unlike every economic action it does not need to clear the EVI floor. The AI never decides `ESCALATE` itself; the rule does, from a bounded signal.
+
+AI can never: select an action outside the 6-value enum, select a candidate policy has rejected, bypass the EVI floor for a money-moving action, or supply any execution parameter — `payment_id`/`amount_paise`/`attempt_number`/`idempotency_key` remain 100% server-derived (§9), unchanged by this phase. Every decision made with fusion enabled gets a persisted `decision_fusion_trace` row (deterministic winner, near-tied set, the AI's recommendation, and a human-readable `fusion_reason`) — visible at `GET /v1/audit/{payment_id}` and the Payment Detail dashboard, so a judge can trace exactly how much authority the AI recommendation had for any single payment.
+
+**Consequence for the "delete the AI" question.** Pre-Phase-11: deleting `services/diagnosis_engine` changed nothing. Post-Phase-11, with fusion enabled: it removes the tie-break and risk-escalation paths, which can and do change some outcomes (measured directly via `ai_outcome_delta_total` and `tests/evaluation/ai_ablation_runner.py`'s AI-on/AI-off comparison, run at a fixed, disclosed set of tie-break tolerances — 0/100/500 bps — chosen before evaluation, not tuned to a desired result afterward). The core, decisive-case economics (§3.1's argmax, the original 10 policy rules) remain exactly as AI-blind as F1 established, and are covered by their own dedicated structural tests.
+
 ---
 
 ## 4. State Machines
@@ -554,7 +579,7 @@ Adversarial test suite (§37 PRD) ships as `tests/adversarial/`, run in CI on ev
 | Threat | Mitigation |
 |---|---|
 | LLM prompt injection via failure metadata (e.g. malicious `failure_code` string) | CORRECTED (Domain Audit finding F3): `failure_code` was previously unconstrained free text reaching the prompt, contradicting this row's original claim. Now bounded at both layers — `apps/api/routers/events.py`'s `EventPayload.failure_code` has the same kind of `pattern` constraint `method` always had (rejects a malformed value at ingest, 422); `DiagnosisInput.failure_code` (services/diagnosis_engine/schemas.py) sanitizes (strips to `[A-Za-z0-9_]`, truncates to 64 chars) rather than trusting the field was already bounded. Every OTHER field reaching the prompt is a closed enum/bounded number/bool, and output is still schema-validated (Pydantic) before use, rejected if malformed. This mitigation's blast radius was always limited regardless — see the next row: diagnosis output never reaches the code that authorizes an action, so even an uncaught injection here could not move money |
-| LLM recommends an out-of-policy action | Irrelevant by construction — LLM output is a `Diagnosis`, never an `Action`; only the Policy Engine can produce an `ALLOW` verdict, and it has zero LLM dependency |
+| LLM recommends an out-of-policy action | CORRECTED (Phase 11, superseding this row's original F1-era claim): LLM output is no longer *only* a `Diagnosis` — it also includes an advisory `RecoveryRecommendation` (§3.5) that `services/recovery_engine/orchestrator.py`'s bounded fusion step can accept. "Out-of-policy" is exactly the case this can never do: fusion only ever selects a candidate that (a) already cleared the EVI floor, (b) is individually policy-`ALLOW`ed on its own re-evaluation, and (c) is within a small, disclosed EVI tolerance of the deterministic winner — an out-of-policy or economically decisive-loser recommendation is rejected and logged (`decision_fusion_trace.fusion_reason`), never acted on. The one exception, `risk_flags` → `ESCALATE`, is a safety-only override interpreted by a real `PolicyRule` (`AIRiskSignalEscalationRule`), never a direct grant of authority to the LLM. Off by default (`Settings.ai_recommendation_fusion_enabled=false`); adversarial coverage in `tests/unit/test_ai_recommendation_adversarial.py` |
 | Duplicate/replayed webhook triggers double recovery | Idempotency key + Postgres advisory lock (§4.3) |
 | Tampering with audit history | `REVOKE UPDATE, DELETE ON audit_log, events FROM app_role` at DB grant level |
 | Over-limit transaction executed | `AmountLimitRule` hard block, tested with boundary values (exactly at limit, one paise over) |

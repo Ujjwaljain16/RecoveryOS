@@ -16,6 +16,7 @@ from services.policy_engine.rules import (
     NPCI_AUTOPAY_MAX_ATTEMPTS,
     RBI_EMANDATE_AFA_THRESHOLD_PAISE,
     RULES,
+    AIRiskSignalEscalationRule,
     AmountLimitRule,
     AutopayExecutionWindowRule,
     CandidateContext,
@@ -353,6 +354,56 @@ def test_min_expected_value_one_paise_under_floor_fails():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# AIRiskSignalEscalationRule (Phase 11) — closed-set AI risk_flags signal
+# forces ESCALATE, independent of EVI/economics.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_ai_risk_signal_pass_case_no_flags():
+    result = AIRiskSignalEscalationRule().check(
+        _payment(), _candidate(ai_risk_flags=frozenset()), _policy_config()
+    )
+    assert result.passed is True
+
+
+def test_ai_risk_signal_fails_when_a_flag_is_present():
+    result = AIRiskSignalEscalationRule().check(
+        _payment(), _candidate(ai_risk_flags=frozenset({"DUPLICATE_PAYMENT_RISK"})), _policy_config()
+    )
+    assert result.passed is False
+
+
+def test_ai_risk_signal_escalates_regardless_of_strongly_positive_evi():
+    """Invariant 4 (Phase 11 design doc): a risk flag forces ESCALATE even
+    when the candidate's own EVI is strongly positive -- the flag can only
+    ever route to the safety rule, never authorize the money-moving action
+    it was attached to."""
+    result = evaluate(
+        _payment(),
+        _candidate(
+            action_type="RETRY_NOW",
+            expected_value_paise=1_000_000,
+            ai_risk_flags=frozenset({"HIGH_FRAUD_RISK"}),
+        ),
+        _policy_config(min_expected_value_paise=0),
+    )
+    assert result.verdict == "ESCALATE"
+    assert result.rule_trace[-1]["rule"] == "AIRiskSignalEscalationRule"
+
+
+def test_ai_risk_signal_does_not_fire_without_flags_even_with_negative_evi():
+    """The inverse: absence of a risk flag must not itself cause an
+    escalation -- that's MinExpectedValueRule's job, unaffected by this rule."""
+    result = evaluate(
+        _payment(),
+        _candidate(action_type="RETRY_NOW", expected_value_paise=-1, ai_risk_flags=frozenset()),
+        _policy_config(min_expected_value_paise=0),
+    )
+    assert result.verdict == "BLOCK"
+    assert result.rule_trace[-1]["rule"] == "MinExpectedValueRule"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Orchestration: ordering, short-circuit, rule_trace, verdicts
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -387,16 +438,17 @@ def test_retry_limit_failure_produces_escalate_verdict_not_block():
 
 
 def test_trace_stops_exactly_at_the_failing_rule_middle_of_the_chain():
-    """SystemicSuppressionRule is rule #9 in the current 10-rule chain
-    (Task COMPLIANCE1 added 3 rules before it) — the trace must contain
-    exactly 9 entries (the 8 that passed plus the failing one), not all 10."""
+    """SystemicSuppressionRule is rule #10 in the current 11-rule chain
+    (Task COMPLIANCE1 added 3 rules before it, Phase 11 added
+    AIRiskSignalEscalationRule after OptOutRule) — the trace must contain
+    exactly 10 entries (the 9 that passed plus the failing one), not all 11."""
     result = evaluate(
         _payment(is_high_severity_anomaly=True),
         _candidate(action_type="RETRY_NOW", expected_value_paise=1_000),
         _policy_config(),
     )
     assert result.verdict == "BLOCK"
-    assert len(result.rule_trace) == 9
+    assert len(result.rule_trace) == 10
     assert result.rule_trace[-1]["rule"] == "SystemicSuppressionRule"
 
 

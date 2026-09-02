@@ -315,22 +315,34 @@ async def diagnose_and_persist(
             app_session, payment_id, output, source_event_id, confidence_band=confidence_band
         )
         if investigation is not None:
-            await persist_investigation(app_session, row.diagnosis_id, investigation)
+            await persist_investigation(
+                app_session,
+                row.diagnosis_id,
+                investigation,
+                payment_id=row.payment_id,
+                model_version=row.model_version,
+            )
         return row
 
 
 async def persist_investigation(
-    app_session: AsyncSession, diagnosis_id: str, investigation
+    app_session: AsyncSession,
+    diagnosis_id: str,
+    investigation,
+    payment_id: str | None = None,
+    model_version: str = "unknown",
 ) -> None:
     """
-    Writes diagnosis_hypotheses + investigation_steps (migration 0015).
-    app_role only, same reason as persist_diagnosis. Best-effort: if this
+    Writes diagnosis_hypotheses + investigation_steps (migration 0015) +
+    ONE recovery_recommendations row (migration 0021, Phase 11). app_role
+    only, same reason as persist_diagnosis. Best-effort: if this
     diagnosis_id already has hypotheses/steps rows (a redelivery of an
     already-persisted diagnosis, per persist_diagnosis's own ON CONFLICT
     DO NOTHING dedup), skip re-inserting rather than risk a duplicate
     investigation trace for the same diagnosis.
     """
     from recoveryos.models import DiagnosisHypothesis, InvestigationStep
+    from recoveryos.models import RecoveryRecommendation as RecoveryRecommendationRow
 
     existing = (
         await app_session.execute(
@@ -341,6 +353,20 @@ async def persist_investigation(
     ).first()
     if existing is not None:
         return
+
+    recommendation = investigation.recommendation
+    app_session.add(
+        RecoveryRecommendationRow(
+            diagnosis_id=diagnosis_id,
+            payment_id=payment_id,
+            recommended_action=recommendation.recommended_action.value,
+            recommended_delay_minutes=recommendation.recommended_delay_minutes,
+            confidence=recommendation.confidence,
+            risk_flags=[f.value for f in recommendation.risk_flags],
+            recovery_rationale=recommendation.recovery_rationale,
+            model_version=model_version,
+        )
+    )
 
     for h in investigation.hypotheses:
         app_session.add(

@@ -407,9 +407,53 @@ class RazorpayTestAdapter:
         return self._fallback.retry(conn, payment_id, amount_paise, attempt_number)
 
 
+class DemoScriptedAdapter:
+    """
+    Demo-only, deterministic provider for POST /v1/simulate/scenario
+    (apps/api/routers/simulate.py, is_demo-gated) -- the "Recover via
+    Replan" scenario needs a REAL FAILED-then-SUCCESS outcome sequence to
+    exercise Phase 13's actual closed loop (the same code path
+    tests/integration/test_recovery_mission_lifecycle.py's
+    test_mission_closes_the_loop_fails_then_succeeds proves works), on
+    demand and reproducibly -- not "eventually, if the latent draw happens
+    to land that way."
+
+    Deliberately NOT built on SimulatorAdapter's probabilistic latent-state
+    model (services/pipeline/baseline.py's TRD §7 apples-to-apples
+    requirement is specifically about THAT model staying the single shared
+    resolver for evaluation-scoped outcomes -- this adapter is for
+    on-demand demo scenarios, an entirely different concern, and reusing
+    the same class for both would blur that line). Selected purely via
+    config (settings.payment_provider_adapter="demo_scripted"), same
+    one-line-swap discipline as every other adapter here -- no is_demo
+    branch inside this class or get_provider_adapter() itself.
+
+    Every attempt_number == 1 across every payment routed to this adapter
+    FAILS; every attempt_number >= 2 SUCCEEDS. Simple and universal on
+    purpose: the scenario endpoint that uses this needs one guaranteed
+    "fails once, then recovers" shape, not a per-payment script.
+    """
+
+    def retry(
+        self, conn: Connection, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
+        if attempt_number == 1:
+            return ProviderResult(
+                outcome="FAILED",
+                provider_ref=f"demo_scripted_{uuid.uuid4().hex[:12]}",
+                recovered_amount_paise=0,
+            )
+        return ProviderResult(
+            outcome="SUCCESS",
+            provider_ref=f"demo_scripted_{uuid.uuid4().hex[:12]}",
+            recovered_amount_paise=amount_paise,
+        )
+
+
 _ADAPTERS = {
     "simulator": SimulatorAdapter,
     "razorpay_test": RazorpayTestAdapter,
+    "demo_scripted": DemoScriptedAdapter,
 }
 
 

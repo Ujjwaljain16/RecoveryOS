@@ -47,6 +47,18 @@ async def _fetch_bank(payment_id: str) -> str | None:
 
 
 async def _process_one(row: dict, redis_client) -> None:
+    # fetch_due_reevaluations reads via asyncpg (.mappings()), which returns
+    # a native uuid.UUID for a UUID column, not the plain str
+    # process_payment_failure/enqueue_recovery_job expect end to end --
+    # str() here, once, matches every other UUID-bearing row this codebase
+    # threads through Redis (e.g. services/pipeline/consumer.py's own
+    # payment_id is always already a str by the time it reaches here).
+    # Surfaced by Phase 13: a fired re-evaluation that now genuinely
+    # re-decides an EXECUTING action (RETRY_NOW/ALT_ROUTE) reaches
+    # enqueue_recovery_job's redis.xadd() call, which -- unlike SQL/asyncpg --
+    # rejects a raw UUID object outright; the pre-existing RETRY_LATER-only
+    # path never actually enqueued a job, so this was never exercised.
+    payment_id = str(row["payment_id"])
     fired_source_event_id = str(uuid.uuid4())
     async with get_app_session_factory()() as session:
         won = await claim_reevaluation(
@@ -56,9 +68,9 @@ async def _process_one(row: dict, redis_client) -> None:
         # Another scheduler instance claimed it first -- not an error.
         return
 
-    bank = await _fetch_bank(row["payment_id"])
+    bank = await _fetch_bank(payment_id)
     await process_payment_failure(
-        row["payment_id"], bank, redis_client, source_event_id=fired_source_event_id
+        payment_id, bank, redis_client, source_event_id=fired_source_event_id
     )
 
 

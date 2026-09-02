@@ -10,10 +10,19 @@ together against real data:
            propensity.py's docstring for why LR, not LightGBM, is correct)
         -> app_role read (anomaly context, retry history, policy config)
         -> EVI-scored candidate actions (6)
-        -> next-best-action selection
+        -> next-best-action selection (pure argmax, always AI-blind)
         -> policy_engine.evaluate() (pure, on the chosen candidate)
+        -> Phase 11: bounded AI-recommendation fusion (_apply_ai_fusion),
+           gated behind Settings.ai_recommendation_fusion_enabled -- can
+           change chosen_action ONLY via an economic near-tie already
+           independently policy-ALLOWED, or via a closed-set risk_flags
+           signal a real PolicyRule (AIRiskSignalEscalationRule) interprets
+           into ESCALATE. See _apply_ai_fusion's docstring for the full
+           boundary; off (the default) reproduces pre-Phase-11 behavior
+           exactly.
         -> persist ALL 6 candidate_actions rows + ONE policy_decision row
-           with full rule_trace
+           with full rule_trace + ONE decision_fusion_trace row when fusion
+           ran
 
 Model lineage: every persisted CandidateAction row carries model_version +
 feature_schema_version from the propensity prediction, so any decision_id
@@ -22,8 +31,11 @@ is traceable back to the exact certified Phase 2 artifact that produced it.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, text
@@ -31,17 +43,34 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoveryos import clock
+from recoveryos.config import get_settings
 from recoveryos.database import (
     get_app_session_factory,
     get_inference_session_factory,
 )
-from recoveryos.metrics import policy_blocks_total
-from recoveryos.models import CandidateAction, Merchant, PolicyConfig, PolicyDecision
+from recoveryos.metrics import (
+    ai_outcome_delta_total,
+    ai_recommendation_available_total,
+    ai_risk_escalations_total,
+    ai_tie_break_applied_total,
+    ai_tie_break_rejected_total,
+    policy_blocks_total,
+)
+from recoveryos.models import (
+    CandidateAction,
+    DecisionFusionTrace,
+    Merchant,
+    PolicyConfig,
+    PolicyDecision,
+)
 from services.policy_engine.evaluate import PolicyDecision as PolicyDecisionResult
 from services.policy_engine.evaluate import evaluate
 from services.policy_engine.rules import CandidateContext, PaymentContext, PolicyConfigContext
+from services.recovery_engine.ai_fusion import find_near_tied_candidates
 from services.recovery_engine.next_best_action import (
+    CandidateActionResult,
     NextBestActionResult,
+    compute_action_confidence,
     generate_candidate_actions,
     select_next_best_action,
 )
@@ -172,8 +201,178 @@ async def _fetch_retry_history(
     return row["executed_at"], row["attempt_number"] + 1
 
 
+@dataclass(frozen=True)
+class _RecommendationContext:
+    """Pure-data view of the latest recovery_recommendations row for one
+    diagnosis_id -- same hydrate-once-then-pass-a-dataclass discipline as
+    PaymentContext/CandidateContext. Phase 11."""
+
+    recommendation_id: str
+    recommended_action: str
+    confidence: float
+    risk_flags: frozenset[str]
+
+
+async def _fetch_recommendation(
+    session: AsyncSession, diagnosis_id: str
+) -> _RecommendationContext | None:
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT recommendation_id, recommended_action, confidence, risk_flags "
+                    "FROM recovery_recommendations WHERE diagnosis_id = :did "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"did": diagnosis_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        return None
+    return _RecommendationContext(
+        recommendation_id=str(row["recommendation_id"]),
+        recommended_action=row["recommended_action"],
+        confidence=float(row["confidence"]),
+        risk_flags=frozenset(row["risk_flags"] or []),
+    )
+
+
+def _apply_ai_fusion(
+    *,
+    candidates: tuple[CandidateActionResult, ...],
+    nba_result: NextBestActionResult,
+    decision: PolicyDecisionResult,
+    payment_ctx: PaymentContext,
+    policy_config_ctx: PolicyConfigContext,
+    policy_config_row: PolicyConfig,
+    recommendation: _RecommendationContext | None,
+    ai_risk_flags: frozenset[str],
+    tie_tolerance_bps: int,
+) -> tuple[NextBestActionResult, PolicyDecisionResult, dict]:
+    """
+    Phase 11 -- the ONLY function allowed to change chosen_action based on an
+    AI recommendation, and only in the two ways the design's invariants
+    allow:
+
+      (a) risk-flag escalation: already happened, if at all, INSIDE the
+          `decision` this function receives -- ai_risk_flags was already
+          threaded into the CandidateContext evaluate() was called with
+          before this function runs, so AIRiskSignalEscalationRule (a real
+          PolicyRule, services/policy_engine/rules.py) has already forced
+          ESCALATE if a flag was present. This function only detects and
+          reports that outcome; it never itself decides ESCALATE.
+
+      (b) tie-break: only entered when the deterministic verdict is ALLOW
+          (i.e. no risk escalation and nothing else blocked it) and the AI's
+          recommended_action lands inside find_near_tied_candidates()'s set
+          -- candidates that already cleared the EVI floor -- AND that exact
+          candidate is ALSO individually policy-ALLOWED on its own re-
+          evaluation. AI can never select a candidate policy has rejected,
+          and can never change a decisive (non-near-tied) winner.
+
+    Always returns a complete fusion_provenance dict (never None), even when
+    nothing about the outcome changed, so persist_decision can write a
+    uniform decision_fusion_trace row for every decision once the feature
+    is enabled (design doc invariant 7).
+    """
+    near_tied = find_near_tied_candidates(
+        candidates,
+        nba_result.chosen_evi_paise,
+        policy_config_row.min_expected_value_paise,
+        tie_tolerance_bps,
+    )
+    risk_escalation_applied = decision.verdict == "ESCALATE" and bool(ai_risk_flags)
+
+    provenance = {
+        "recommendation_id": recommendation.recommendation_id if recommendation else None,
+        "deterministic_chosen_action": nba_result.chosen_action,
+        "deterministic_chosen_evi_paise": nba_result.chosen_evi_paise,
+        "near_tied_candidates": [
+            {"action_type": c.action_type, "evi_paise": c.expected_value_paise} for c in near_tied
+        ],
+        "tie_tolerance_bps": tie_tolerance_bps,
+        "ai_recommended_action": recommendation.recommended_action if recommendation else None,
+        "ai_confidence": recommendation.confidence if recommendation else None,
+        "ai_risk_flags": sorted(ai_risk_flags),
+        "tie_break_applied": False,
+        "risk_escalation_applied": risk_escalation_applied,
+        "final_action": nba_result.chosen_action,
+        "fusion_reason": "no_recommendation_available",
+        # Not persisted to decision_fusion_trace (that table only stores
+        # fusion_reason's human-readable text) -- used by decide_and_persist
+        # to label ai_tie_break_rejected_total{reason=...} without having to
+        # pattern-match fusion_reason's prose.
+        "reject_reason": None,
+    }
+
+    if recommendation is None:
+        return nba_result, decision, provenance
+    if risk_escalation_applied:
+        provenance["fusion_reason"] = (
+            f"AI risk signal(s) {sorted(ai_risk_flags)} forced ESCALATE via "
+            "AIRiskSignalEscalationRule"
+        )
+        return nba_result, decision, provenance
+    if decision.verdict != "ALLOW":
+        provenance["fusion_reason"] = (
+            f"deterministic verdict={decision.verdict} -- tie-break not considered"
+        )
+        return nba_result, decision, provenance
+    if recommendation.recommended_action == nba_result.chosen_action:
+        provenance["fusion_reason"] = "AI recommendation matches the deterministic winner"
+        return nba_result, decision, provenance
+
+    near_tied_actions = {c.action_type for c in near_tied}
+    if recommendation.recommended_action not in near_tied_actions:
+        provenance["reject_reason"] = "outside_tolerance"
+        provenance["fusion_reason"] = (
+            f"AI recommended {recommendation.recommended_action}, not within "
+            f"{tie_tolerance_bps} bps of the winner's EVI -- deterministic winner stands"
+        )
+        return nba_result, decision, provenance
+
+    candidate_row = next(c for c in near_tied if c.action_type == recommendation.recommended_action)
+    candidate_ctx = CandidateContext(
+        action_type=candidate_row.action_type,
+        expected_value_paise=candidate_row.expected_value_paise,
+        ai_risk_flags=ai_risk_flags,
+    )
+    candidate_decision = evaluate(payment_ctx, candidate_ctx, policy_config_ctx)
+    if candidate_decision.verdict != "ALLOW":
+        provenance["reject_reason"] = "tie_break_rejected_policy"
+        provenance["fusion_reason"] = (
+            f"AI recommended {recommendation.recommended_action}, economically near-tied, but "
+            f"individually policy verdict={candidate_decision.verdict} -- deterministic winner stands"
+        )
+        return nba_result, decision, provenance
+
+    evi_delta_pct = (
+        abs(candidate_row.expected_value_paise - nba_result.chosen_evi_paise)
+        * 100.0
+        / max(abs(nba_result.chosen_evi_paise), 1)
+    )
+    fused_nba_result = dataclasses.replace(
+        nba_result,
+        chosen_action=candidate_row.action_type,
+        chosen_evi_paise=candidate_row.expected_value_paise,
+        cleared_floor=True,
+        action_confidence=compute_action_confidence(candidate_row.action_type, candidates),
+    )
+    provenance["tie_break_applied"] = True
+    provenance["final_action"] = candidate_row.action_type
+    provenance["fusion_reason"] = (
+        f"AI recommendation accepted: {candidate_row.action_type} EVI delta "
+        f"{evi_delta_pct:.2f}% within {tie_tolerance_bps / 100:.2f}% tolerance"
+    )
+    return fused_nba_result, candidate_decision, provenance
+
+
 async def build_decision(
     payment_id: str,
+    diagnosis_id: str | None = None,
 ) -> tuple[NextBestActionResult, PolicyDecisionResult, dict]:
     """
     Full read + score + decide pipeline for one payment. Does NOT persist —
@@ -183,7 +382,17 @@ async def build_decision(
     Returns (next_best_action_result, policy_decision_result, context)
     where `context` carries everything persist_decision() needs (payment
     row fields, prediction metadata, policy_config row).
+
+    diagnosis_id (Phase 11, optional, defaults to None): when given AND
+    recoveryos.config.Settings.ai_recommendation_fusion_enabled is True, the
+    latest recovery_recommendations row for that diagnosis is fetched and
+    passed through the bounded fusion step (_apply_ai_fusion) -- see that
+    function's docstring for the exact two ways it can influence
+    chosen_action. Omitting diagnosis_id (every pre-Phase-11 caller/test)
+    reproduces the exact prior behavior: no recommendation is ever fetched,
+    _apply_ai_fusion is never called.
     """
+    settings = get_settings()
     async with get_inference_session_factory()() as inf_session:
         payment_row = (
             (
@@ -232,6 +441,10 @@ async def build_decision(
         last_attempt_at, attempt_number = await _fetch_retry_history(app_session, payment_id)
         policy_config_row = await _resolve_policy_config(app_session, payment_row["merchant_id"])
 
+        recommendation = None
+        if diagnosis_id is not None and settings.ai_recommendation_fusion_enabled:
+            recommendation = await _fetch_recommendation(app_session, diagnosis_id)
+
         candidates = await generate_candidate_actions(
             app_session,
             merchant_id=payment_row["merchant_id"],
@@ -268,8 +481,16 @@ async def build_decision(
         method=payment_row["method"],
         is_high_severity_anomaly=is_high_severity_anomaly,
     )
+    # Phase 11: ai_risk_flags is empty whenever recommendation is None (flag
+    # off, no diagnosis_id, or no recommendation row found) -- AIRiskSignalEscalationRule
+    # (services/policy_engine/rules.py) then passes trivially, so this
+    # evaluate() call is decision-identical to pre-Phase-11 behavior in that
+    # case, module one additional always-passing rule_trace entry.
+    ai_risk_flags = recommendation.risk_flags if recommendation is not None else frozenset()
     candidate_ctx = CandidateContext(
-        action_type=nba_result.chosen_action, expected_value_paise=nba_result.chosen_evi_paise
+        action_type=nba_result.chosen_action,
+        expected_value_paise=nba_result.chosen_evi_paise,
+        ai_risk_flags=ai_risk_flags,
     )
     policy_config_ctx = PolicyConfigContext(
         max_retries=policy_config_row.max_retries,
@@ -281,6 +502,20 @@ async def build_decision(
 
     decision = evaluate(payment_ctx, candidate_ctx, policy_config_ctx)
 
+    fusion_provenance = None
+    if settings.ai_recommendation_fusion_enabled:
+        nba_result, decision, fusion_provenance = _apply_ai_fusion(
+            candidates=candidates,
+            nba_result=nba_result,
+            decision=decision,
+            payment_ctx=payment_ctx,
+            policy_config_ctx=policy_config_ctx,
+            policy_config_row=policy_config_row,
+            recommendation=recommendation,
+            ai_risk_flags=ai_risk_flags,
+            tie_tolerance_bps=settings.ai_tie_break_tolerance_bps,
+        )
+
     context = {
         "merchant_id": payment_row["merchant_id"],
         "amount_paise": payment_row["amount_paise"],
@@ -290,6 +525,7 @@ async def build_decision(
         "retry_cooldown_hours": policy_config_row.retry_cooldown_hours,
         "is_high_severity_anomaly": is_high_severity_anomaly,
         "blocking_rule": next((e["rule"] for e in decision.rule_trace if not e["passed"]), None),
+        "fusion_provenance": fusion_provenance,
     }
     return nba_result, decision, context
 
@@ -391,6 +627,35 @@ async def persist_decision(
                     )
                 )
             ).scalar_one()
+        # Phase 11: one decision_fusion_trace row per policy_decision, only
+        # when fusion actually ran (context["fusion_provenance"] is None
+        # whenever ai_recommendation_fusion_enabled was off for this
+        # decision -- see build_decision). Guarded on was_inserted, same
+        # dedup discipline as policy_blocks_total below: a redelivered
+        # triggering event reuses the already-persisted policy_decision_row,
+        # so it must not attempt a second insert against decision_id's own
+        # UNIQUE constraint.
+        fusion_provenance = context.get("fusion_provenance")
+        if was_inserted and fusion_provenance is not None:
+            session.add(
+                DecisionFusionTrace(
+                    decision_id=policy_decision_row.decision_id,
+                    recommendation_id=fusion_provenance["recommendation_id"],
+                    deterministic_chosen_action=fusion_provenance["deterministic_chosen_action"],
+                    deterministic_chosen_evi_paise=fusion_provenance[
+                        "deterministic_chosen_evi_paise"
+                    ],
+                    near_tied_candidates=fusion_provenance["near_tied_candidates"],
+                    tie_tolerance_bps=fusion_provenance["tie_tolerance_bps"],
+                    ai_recommended_action=fusion_provenance["ai_recommended_action"],
+                    ai_confidence=fusion_provenance["ai_confidence"],
+                    ai_risk_flags=fusion_provenance["ai_risk_flags"],
+                    tie_break_applied=fusion_provenance["tie_break_applied"],
+                    risk_escalation_applied=fusion_provenance["risk_escalation_applied"],
+                    final_action=fusion_provenance["final_action"],
+                    fusion_reason=fusion_provenance["fusion_reason"],
+                )
+            )
         await session.commit()
 
     return candidate_rows, policy_decision_row, was_inserted
@@ -401,6 +666,7 @@ async def decide_and_persist(
     redis_client=None,
     source_event_id: str | None = None,
     diagnosis_id: str | None = None,
+    before_enqueue: Callable[[dict], Awaitable[None]] | None = None,
 ) -> dict:
     """
     Convenience entry point: full pipeline + persistence for one payment.
@@ -420,8 +686,32 @@ async def decide_and_persist(
       - Anything else (BLOCK/ESCALATE, or ALLOW + DO_NOTHING): nothing is
         enqueued or scheduled; the caller (services/pipeline/consumer.py)
         writes the terminal ledger/audit row itself.
+
+    `before_enqueue`, if given, is awaited with the in-progress `result`
+    dict (already carrying decision_id/chosen_action/attempt_number) right
+    before the job actually becomes visible on stream:recovery_jobs -- and
+    ONLY in the branch that's about to enqueue one. This closes a real race
+    (found live-testing the Phase 12/13 demo endpoints against a genuinely
+    separate, always-running execution_worker container, which the
+    in-process test suite never exercises): workers/execution_worker.py's
+    own mission_trackable check reads the mission's state as soon as it
+    picks the job up off the stream, which can happen within ~1s of the
+    enqueue (it's already blocked on XREADGROUP) -- faster than
+    services/pipeline/consumer.py's OWN follow-up transition of the mission
+    into EXECUTING used to commit, since that transition used to run AFTER
+    this function returned, i.e. AFTER the enqueue. execution_worker would
+    then read the mission still in AWAITING_AUTHORIZATION, conclude
+    mission_trackable=False, and silently skip ALL mission-tracking for
+    that attempt (no attempt increment, no OBSERVING_OUTCOME transition,
+    no replan on a later failure) -- a stalled mission with zero exception
+    ever raised. The caller uses this hook to commit that EXECUTING
+    transition itself, synchronously, before the enqueue -- so by the time
+    the job is visible to any consumer, the mission is already
+    provably in EXECUTING. Never called for RETRY_LATER (returns earlier,
+    above) or verdict!=ALLOW/DO_NOTHING (no enqueue branch at all) --
+    those transitions carry no such race and stay exactly where they were.
     """
-    nba_result, decision, context = await build_decision(payment_id)
+    nba_result, decision, context = await build_decision(payment_id, diagnosis_id=diagnosis_id)
     candidate_rows, policy_decision_row, was_inserted = await persist_decision(
         payment_id, nba_result, decision, context, source_event_id
     )
@@ -437,6 +727,22 @@ async def decide_and_persist(
         "decision_id": policy_decision_row.decision_id,
         "candidate_ids": [c.candidate_id for c in candidate_rows],
     }
+
+    # Phase 11: AI fusion metrics, same was_inserted-guarded discipline as
+    # policy_blocks_total below -- a redelivered triggering event must not
+    # double-count against an outcome that was already recorded.
+    fusion_provenance = context.get("fusion_provenance")
+    if was_inserted and fusion_provenance is not None:
+        if fusion_provenance["ai_recommended_action"] is not None:
+            ai_recommendation_available_total.inc()
+        if fusion_provenance["risk_escalation_applied"]:
+            ai_risk_escalations_total.inc()
+            ai_outcome_delta_total.labels(cause="risk_escalation").inc()
+        elif fusion_provenance["tie_break_applied"]:
+            ai_tie_break_applied_total.inc()
+            ai_outcome_delta_total.labels(cause="tie_break").inc()
+        elif fusion_provenance["reject_reason"] is not None:
+            ai_tie_break_rejected_total.labels(reason=fusion_provenance["reject_reason"]).inc()
 
     if was_inserted and decision.verdict != "ALLOW" and context["blocking_rule"] is not None:
         # TRD §10: policy_blocks_total{rule} -- labeled with the SPECIFIC
@@ -490,6 +796,12 @@ async def decide_and_persist(
             ).scalar_one()
 
         idempotency_key = f"recovery:{payment_id}:{nba_result.chosen_action}:{attempt_number}"
+        result["attempt_number"] = attempt_number
+        result["idempotency_key"] = idempotency_key
+        if before_enqueue is not None:
+            # Must fully commit before the job becomes visible below --
+            # see this function's own docstring on the race this closes.
+            await before_enqueue(result)
         maybe_stream_id = enqueue_recovery_job(
             redis_client,
             payment_id=payment_id,
@@ -513,6 +825,5 @@ async def decide_and_persist(
         else:
             stream_id = maybe_stream_id
         result["enqueued_stream_id"] = stream_id
-        result["idempotency_key"] = idempotency_key
 
     return result
