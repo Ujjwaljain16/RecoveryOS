@@ -40,6 +40,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
@@ -53,6 +54,38 @@ RESULTS_FILE = REPO_ROOT / "tests" / "evaluation" / "artifacts" / "ai_ablation_r
 
 SEED = 42  # held constant across every arm -- only the fusion config varies
 
+# Same reasoning as tests/evaluation/multi_seed_runner.py's EVALUATION_START_TIME
+# -- and same EVALUATION_START_TIME_ISO env override, so this script shares the
+# exact same instant as multi_seed_runner.py and the standalone canonical run
+# within one evaluation campaign, not just internally across its own 4 arms.
+_env_start_time = os.environ.get("EVALUATION_START_TIME_ISO")
+EVALUATION_START_TIME = (
+    datetime.fromisoformat(_env_start_time)
+    if _env_start_time
+    else datetime.now(timezone.utc) - timedelta(hours=1)
+)
+
+# Reduced-scale mode: the free-tier Gemini quota (per key, per model) is
+# small (confirmed live: GenerateRequestsPerDayPerProjectPerModel-FreeTier,
+# limit=20/day) and every diagnosis -- even the AI_OFF arm, which still
+# generates real recommendations, just never consults them -- costs up to
+# MAX_INVESTIGATION_ROUNDS=2 real LLM calls. ABLATION_N_PAYMENTS lets a
+# quota-constrained run shrink the population instead of exhausting the key
+# partway through. Defaults preserve the original full-scale design.
+#
+# NOTE: a per-arm GEMINI_API_KEY/AI_DIAGNOSER_GEMINI_MODEL override was
+# attempted here and DOES NOT WORK -- docker-compose.yml's
+# pipeline_orchestrator/execution_worker services load these two vars via
+# `env_file: .env` (reads the FILE on disk), not from the shell environment
+# that invokes `docker compose`, unlike AI_RECOMMENDATION_FUSION_ENABLED/
+# AI_TIE_BREAK_TOLERANCE_BPS below, which docker-compose.override.ai_fusion.yml
+# explicitly substitutes via `${VAR}` and which therefore DO work per-arm.
+# All 4 arms always use whatever GEMINI_API_KEY/AI_DIAGNOSER_GEMINI_MODEL is
+# literally written in .env -- there is no way to vary it per arm without
+# either editing .env between arms or changing the compose file to add an
+# explicit `${GEMINI_API_KEY}` substitution.
+N_PAYMENTS = int(os.environ.get("ABLATION_N_PAYMENTS", "10000"))
+
 RUNS = [
     {"name": "AI_OFF", "fusion_enabled": False, "tolerance_bps": 100},
     {"name": "AI_ON_tol_0", "fusion_enabled": True, "tolerance_bps": 0},
@@ -61,6 +94,27 @@ RUNS = [
 ]
 
 COMPOSE = "docker compose -f docker-compose.yml -f docker-compose.override.ai_fusion.yml"
+
+# gaps.md sec:C.5 -- see tests/evaluation/multi_seed_runner.py's identical
+# constant/function for the full rationale. Same fix, same reasoning, applied
+# here too so the ablation's own AI-OFF/AI-ON arms compare RecoveryOS's real
+# attempt-2 behavior fairly, not just its attempt-1 behavior.
+PLATFORM_DEFAULT_POLICY_CONFIG_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def accelerate_evaluation_cooldown():
+    conn = psycopg2.connect(PG_DSN)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO policy_configs (policy_config_id, retry_cooldown_hours)
+        VALUES (%s, 0)
+        ON CONFLICT (policy_config_id) DO UPDATE SET retry_cooldown_hours = 0
+        """,
+        (PLATFORM_DEFAULT_POLICY_CONFIG_ID,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def run(cmd, **kw):
@@ -80,6 +134,35 @@ def wait_for_postgres_healthy(timeout=90):
     raise RuntimeError("postgres never became reachable")
 
 
+def wait_for_reevaluations_drained(timeout=600, stable_polls_required=3):
+    """See tests/evaluation/multi_seed_runner.py's identical function for
+    the full rationale (race between round-1 ledger draining and round-2
+    scheduling)."""
+    conn = psycopg2.connect(PG_DSN)
+    cur = conn.cursor()
+    deadline = time.time() + timeout
+    last_total = None
+    stable_count = 0
+    while time.time() < deadline:
+        cur.execute("SELECT count(*) FROM scheduled_reevaluations WHERE status = 'PENDING'")
+        pending = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM scheduled_reevaluations")
+        total = cur.fetchone()[0]
+        print(f"  round-2 (rescheduled) drain progress: pending={pending}/{total} scheduled", flush=True)
+        if pending == 0:
+            stable_count = stable_count + 1 if total == last_total else 1
+            last_total = total
+            if stable_count >= stable_polls_required:
+                conn.close()
+                return total
+        else:
+            stable_count = 0
+            last_total = total
+        time.sleep(5)
+    conn.close()
+    raise RuntimeError("scheduled_reevaluations never fully drained within timeout")
+
+
 def regenerate_dataset(seed: int, fusion_enabled: bool, tolerance_bps: int):
     env = dict(os.environ)
     env["AI_RECOMMENDATION_FUSION_ENABLED"] = "true" if fusion_enabled else "false"
@@ -90,9 +173,11 @@ def regenerate_dataset(seed: int, fusion_enabled: bool, tolerance_bps: int):
     wait_for_postgres_healthy()
     time.sleep(5)
     run("python -m dotenv run -- alembic upgrade head", env=env)
+    accelerate_evaluation_cooldown()
     run(
         f"python -m dotenv run -- python -m simulator.run "
-        f'--n=10000 --seed={seed} --customers=2000 --scenario-weights="{{}}" --output=db',
+        f'--n={N_PAYMENTS} --seed={seed} --customers=2000 --scenario-weights="{{}}" '
+        f'--start-time={EVALUATION_START_TIME.isoformat()} --output=db',
         env=env,
     )
     run(f"{COMPOSE} up -d --build", env=env)
@@ -176,7 +261,13 @@ def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bp
     )
     interventions = scalar("SELECT count(*) FROM policy_decisions WHERE verdict='ALLOW'")
     escalates = scalar("SELECT count(*) FROM policy_decisions WHERE verdict='ESCALATE'")
-    unnecessary = scalar(
+    # gaps.md sec:C.5 -- RENAMED from unnecessary_intervention_rate; same
+    # query, honestly relabeled. See multi_seed_runner.py's identical
+    # computation for the full semantic-correction rationale: this counts
+    # ALLOW decisions that did not strictly beat a naive single-attempt
+    # retry (baseline_total below is always the single-attempt baseline,
+    # never the fair one) -- including ties where both succeeded.
+    did_not_beat_single_attempt_baseline = scalar(
         """
         SELECT count(*) FROM recovery_ledger rl
         JOIN policy_decisions pd ON pd.payment_id = rl.payment_id
@@ -241,6 +332,7 @@ def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bp
     return {
         "run_name": run_name,
         "seed": seed,
+        "sim_start_time": EVALUATION_START_TIME.isoformat(),
         "fusion_enabled": fusion_enabled,
         "tolerance_bps": tolerance_bps,
         "failed_payments": failed_payments,
@@ -249,7 +341,9 @@ def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bp
         "incremental_recovery_paise": recoveryos_total - baseline_total,
         "recovery_rate": recovered_payments / failed_payments if failed_payments else None,
         "intervention_rate": interventions / failed_payments if failed_payments else None,
-        "unnecessary_intervention_rate": unnecessary / interventions if interventions else None,
+        "did_not_beat_single_attempt_baseline_rate": (
+            did_not_beat_single_attempt_baseline / interventions if interventions else None
+        ),
         "escalations": escalates,
         "total_attempts": total_attempts,
         "attempts_per_payment": total_attempts / failed_payments if failed_payments else None,
@@ -270,6 +364,7 @@ def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bp
 
 
 def main():
+    print(f"sim_start_time (shared across all 4 arms this run): {EVALUATION_START_TIME.isoformat()}", flush=True)
     RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     results = []
     if RESULTS_FILE.exists():
@@ -286,10 +381,15 @@ def main():
         print(f"\n{'=' * 60}\nRUN {name} (fusion_enabled={run_config['fusion_enabled']}, "
               f"tolerance_bps={run_config['tolerance_bps']})\n{'=' * 60}", flush=True)
         start = time.time()
-        regenerate_dataset(SEED, run_config["fusion_enabled"], run_config["tolerance_bps"])
+        regenerate_dataset(
+            SEED,
+            run_config["fusion_enabled"],
+            run_config["tolerance_bps"],
+        )
         n_events = publish_all_failed_payments()
         print(f"published {n_events} events", flush=True)
         wait_for_drain(expected_ledger_rows=n_events)
+        wait_for_reevaluations_drained()
         metrics = collect_metrics(
             name, SEED, run_config["fusion_enabled"], run_config["tolerance_bps"], start
         )
