@@ -161,12 +161,174 @@ async def test_round_timeout_falls_back_cleanly(monkeypatch):
     assert result is None
 
 
+async def test_tool_call_timeout_falls_back_cleanly(monkeypatch):
+    """
+    Production-hardening pass: call_tool() previously had no timeout bound
+    at all (unlike the LLM round call, already covered by
+    test_round_timeout_falls_back_cleanly) -- a stuck diagnoser_role query
+    could hang the whole investigation indefinitely. Mirrors that existing
+    test's shape exactly, but hangs the DB-touching call instead of the
+    network call.
+    """
+    import asyncio
+
+    async def one_round_then_hang(*, system_prompt, user_content, response_schema, model, api_key):
+        return {
+            "hypotheses": [
+                {
+                    "cause": "customer_specific",
+                    "support_score": 1,
+                    "contradict_score": 0,
+                    "unresolved_questions": [],
+                }
+            ],
+            "action": "call_tool",
+            "tool_name": "get_cohort_failure_rate",
+            "tool_inputs": {"bank": "HDFC", "method": "upi"},
+            "expected_uncertainty_reduction": 5.0,
+            "reasoning": "check the cohort",
+        }
+
+    async def hanging_call_tool(session, name, **kwargs):
+        await asyncio.sleep(5.0)
+        raise AssertionError("should never complete -- the timeout must fire first")
+
+    monkeypatch.setattr(
+        "services.diagnosis_engine.llm_client.gemini_generate_json", one_round_then_hang
+    )
+    monkeypatch.setattr(investigator_module, "call_tool", hanging_call_tool)
+    monkeypatch.setattr(investigator_module, "TOOL_CALL_TIMEOUT_SECONDS", 0.05)
+
+    result = await investigate(
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
+    )
+    assert result is None
+
+
+async def test_fast_tool_call_within_timeout_is_unaffected(monkeypatch):
+    """Non-regression check: a tool call that completes well within
+    TOOL_CALL_TIMEOUT_SECONDS still produces a normal successful result --
+    the new bound doesn't change happy-path behavior."""
+    calls = {"round": []}
+
+    async def fake_generate_json(*, system_prompt, user_content, response_schema, model, api_key):
+        if "final_hypotheses" in user_content:
+            return {
+                "selected_cause": "temporary_bank_degradation",
+                "confidence_band": "LIKELY",
+                "evidence": [
+                    {"fact": "cohort failure rate elevated", "source": "get_cohort_failure_rate"}
+                ],
+                "recommended_action": "RETRY_LATER",
+                "recommended_delay_minutes": 30,
+                "recommendation_confidence": 0.8,
+                "risk_flags": [],
+                "recovery_rationale": "cohort failure rate is elevated -- wait for it to recover",
+            }
+        calls["round"].append(user_content["round_number"])
+        return {
+            "hypotheses": [
+                {
+                    "cause": "temporary_bank_degradation",
+                    "support_score": 5,
+                    "contradict_score": 1,
+                    "unresolved_questions": [],
+                }
+            ],
+            "action": "call_tool",
+            "tool_name": "get_cohort_failure_rate",
+            "tool_inputs": {"bank": "HDFC", "method": "upi"},
+            "expected_uncertainty_reduction": 6.0,
+            "reasoning": "cohort data best distinguishes these two",
+        }
+
+    async def fast_call_tool(session, name, **kwargs):
+        assert name == "get_cohort_failure_rate"
+        return {"current_failure_rate": 0.4, "baseline_failure_rate": 0.05}
+
+    monkeypatch.setattr(
+        "services.diagnosis_engine.llm_client.gemini_generate_json", fake_generate_json
+    )
+    monkeypatch.setattr(investigator_module, "call_tool", fast_call_tool)
+    monkeypatch.setattr(investigator_module, "TOOL_CALL_TIMEOUT_SECONDS", 0.05)
+
+    result = await investigate(
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
+    )
+
+    assert result is not None
+    assert result.selected_cause == RootCause.TEMPORARY_BANK_DEGRADATION
+    assert len(result.steps) == 1
+    assert result.steps[0].tool_name == "get_cohort_failure_rate"
+
+
 async def test_malformed_round_response_returns_none(monkeypatch):
     async def malformed_response(**kwargs):
         return {"hypotheses": []}  # missing required 'action' key
 
     monkeypatch.setattr(
         "services.diagnosis_engine.llm_client.gemini_generate_json", malformed_response
+    )
+
+    result = await investigate(
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
+    )
+    assert result is None
+
+
+async def test_finalize_call_raising_json_decode_error_falls_back_cleanly(monkeypatch):
+    """AI Architecture Gap Audit gap (P2): distinct from
+    test_malformed_round_response_returns_none (a schema-shape mismatch on
+    an otherwise-valid dict) -- this simulates gemini_generate_json itself
+    raising json.JSONDecodeError, the real failure mode when Gemini's inner
+    structured-output text isn't valid JSON (see test_llm_client.py for that
+    function's own coverage of this). investigate() must still fail closed
+    to None, not propagate the exception."""
+    import json
+
+    async def raises_json_decode_error(**kwargs):
+        raise json.JSONDecodeError("Expecting value", "not valid json{{{", 0)
+
+    monkeypatch.setattr(
+        "services.diagnosis_engine.llm_client.gemini_generate_json", raises_json_decode_error
+    )
+
+    result = await investigate(
+        _base_input(),
+        diagnoser_session=object(),
+        model="gemini-2.5-flash-lite",
+        api_key="fake",
+        provider="gemini",
+        round_timeout_seconds=5.0,
+    )
+    assert result is None
+
+
+async def test_finalize_call_raising_key_error_falls_back_cleanly(monkeypatch):
+    """Same gap as above, for the other real gemini_generate_json failure
+    mode: a safety-blocked/missing-candidates response shape raises
+    KeyError. investigate() must still fail closed to None."""
+
+    async def raises_key_error(**kwargs):
+        raise KeyError("candidates")
+
+    monkeypatch.setattr(
+        "services.diagnosis_engine.llm_client.gemini_generate_json", raises_key_error
     )
 
     result = await investigate(

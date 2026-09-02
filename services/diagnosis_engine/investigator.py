@@ -55,6 +55,18 @@ logger = logging.getLogger(__name__)
 
 MAX_INVESTIGATION_ROUNDS = 2  # kept small deliberately -- each round is a real LLM call
 
+# Production-hardening pass: every TOOL_REGISTRY entry's own
+# latency_ms_estimate is <=25ms under normal operation (indexed single-row/
+# small-limit queries on diagnoser_role) -- this bounds a genuinely STUCK
+# query (lock contention, a wedged connection), not normal-case latency,
+# with generous headroom. Without this, a hung tool call had no bound at
+# all (unlike the LLM round call below, which asyncio.wait_for already
+# covered) and could hang the whole investigation indefinitely. Fixed, not
+# a Settings field -- same reasoning as scheduling.py's
+# REEVALUATION_LEASE_SECONDS: an evaluation-agnostic reliability constant,
+# not something a deployment should need to tune.
+TOOL_CALL_TIMEOUT_SECONDS = 5.0
+
 # confidence_band -> a fixed representative float, for the existing
 # DiagnosisOutput.confidence column (EVI/policy read a float today). This
 # is a disclosed, fixed mapping, not a claim that the band IS this number.
@@ -297,7 +309,17 @@ async def investigate(
             diagnosis_input, diagnoser_session, model, api_key, round_timeout_seconds
         )
     except TimeoutError:
-        logger.warning("[Investigator] round timed out after %.1fs", round_timeout_seconds)
+        # Two independent sources feed this: the LLM round call
+        # (asyncio.wait_for below, bounded by round_timeout_seconds) and the
+        # tool call (bounded by TOOL_CALL_TIMEOUT_SECONDS, logged with its
+        # own specific message at the point of failure above) -- this
+        # message stays deliberately generic rather than assuming which one
+        # fired.
+        logger.warning(
+            "[Investigator] timed out (round_timeout_seconds=%.1fs) -- falling back to "
+            "deterministic diagnosis",
+            round_timeout_seconds,
+        )
         return None
     except (ValidationError, KeyError, ValueError, TypeError) as exc:
         logger.warning("[Investigator] schema/validation failure: %s", exc)
@@ -377,7 +399,19 @@ async def _run_investigation(
 
         tool_inputs = _derive_tool_inputs(tool_name, diagnosis_input)
         t0 = time.monotonic()
-        tool_output = await call_tool(diagnoser_session, tool_name, **tool_inputs)
+        try:
+            tool_output = await asyncio.wait_for(
+                call_tool(diagnoser_session, tool_name, **tool_inputs),
+                timeout=TOOL_CALL_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "[Investigator] tool_name=%r timed out after %.1fs -- failing the "
+                "investigation closed, same fallback contract as a hung LLM round",
+                tool_name,
+                TOOL_CALL_TIMEOUT_SECONDS,
+            )
+            raise
         latency_ms = int((time.monotonic() - t0) * 1000)
 
         summary = _summarize_tool_output(tool_output)
