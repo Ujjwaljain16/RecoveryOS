@@ -179,6 +179,41 @@ async def _fetch_anomaly_context(session: AsyncSession, bank: str | None) -> Ano
     )
 
 
+def resolve_decision_now(
+    *,
+    is_synthetic: bool,
+    failed_at: datetime | None,
+    last_attempt_at: datetime | None,
+) -> datetime:
+    """
+    The ONE authoritative "now" for a decision -- feeds is_expired AND
+    PaymentContext.now, so every time-dependent policy rule (EligibilityRule,
+    CooldownRule, AutopayExecutionWindowRule, QuietHoursComplianceRule) reads
+    from the exact same value. Production traffic (is_synthetic=False)
+    always gets the real clock -- this function, and every rule downstream
+    of it, is completely unaware that "synthetic" is even a concept; only
+    THIS call site branches on it.
+
+    For a synthetic payment's FIRST decision (last_attempt_at is None -- no
+    row in `recoveries` yet), use the payment's own simulated failed_at
+    instead of the real clock: a canonical/evaluation run seeds thousands of
+    payments spanning simulated days, then makes all of their first
+    decisions within a few real minutes, so checking the real clock would
+    make every one of them share the same real hour-of-day regardless of
+    when, in the simulated world, they actually failed.
+
+    Every decision AFTER the first (last_attempt_at is not None -- a real
+    retry already executed) keeps using the real clock, synthetic or not:
+    that attempt was genuinely scheduled and executed in real time by
+    workers/retry_scheduler.py / execution_worker.py, so CooldownRule's
+    `now - last_attempt_at` must stay consistent with how it actually
+    happened, not jump back to the payment's original failure moment.
+    """
+    if is_synthetic and last_attempt_at is None and failed_at is not None:
+        return failed_at
+    return clock.utcnow()
+
+
 async def _fetch_retry_history(
     session: AsyncSession, payment_id: str
 ) -> tuple[datetime | None, int]:
@@ -460,9 +495,13 @@ async def build_decision(
         propensity_probability_bps=prediction.probability_bps,
     )
 
-    is_expired = payment_row["failed_at"] is not None and (
-        clock.utcnow() - payment_row["failed_at"] > timedelta(days=7)
+    now = resolve_decision_now(
+        is_synthetic=payment_row["is_synthetic"],
+        failed_at=payment_row["failed_at"],
+        last_attempt_at=last_attempt_at,
     )
+
+    is_expired = payment_row["failed_at"] is not None and (now - payment_row["failed_at"] > timedelta(days=7))
     is_high_severity_anomaly = bool(
         anomaly_context is not None
         and anomaly_context.severity == "high"
@@ -477,7 +516,7 @@ async def build_decision(
         last_attempt_at=last_attempt_at,
         attempt_number=attempt_number,
         amount_paise=payment_row["amount_paise"],
-        now=clock.utcnow(),
+        now=now,
         method=payment_row["method"],
         is_high_severity_anomaly=is_high_severity_anomaly,
     )
