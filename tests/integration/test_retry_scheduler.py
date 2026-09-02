@@ -243,7 +243,11 @@ async def test_retry_scheduler_fires_due_row_and_genuinely_reevaluates(migrated_
         f"diagnoses before={diagnoses_before} after={diagnoses_after}"
     )
     assert fired_row is not None
-    assert fired_row["status"] == "FIRED"
+    # migration 0025 -- a successfully processed claim now reaches the
+    # terminal COMPLETED status (adversarial sweep finding #50's fix),
+    # not FIRED forever; FIRED is now specifically "claimed, still in
+    # flight or crashed," never the resting state of a healthy row.
+    assert fired_row["status"] == "COMPLETED"
     assert fired_row["fired_source_event_id"] is not None
     assert (
         diagnoses_after > diagnoses_before
@@ -347,3 +351,411 @@ async def test_fetch_due_reevaluations_only_returns_pending_rows_whose_time_has_
     due_ids = {r["reevaluation_id"] for r in due_rows}
     assert due_id in due_ids
     assert not_due_id not in due_ids
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Adversarial sweep scenario #50 -- orphaned scheduled reevaluations
+#
+# migration 0025 / services/recovery_engine/scheduling.py's lease mechanism:
+# a claimed (FIRED) row is no longer a permanent orphan on crash. These
+# tests replace the earlier "proves the orphan is permanent" regression
+# (that behavior no longer exists) with proof of the fixed guarantee: a
+# reclaimed row is either safely reprocessed to completion (mission still
+# waiting) or safely cancelled without reprocessing (mission already moved
+# on by some other path) -- never left stuck, and never double-processed.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+async def _create_mission_in_observing_outcome_and_link(
+    migrated_db: str, *, payment_id: str, reevaluation_id: str, amount_paise: int = 500_000
+) -> str:
+    """
+    tests/integration/test_retry_scheduler.py's existing fixture calls
+    decide_and_persist() directly (deliberately isolating the scheduling
+    mechanism from mission tracking, which is services/pipeline/consumer.py's
+    responsibility, not decide_and_persist's) -- no mission exists in that
+    flow at all. The new lease/reclaim tests need a REAL mission genuinely
+    sitting in OBSERVING_OUTCOME (the state the reclaim safety check reads),
+    so this helper creates one directly and walks it through the full
+    code-owned transition chain (services/recovery_engine/mission.py's
+    ALLOWED_TRANSITIONS), then links the already-created scheduled_reevaluations
+    row to it -- the same mission_id linkage services/recovery_engine/orchestrator.py's
+    real RETRY_LATER path establishes at creation time.
+    """
+    from recoveryos.database import get_app_session_factory
+    from services.recovery_engine.mission import get_or_create_mission_async, transition_mission_async
+
+    now = datetime.now(UTC)
+    async with get_app_session_factory()() as session:
+        mission, _created = await get_or_create_mission_async(
+            session,
+            payment_id=payment_id,
+            amount_paise=amount_paise,
+            now=now,
+            max_investigation_rounds=10,
+            max_attempts=10,
+            max_mission_duration_seconds=365 * 24 * 3600,
+        )
+        mission_id = mission["mission_id"]
+        for to_state, event_type in (
+            ("INVESTIGATING", "test_setup"),
+            ("PLANNING", "test_setup"),
+            ("AWAITING_AUTHORIZATION", "test_setup"),
+            ("EXECUTING", "test_setup"),
+            ("OBSERVING_OUTCOME", "test_setup"),
+        ):
+            await transition_mission_async(
+                session,
+                mission_id=mission_id,
+                to_state=to_state,
+                event_type=event_type,
+                actor="test",
+                payload={},
+                now=now,
+            )
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE scheduled_reevaluations SET mission_id = :mid WHERE reevaluation_id = :rid"),
+            {"mid": mission_id, "rid": reevaluation_id},
+        )
+    await engine.dispose()
+    return mission_id
+
+
+async def _mission_event_count(migrated_db: str, mission_id: str) -> int:
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.connect() as conn:
+        count = (
+            await conn.execute(
+                text("SELECT count(*) FROM mission_events WHERE mission_id = :mid"), {"mid": mission_id}
+            )
+        ).scalar_one()
+    await engine.dispose()
+    return count
+
+
+@pytest.mark.asyncio
+async def test_reclaimed_reevaluation_when_mission_still_waiting_reprocesses_and_completes(
+    migrated_db, redis_client, monkeypatch
+):
+    """
+    Crash after claim (simulated: process_payment_failure raises once),
+    then a later poll cycle (past the lease) -- standing in for a scheduler
+    restart or the next natural POLL_INTERVAL_SECONDS tick, the mechanism is
+    identical either way, this is a stateless poller -- reclaims the row.
+    Since the mission is still genuinely OBSERVING_OUTCOME (the crash
+    happened before any real progress), reprocessing is safe: a new
+    diagnosis appears, the mission advances, and the row reaches COMPLETED.
+    No orphan survives. Covers: "crash after claim -> eventually
+    reprocessed", "scheduler restart with pending/in-flight reevaluation"
+    (this poller is stateless -- a fresh run_once() call IS the restart
+    case), and "no orphaned reevaluation."
+    """
+    import workers.retry_scheduler as retry_scheduler_module
+    from services.recovery_engine.scheduling import REEVALUATION_LEASE_SECONDS
+    from workers.retry_scheduler import run_once
+
+    payment_id, _ = await _seed_high_anomaly_retry_later_fixture(migrated_db)
+    result = await decide_and_persist(payment_id, redis_client=redis_client)
+    assert result["chosen_action"] == "RETRY_LATER"
+    reevaluation_id = result["scheduled_reevaluation_id"]
+    mission_id = await _create_mission_in_observing_outcome_and_link(
+        migrated_db, payment_id=payment_id, reevaluation_id=reevaluation_id
+    )
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.begin() as conn:
+        diagnoses_before = (
+            await conn.execute(
+                text("SELECT count(*) FROM diagnoses WHERE payment_id = :pid"), {"pid": payment_id}
+            )
+        ).scalar_one()
+
+    # migrated_db is session-scoped -- other test functions in this file may
+    # have left their own due/leftover rows in the shared DB. The stub only
+    # crashes/counts for THIS test's own payment_id; every other payment
+    # passes straight through to the real function, so this test's
+    # assertions are never polluted by (and never pollute) any other row
+    # run_once() happens to also pick up in the same poll.
+    real_process_payment_failure = retry_scheduler_module.process_payment_failure
+    call_count = {"n": 0}
+
+    async def _crash_once_then_succeed(pid, *args, **kwargs):
+        if pid != payment_id:
+            return await real_process_payment_failure(pid, *args, **kwargs)
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("simulated crash mid-reevaluation, after the claim already committed")
+        return await real_process_payment_failure(pid, *args, **kwargs)
+
+    monkeypatch.setattr(retry_scheduler_module, "process_payment_failure", _crash_once_then_succeed)
+
+    original_utcnow = clock_module.utcnow
+    due_time = datetime.now(UTC) + timedelta(hours=1)
+    clock_module.utcnow = lambda: due_time
+    try:
+        first_poll = await run_once(redis_client)
+    finally:
+        clock_module.utcnow = original_utcnow
+    assert first_poll >= 1
+    assert call_count["n"] == 1
+
+    async with engine.begin() as conn:
+        fired_row = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT status, lease_expires_at FROM scheduled_reevaluations "
+                        "WHERE reevaluation_id = :rid"
+                    ),
+                    {"rid": reevaluation_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert fired_row["status"] == "FIRED", "claimed but crashed -- must still be FIRED, not orphan-lost"
+    assert fired_row["lease_expires_at"] is not None
+
+    # Second poll, past the lease -- this is the reclaim (and stands in for
+    # "the scheduler process restarted and is polling fresh").
+    reclaim_time = due_time + timedelta(seconds=REEVALUATION_LEASE_SECONDS + 5)
+    clock_module.utcnow = lambda: reclaim_time
+    try:
+        second_poll = await run_once(redis_client)
+    finally:
+        clock_module.utcnow = original_utcnow
+    assert second_poll >= 1, "the lease-expired row must be picked up again by the next poll"
+    assert call_count["n"] == 2, "process_payment_failure must have been called again on reclaim"
+
+    async with engine.begin() as conn:
+        final_row = (
+            (
+                await conn.execute(
+                    text("SELECT status FROM scheduled_reevaluations WHERE reevaluation_id = :rid"),
+                    {"rid": reevaluation_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        diagnoses_after = (
+            await conn.execute(
+                text("SELECT count(*) FROM diagnoses WHERE payment_id = :pid"), {"pid": payment_id}
+            )
+        ).scalar_one()
+    await engine.dispose()
+
+    assert final_row["status"] == "COMPLETED", (
+        f"a successfully reprocessed reclaim must reach the terminal COMPLETED status, "
+        f"got {final_row['status']!r} -- no orphan should survive"
+    )
+    assert diagnoses_after > diagnoses_before, "the reclaimed reprocessing must have genuinely re-run"
+
+
+@pytest.mark.asyncio
+async def test_reclaimed_reevaluation_when_mission_already_advanced_is_cancelled_not_reprocessed(
+    migrated_db, redis_client, monkeypatch
+):
+    """
+    The safety-critical negative case: the original claimant crashed AFTER
+    the mission was already durably advanced past OBSERVING_OUTCOME by some
+    other path (simulated directly here; in reality e.g. a webhook's
+    reconcile_pending_recovery already resolved it). A naive "just flip
+    FIRED back to PENDING and redo it" fix would reprocess this row anyway,
+    attempting an OBSERVING_OUTCOME -> INVESTIGATING transition against a
+    mission that has already left that state -- a duplicate mission event
+    at best, a corrupted state machine at worst. The real fix must detect
+    this and cancel instead. Proves: "no duplicate execution after reclaim"
+    and "no duplicate mission events after reclaim" -- process_payment_failure
+    is never called a second time at all.
+    """
+    import workers.retry_scheduler as retry_scheduler_module
+    from services.recovery_engine.mission import transition_mission_async
+    from services.recovery_engine.scheduling import REEVALUATION_LEASE_SECONDS
+    from workers.retry_scheduler import run_once
+
+    payment_id, _ = await _seed_high_anomaly_retry_later_fixture(migrated_db)
+    result = await decide_and_persist(payment_id, redis_client=redis_client)
+    assert result["chosen_action"] == "RETRY_LATER"
+    reevaluation_id = result["scheduled_reevaluation_id"]
+    mission_id = await _create_mission_in_observing_outcome_and_link(
+        migrated_db, payment_id=payment_id, reevaluation_id=reevaluation_id
+    )
+
+    # migrated_db is session-scoped -- see the sibling test's identical note.
+    real_process_payment_failure = retry_scheduler_module.process_payment_failure
+    call_count = {"n": 0}
+
+    async def _always_crash(pid, *args, **kwargs):
+        if pid != payment_id:
+            return await real_process_payment_failure(pid, *args, **kwargs)
+        call_count["n"] += 1
+        raise RuntimeError("simulated crash mid-reevaluation, after the claim already committed")
+
+    monkeypatch.setattr(retry_scheduler_module, "process_payment_failure", _always_crash)
+
+    original_utcnow = clock_module.utcnow
+    due_time = datetime.now(UTC) + timedelta(hours=1)
+    clock_module.utcnow = lambda: due_time
+    try:
+        await run_once(redis_client)
+    finally:
+        clock_module.utcnow = original_utcnow
+    assert call_count["n"] == 1
+
+    # Simulate "some other path already resolved this mission" while the
+    # claim was outstanding -- directly advance it past OBSERVING_OUTCOME.
+    from recoveryos.database import get_app_session_factory
+
+    async with get_app_session_factory()() as session:
+        await transition_mission_async(
+            session,
+            mission_id=mission_id,
+            to_state="TERMINATED",
+            event_type="MISSION_TERMINATED",
+            actor="test",
+            payload={"reason": "simulated independent resolution while the claim was outstanding"},
+            now=datetime.now(UTC),
+        )
+    events_before_reclaim = await _mission_event_count(migrated_db, mission_id)
+
+    reclaim_time = due_time + timedelta(seconds=REEVALUATION_LEASE_SECONDS + 5)
+    clock_module.utcnow = lambda: reclaim_time
+    try:
+        second_poll = await run_once(redis_client)
+    finally:
+        clock_module.utcnow = original_utcnow
+    assert second_poll >= 1, "the lease-expired row must still be picked up (claim succeeds either way)"
+
+    assert call_count["n"] == 1, (
+        "process_payment_failure must NOT be called again -- the mission already moved on, "
+        "reprocessing would risk a duplicate/invalid mission event"
+    )
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.connect() as conn:
+        final_row = (
+            (
+                await conn.execute(
+                    text("SELECT status FROM scheduled_reevaluations WHERE reevaluation_id = :rid"),
+                    {"rid": reevaluation_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    await engine.dispose()
+    assert final_row["status"] == "CANCELLED", (
+        f"a reclaim whose mission already moved on must be marked CANCELLED, not reprocessed "
+        f"or left orphaned, got {final_row['status']!r}"
+    )
+
+    events_after_reclaim = await _mission_event_count(migrated_db, mission_id)
+    assert events_after_reclaim == events_before_reclaim, (
+        "no new mission_events row may be written by a cancelled (not reprocessed) reclaim"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mission_reaches_terminal_state_despite_a_crash_during_replan(
+    migrated_db, redis_client, monkeypatch
+):
+    """
+    End-to-end: "no orphaned mission" and "active mission survives worker/
+    service restart," traced through to an actual terminal state, not just
+    the reevaluation row's own status. A mission stuck in OBSERVING_OUTCOME
+    forever (the pre-fix behavior, since its only path forward was the
+    now-permanently-orphaned reevaluation) would never reach RECOVERED/
+    ESCALATED/TERMINATED. With the lease fix, the crashed round is reclaimed
+    and reprocessed, and the mission keeps making progress.
+    """
+    import workers.retry_scheduler as retry_scheduler_module
+    from services.recovery_engine.scheduling import REEVALUATION_LEASE_SECONDS
+    from workers.retry_scheduler import run_once
+
+    payment_id, _ = await _seed_high_anomaly_retry_later_fixture(migrated_db)
+    result = await decide_and_persist(payment_id, redis_client=redis_client)
+    assert result["chosen_action"] == "RETRY_LATER"
+    reevaluation_id = result["scheduled_reevaluation_id"]
+    mission_id = await _create_mission_in_observing_outcome_and_link(
+        migrated_db, payment_id=payment_id, reevaluation_id=reevaluation_id
+    )
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.connect() as conn:
+        before = (
+            await conn.execute(
+                text(
+                    "SELECT state, current_round FROM recovery_missions WHERE mission_id = :mid"
+                ),
+                {"mid": mission_id},
+            )
+        ).first()
+    assert before[0] == "OBSERVING_OUTCOME"
+    round_before = before[1]
+
+    # migrated_db is session-scoped -- see the sibling tests' identical note.
+    real_process_payment_failure = retry_scheduler_module.process_payment_failure
+    call_count = {"n": 0}
+
+    async def _crash_once_then_succeed(pid, *args, **kwargs):
+        if pid != payment_id:
+            return await real_process_payment_failure(pid, *args, **kwargs)
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("simulated crash mid-reevaluation")
+        return await real_process_payment_failure(pid, *args, **kwargs)
+
+    monkeypatch.setattr(retry_scheduler_module, "process_payment_failure", _crash_once_then_succeed)
+
+    original_utcnow = clock_module.utcnow
+    due_time = datetime.now(UTC) + timedelta(hours=1)
+    clock_module.utcnow = lambda: due_time
+    try:
+        await run_once(redis_client)  # crashes once, row stays FIRED with a lease
+        reclaim_time = due_time + timedelta(seconds=REEVALUATION_LEASE_SECONDS + 5)
+        clock_module.utcnow = lambda: reclaim_time
+        await run_once(redis_client)  # reclaims and successfully reprocesses
+    finally:
+        clock_module.utcnow = original_utcnow
+
+    async with engine.connect() as conn:
+        after = (
+            await conn.execute(
+                text(
+                    "SELECT state, ended_at, current_round FROM recovery_missions WHERE mission_id = :mid"
+                ),
+                {"mid": mission_id},
+            )
+        ).first()
+        reevaluation_rows_after = (
+            await conn.execute(
+                text("SELECT count(*) FROM scheduled_reevaluations WHERE mission_id = :mid"),
+                {"mid": mission_id},
+            )
+        ).scalar_one()
+    await engine.dispose()
+
+    assert call_count["n"] == 2, "expected exactly one crash then one successful reprocess"
+    # The mission must have made REAL progress -- either it left
+    # OBSERVING_OUTCOME entirely (recovered/escalated/terminated), or it
+    # legitimately cycled back through a NEW round (current_round
+    # incremented, a second scheduled_reevaluations row now exists) -- both
+    # are genuine forward motion, as opposed to the pre-fix behavior where
+    # the mission would stay on the SAME round forever because its only
+    # path forward (the original reevaluation) was permanently orphaned.
+    made_real_progress = (
+        after[0] != "OBSERVING_OUTCOME"
+        or after[1] is not None
+        or after[2] > round_before
+        or reevaluation_rows_after > 1
+    )
+    assert made_real_progress, (
+        f"the mission must have genuinely moved (re-investigated at minimum) after the crashed "
+        f"round was reclaimed and reprocessed -- it must never be stuck on the SAME round "
+        f"forever, got state={after[0]!r} current_round={after[2]!r} (was {round_before!r}) "
+        f"reevaluation_rows_for_this_mission={reevaluation_rows_after}"
+    )

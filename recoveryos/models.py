@@ -770,7 +770,7 @@ class ScheduledReevaluation(Base):
             "payment_id", "source_event_id", name="uq_scheduled_reevaluations_payment_event"
         ),
         CheckConstraint(
-            "status IN ('PENDING', 'FIRED', 'CANCELLED')",
+            "status IN ('PENDING', 'FIRED', 'CANCELLED', 'COMPLETED')",
             name="ck_scheduled_reevaluations_status",
         ),
     )
@@ -791,6 +791,14 @@ class ScheduledReevaluation(Base):
     scheduled_for: Mapped[datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="PENDING")
     claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    # Migration 0025 -- adversarial sweep finding #50: a claimed (FIRED) row
+    # with no completion path was a permanent orphan on any crash between
+    # claim and completion. Set to claimed_at + REEVALUATION_LEASE_SECONDS
+    # (services/recovery_engine/scheduling.py) at claim time; a FIRED row
+    # whose lease has expired is reclaimable exactly like a fresh PENDING
+    # row. NULL for every pre-migration row and for COMPLETED/CANCELLED
+    # rows -- never a match for "expired" comparisons.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     fired_source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     # Phase 12/13 -- which mission this re-evaluation belongs to, so
     # workers/retry_scheduler.py can REUSE (not recreate) that mission on
