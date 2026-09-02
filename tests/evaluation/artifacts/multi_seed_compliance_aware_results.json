@@ -1,0 +1,508 @@
+[
+  {
+    "seed": 1,
+    "sim_start_time": "2026-09-02T09:10:38.898239+00:00",
+    "campaign_wall_clock_start_utc": 1788343838.898239,
+    "campaign_wall_clock_end_utc": 1788344495.6836042,
+    "failed_payments": 985,
+    "recoveryos": {
+      "recovered_count": 435,
+      "recovered_revenue_paise": 120180159,
+      "actual_attempts_by_attempt_number": {
+        "1": 772,
+        "2": 449
+      },
+      "recoveries_total": 1221,
+      "recoveries_distinct_attempts": 1221,
+      "recoveries_duplicate_attempts": 0,
+      "total_policy_decision_rounds": 1434,
+      "unique_intervened_payments": 772,
+      "unique_intervention_rate": 0.783756345177665,
+      "round_1_decision_distribution": {
+        "ALLOW": 772,
+        "BLOCK": 213
+      },
+      "round_2plus_decision_distribution": {
+        "ALLOW": 449
+      }
+    },
+    "single_attempt_baseline": {
+      "recovered_count": 400,
+      "recovered_revenue_paise": 99051294
+    },
+    "compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "recovered_count": 526,
+      "recovered_revenue_paise": 140715997,
+      "attempts_used": 1094,
+      "note": "Retained as a methodology diagnostic. NOT the primary product-performance comparator."
+    },
+    "compliance_aware_fair_baseline": {
+      "recovered_count": 413,
+      "recovered_revenue_paise": 114383402,
+      "attempts_used": 867,
+      "not_attempted_count": 238,
+      "blocked_attempts_by_rule": {
+        "AmountLimitRule": 1,
+        "AutopayExecutionWindowRule": 125,
+        "OptOutRule": 35
+      }
+    },
+    "incremental_recoveryos_vs_single_attempt_paise": 21128865,
+    "incremental_recoveryos_vs_compliance_blind_fair_paise_DIAGNOSTIC_ONLY": -20535838,
+    "incremental_recoveryos_vs_compliance_aware_fair_paise": 5796757,
+    "payment_level_comparison_vs_compliance_aware_baseline": {
+      "both_recovered": 413,
+      "recoveryos_only": 22,
+      "baseline_only": 0,
+      "both_missed": 550,
+      "is_strict_superset": true
+    },
+    "payment_level_confusion_vs_compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "baseline_missed_recoveryos_missed": 437,
+      "baseline_missed_recoveryos_recovered": 22,
+      "baseline_recovered_recoveryos_missed": 113,
+      "baseline_recovered_recoveryos_recovered": 413
+    },
+    "safety_integrity": {
+      "unsafe_ai_deltas": 0,
+      "ledger_total": 985,
+      "ledger_distinct_payments": 985,
+      "ledger_duplicate_payments": 0,
+      "recoveries_duplicate_attempts": 0,
+      "expiry_pathology_count": 0,
+      "scheduled_reevaluations_count": 449,
+      "actual_second_plus_attempts": 449,
+      "compliance_block_cause_decomposition_recoveryos": {
+        "OptOutRule": 50,
+        "AutopayExecutionWindowRule": 161,
+        "AmountLimitRule": 2
+      },
+      "compliance_block_cause_decomposition_baseline": {
+        "AmountLimitRule": 1,
+        "AutopayExecutionWindowRule": 125,
+        "OptOutRule": 35
+      },
+      "baseline_did_not_touch_decision_tables": true,
+      "policy_decisions_before_baseline_compute": 1434,
+      "policy_decisions_after_baseline_compute": 1434,
+      "candidate_actions_before_baseline_compute": 8604,
+      "candidate_actions_after_baseline_compute": 8604,
+      "diagnoses_before_baseline_compute": 1434,
+      "diagnoses_after_baseline_compute": 1434
+    },
+    "wall_clock_honesty": {
+      "round2plus_decision_count": 449,
+      "round2plus_real_utc_first": "2026-09-02T10:12:19.745122+00:00",
+      "round2plus_real_utc_last": "2026-09-02T10:20:56.316771+00:00",
+      "round2plus_real_span_seconds": 516.571649,
+      "round2plus_ist_hour_histogram": {
+        "15": 449
+      }
+    }
+  },
+  {
+    "seed": 2,
+    "sim_start_time": "2026-09-02T09:10:38.898239+00:00",
+    "campaign_wall_clock_start_utc": 1788344495.6851132,
+    "campaign_wall_clock_end_utc": 1788345139.4383576,
+    "failed_payments": 1013,
+    "recoveryos": {
+      "recovered_count": 458,
+      "recovered_revenue_paise": 118836383,
+      "actual_attempts_by_attempt_number": {
+        "1": 815,
+        "2": 468
+      },
+      "recoveries_total": 1283,
+      "recoveries_distinct_attempts": 1283,
+      "recoveries_duplicate_attempts": 0,
+      "total_policy_decision_rounds": 1481,
+      "unique_intervened_payments": 815,
+      "unique_intervention_rate": 0.8045409674234946,
+      "round_1_decision_distribution": {
+        "ALLOW": 815,
+        "BLOCK": 197,
+        "ESCALATE": 1
+      },
+      "round_2plus_decision_distribution": {
+        "ALLOW": 468
+      }
+    },
+    "single_attempt_baseline": {
+      "recovered_count": 399,
+      "recovered_revenue_paise": 105195131
+    },
+    "compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "recovered_count": 526,
+      "recovered_revenue_paise": 130854098,
+      "attempts_used": 1105,
+      "note": "Retained as a methodology diagnostic. NOT the primary product-performance comparator."
+    },
+    "compliance_aware_fair_baseline": {
+      "recovered_count": 423,
+      "recovered_revenue_paise": 110378201,
+      "attempts_used": 872,
+      "not_attempted_count": 261,
+      "blocked_attempts_by_rule": {
+        "AutopayExecutionWindowRule": 120,
+        "EMandateRetryComplianceRule": 1,
+        "OptOutRule": 31
+      }
+    },
+    "incremental_recoveryos_vs_single_attempt_paise": 13641252,
+    "incremental_recoveryos_vs_compliance_blind_fair_paise_DIAGNOSTIC_ONLY": -12017715,
+    "incremental_recoveryos_vs_compliance_aware_fair_paise": 8458182,
+    "payment_level_comparison_vs_compliance_aware_baseline": {
+      "both_recovered": 423,
+      "recoveryos_only": 35,
+      "baseline_only": 0,
+      "both_missed": 555,
+      "is_strict_superset": true
+    },
+    "payment_level_confusion_vs_compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "baseline_missed_recoveryos_missed": 452,
+      "baseline_recovered_recoveryos_recovered": 423,
+      "baseline_missed_recoveryos_recovered": 35,
+      "baseline_recovered_recoveryos_missed": 103
+    },
+    "safety_integrity": {
+      "unsafe_ai_deltas": 0,
+      "ledger_total": 1013,
+      "ledger_distinct_payments": 1013,
+      "ledger_duplicate_payments": 0,
+      "recoveries_duplicate_attempts": 0,
+      "expiry_pathology_count": 0,
+      "scheduled_reevaluations_count": 468,
+      "actual_second_plus_attempts": 468,
+      "compliance_block_cause_decomposition_recoveryos": {
+        "OptOutRule": 39,
+        "AutopayExecutionWindowRule": 158
+      },
+      "compliance_block_cause_decomposition_baseline": {
+        "AutopayExecutionWindowRule": 120,
+        "EMandateRetryComplianceRule": 1,
+        "OptOutRule": 31
+      },
+      "baseline_did_not_touch_decision_tables": true,
+      "policy_decisions_before_baseline_compute": 1481,
+      "policy_decisions_after_baseline_compute": 1481,
+      "candidate_actions_before_baseline_compute": 8886,
+      "candidate_actions_after_baseline_compute": 8886,
+      "diagnoses_before_baseline_compute": 1481,
+      "diagnoses_after_baseline_compute": 1481
+    },
+    "wall_clock_honesty": {
+      "round2plus_decision_count": 468,
+      "round2plus_real_utc_first": "2026-09-02T10:22:58.465445+00:00",
+      "round2plus_real_utc_last": "2026-09-02T10:31:39.579685+00:00",
+      "round2plus_real_span_seconds": 521.11424,
+      "round2plus_ist_hour_histogram": {
+        "15": 368,
+        "16": 100
+      }
+    }
+  },
+  {
+    "seed": 3,
+    "sim_start_time": "2026-09-02T09:10:38.898239+00:00",
+    "campaign_wall_clock_start_utc": 1788345139.4393644,
+    "campaign_wall_clock_end_utc": 1788345751.557194,
+    "failed_payments": 961,
+    "recoveryos": {
+      "recovered_count": 443,
+      "recovered_revenue_paise": 104578628,
+      "actual_attempts_by_attempt_number": {
+        "1": 768,
+        "2": 440
+      },
+      "recoveries_total": 1208,
+      "recoveries_distinct_attempts": 1208,
+      "recoveries_duplicate_attempts": 0,
+      "total_policy_decision_rounds": 1401,
+      "unique_intervened_payments": 768,
+      "unique_intervention_rate": 0.7991675338189386,
+      "round_1_decision_distribution": {
+        "ALLOW": 768,
+        "BLOCK": 193
+      },
+      "round_2plus_decision_distribution": {
+        "ALLOW": 440
+      }
+    },
+    "single_attempt_baseline": {
+      "recovered_count": 393,
+      "recovered_revenue_paise": 87159303
+    },
+    "compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "recovered_count": 514,
+      "recovered_revenue_paise": 120410873,
+      "attempts_used": 1093,
+      "note": "Retained as a methodology diagnostic. NOT the primary product-performance comparator."
+    },
+    "compliance_aware_fair_baseline": {
+      "recovered_count": 400,
+      "recovered_revenue_paise": 95548984,
+      "attempts_used": 872,
+      "not_attempted_count": 218,
+      "blocked_attempts_by_rule": {
+        "AmountLimitRule": 2,
+        "AutopayExecutionWindowRule": 124,
+        "OptOutRule": 29
+      }
+    },
+    "incremental_recoveryos_vs_single_attempt_paise": 17419325,
+    "incremental_recoveryos_vs_compliance_blind_fair_paise_DIAGNOSTIC_ONLY": -15832245,
+    "incremental_recoveryos_vs_compliance_aware_fair_paise": 9029644,
+    "payment_level_comparison_vs_compliance_aware_baseline": {
+      "both_recovered": 400,
+      "recoveryos_only": 43,
+      "baseline_only": 0,
+      "both_missed": 518,
+      "is_strict_superset": true
+    },
+    "payment_level_confusion_vs_compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "baseline_missed_recoveryos_missed": 404,
+      "baseline_missed_recoveryos_recovered": 43,
+      "baseline_recovered_recoveryos_missed": 114,
+      "baseline_recovered_recoveryos_recovered": 400
+    },
+    "safety_integrity": {
+      "unsafe_ai_deltas": 0,
+      "ledger_total": 961,
+      "ledger_distinct_payments": 961,
+      "ledger_duplicate_payments": 0,
+      "recoveries_duplicate_attempts": 0,
+      "expiry_pathology_count": 0,
+      "scheduled_reevaluations_count": 440,
+      "actual_second_plus_attempts": 440,
+      "compliance_block_cause_decomposition_recoveryos": {
+        "AmountLimitRule": 2,
+        "OptOutRule": 38,
+        "AutopayExecutionWindowRule": 153
+      },
+      "compliance_block_cause_decomposition_baseline": {
+        "AmountLimitRule": 2,
+        "AutopayExecutionWindowRule": 124,
+        "OptOutRule": 29
+      },
+      "baseline_did_not_touch_decision_tables": true,
+      "policy_decisions_before_baseline_compute": 1401,
+      "policy_decisions_after_baseline_compute": 1401,
+      "candidate_actions_before_baseline_compute": 8406,
+      "candidate_actions_after_baseline_compute": 8406,
+      "diagnoses_before_baseline_compute": 1401,
+      "diagnoses_after_baseline_compute": 1401
+    },
+    "wall_clock_honesty": {
+      "round2plus_decision_count": 440,
+      "round2plus_real_utc_first": "2026-09-02T10:33:57.503096+00:00",
+      "round2plus_real_utc_last": "2026-09-02T10:41:58.311230+00:00",
+      "round2plus_real_span_seconds": 480.808134,
+      "round2plus_ist_hour_histogram": {
+        "16": 440
+      }
+    }
+  },
+  {
+    "seed": 4,
+    "sim_start_time": "2026-09-02T09:10:38.898239+00:00",
+    "campaign_wall_clock_start_utc": 1788345751.5600722,
+    "campaign_wall_clock_end_utc": 1788346394.7157028,
+    "failed_payments": 999,
+    "recoveryos": {
+      "recovered_count": 455,
+      "recovered_revenue_paise": 109078913,
+      "actual_attempts_by_attempt_number": {
+        "1": 797,
+        "2": 457
+      },
+      "recoveries_total": 1254,
+      "recoveries_distinct_attempts": 1254,
+      "recoveries_duplicate_attempts": 0,
+      "total_policy_decision_rounds": 1456,
+      "unique_intervened_payments": 797,
+      "unique_intervention_rate": 0.7977977977977978,
+      "round_1_decision_distribution": {
+        "ALLOW": 797,
+        "BLOCK": 201,
+        "ESCALATE": 1
+      },
+      "round_2plus_decision_distribution": {
+        "ALLOW": 457
+      }
+    },
+    "single_attempt_baseline": {
+      "recovered_count": 410,
+      "recovered_revenue_paise": 93229576
+    },
+    "compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "recovered_count": 525,
+      "recovered_revenue_paise": 120562164,
+      "attempts_used": 1108,
+      "note": "Retained as a methodology diagnostic. NOT the primary product-performance comparator."
+    },
+    "compliance_aware_fair_baseline": {
+      "recovered_count": 416,
+      "recovered_revenue_paise": 101155244,
+      "attempts_used": 895,
+      "not_attempted_count": 240,
+      "blocked_attempts_by_rule": {
+        "AutopayExecutionWindowRule": 126,
+        "OptOutRule": 24
+      }
+    },
+    "incremental_recoveryos_vs_single_attempt_paise": 15849337,
+    "incremental_recoveryos_vs_compliance_blind_fair_paise_DIAGNOSTIC_ONLY": -11483251,
+    "incremental_recoveryos_vs_compliance_aware_fair_paise": 7923669,
+    "payment_level_comparison_vs_compliance_aware_baseline": {
+      "both_recovered": 416,
+      "recoveryos_only": 39,
+      "baseline_only": 0,
+      "both_missed": 544,
+      "is_strict_superset": true
+    },
+    "payment_level_confusion_vs_compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "baseline_recovered_recoveryos_recovered": 416,
+      "baseline_missed_recoveryos_missed": 435,
+      "baseline_recovered_recoveryos_missed": 109,
+      "baseline_missed_recoveryos_recovered": 39
+    },
+    "safety_integrity": {
+      "unsafe_ai_deltas": 0,
+      "ledger_total": 999,
+      "ledger_distinct_payments": 999,
+      "ledger_duplicate_payments": 0,
+      "recoveries_duplicate_attempts": 0,
+      "expiry_pathology_count": 0,
+      "scheduled_reevaluations_count": 457,
+      "actual_second_plus_attempts": 457,
+      "compliance_block_cause_decomposition_recoveryos": {
+        "OptOutRule": 31,
+        "AutopayExecutionWindowRule": 169,
+        "AmountLimitRule": 1
+      },
+      "compliance_block_cause_decomposition_baseline": {
+        "AutopayExecutionWindowRule": 126,
+        "OptOutRule": 24
+      },
+      "baseline_did_not_touch_decision_tables": true,
+      "policy_decisions_before_baseline_compute": 1456,
+      "policy_decisions_after_baseline_compute": 1456,
+      "candidate_actions_before_baseline_compute": 8736,
+      "candidate_actions_after_baseline_compute": 8736,
+      "diagnoses_before_baseline_compute": 1456,
+      "diagnoses_after_baseline_compute": 1456
+    },
+    "wall_clock_honesty": {
+      "round2plus_decision_count": 457,
+      "round2plus_real_utc_first": "2026-09-02T10:43:47.241791+00:00",
+      "round2plus_real_utc_last": "2026-09-02T10:52:34.240227+00:00",
+      "round2plus_real_span_seconds": 526.998436,
+      "round2plus_ist_hour_histogram": {
+        "16": 457
+      }
+    }
+  },
+  {
+    "seed": 5,
+    "sim_start_time": "2026-09-02T09:10:38.898239+00:00",
+    "campaign_wall_clock_start_utc": 1788346394.7157028,
+    "campaign_wall_clock_end_utc": 1788347084.3787513,
+    "failed_payments": 977,
+    "recoveryos": {
+      "recovered_count": 462,
+      "recovered_revenue_paise": 114057358,
+      "actual_attempts_by_attempt_number": {
+        "1": 784,
+        "2": 447
+      },
+      "recoveries_total": 1231,
+      "recoveries_distinct_attempts": 1231,
+      "recoveries_duplicate_attempts": 0,
+      "total_policy_decision_rounds": 1424,
+      "unique_intervened_payments": 784,
+      "unique_intervention_rate": 0.8024564994882293,
+      "round_1_decision_distribution": {
+        "ALLOW": 784,
+        "BLOCK": 192,
+        "ESCALATE": 1
+      },
+      "round_2plus_decision_distribution": {
+        "ALLOW": 447
+      }
+    },
+    "single_attempt_baseline": {
+      "recovered_count": 387,
+      "recovered_revenue_paise": 91628693
+    },
+    "compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "recovered_count": 527,
+      "recovered_revenue_paise": 125282783,
+      "attempts_used": 1147,
+      "note": "Retained as a methodology diagnostic. NOT the primary product-performance comparator."
+    },
+    "compliance_aware_fair_baseline": {
+      "recovered_count": 427,
+      "recovered_revenue_paise": 108674718,
+      "attempts_used": 931,
+      "not_attempted_count": 210,
+      "blocked_attempts_by_rule": {
+        "AutopayExecutionWindowRule": 122,
+        "EMandateRetryComplianceRule": 1,
+        "OptOutRule": 22
+      }
+    },
+    "incremental_recoveryos_vs_single_attempt_paise": 22428665,
+    "incremental_recoveryos_vs_compliance_blind_fair_paise_DIAGNOSTIC_ONLY": -11225425,
+    "incremental_recoveryos_vs_compliance_aware_fair_paise": 5382640,
+    "payment_level_comparison_vs_compliance_aware_baseline": {
+      "both_recovered": 427,
+      "recoveryos_only": 35,
+      "baseline_only": 0,
+      "both_missed": 515,
+      "is_strict_superset": true
+    },
+    "payment_level_confusion_vs_compliance_blind_fair_baseline_DIAGNOSTIC_ONLY": {
+      "baseline_missed_recoveryos_missed": 415,
+      "baseline_missed_recoveryos_recovered": 35,
+      "baseline_recovered_recoveryos_missed": 100,
+      "baseline_recovered_recoveryos_recovered": 427
+    },
+    "safety_integrity": {
+      "unsafe_ai_deltas": 0,
+      "ledger_total": 977,
+      "ledger_distinct_payments": 977,
+      "ledger_duplicate_payments": 0,
+      "recoveries_duplicate_attempts": 0,
+      "expiry_pathology_count": 0,
+      "scheduled_reevaluations_count": 447,
+      "actual_second_plus_attempts": 447,
+      "compliance_block_cause_decomposition_recoveryos": {
+        "OptOutRule": 31,
+        "AutopayExecutionWindowRule": 160,
+        "AmountLimitRule": 1
+      },
+      "compliance_block_cause_decomposition_baseline": {
+        "AutopayExecutionWindowRule": 122,
+        "EMandateRetryComplianceRule": 1,
+        "OptOutRule": 22
+      },
+      "baseline_did_not_touch_decision_tables": true,
+      "policy_decisions_before_baseline_compute": 1424,
+      "policy_decisions_after_baseline_compute": 1424,
+      "candidate_actions_before_baseline_compute": 8544,
+      "candidate_actions_after_baseline_compute": 8544,
+      "diagnoses_before_baseline_compute": 1424,
+      "diagnoses_after_baseline_compute": 1424
+    },
+    "wall_clock_honesty": {
+      "round2plus_decision_count": 447,
+      "round2plus_real_utc_first": "2026-09-02T10:55:45.883266+00:00",
+      "round2plus_real_utc_last": "2026-09-02T11:04:16.805284+00:00",
+      "round2plus_real_span_seconds": 510.922018,
+      "round2plus_ist_hour_histogram": {
+        "16": 447
+      }
+    }
+  }
+]

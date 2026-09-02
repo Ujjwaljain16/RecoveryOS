@@ -1,0 +1,44 @@
+{
+  "seed": 42,
+  "sim_start_time": "2026-09-02T08:54:41.829930+00:00",
+  "failed_payments": 950,
+  "recoveryos": {
+    "recovered_count": 434,
+    "recovered_revenue_paise": 114425694
+  },
+  "single_attempt_baseline": {
+    "recovered_count": 377,
+    "recovered_revenue_paise": 98643467
+  },
+  "compliance_blind_fair_baseline": {
+    "recovered_count": 510,
+    "recovered_revenue_paise": 131805331,
+    "total_attempts_used": 1083
+  },
+  "compliance_aware_fair_baseline": {
+    "recovered_count": 401,
+    "recovered_revenue_paise": 107662695,
+    "total_attempts_used": 845,
+    "blocked_attempts_by_rule": {
+      "AutopayExecutionWindowRule": 125,
+      "EMandateRetryComplianceRule": 1,
+      "OptOutRule": 31
+    },
+    "not_attempted_count": 220
+  },
+  "incremental_recoveryos_vs_single_attempt_paise": 15782227,
+  "incremental_recoveryos_vs_compliance_blind_fair_paise": -17379637,
+  "incremental_recoveryos_vs_compliance_aware_fair_paise": 6762999,
+  "payment_level_confusion_vs_compliance_blind_fair_baseline": {
+    "baseline_missed_recoveryos_missed": 407,
+    "baseline_missed_recoveryos_recovered": 33,
+    "baseline_recovered_recoveryos_missed": 109,
+    "baseline_recovered_recoveryos_recovered": 401
+  },
+  "payment_level_confusion_vs_compliance_aware_fair_baseline": {
+    "baseline_missed_recoveryos_missed": 516,
+    "baseline_missed_recoveryos_recovered": 33,
+    "baseline_recovered_recoveryos_recovered": 401
+  },
+  "wall_clock_seconds": 657.8909704685211
+}

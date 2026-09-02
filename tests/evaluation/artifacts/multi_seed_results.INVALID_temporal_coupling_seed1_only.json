@@ -1,0 +1,23 @@
+[
+  {
+    "seed": 1,
+    "model": "logistic_regression (model_lr.pkl, gaps.md SC.2 -- LR beat LightGBM on clean temporal holdout)",
+    "sim_start_time": "2026-09-02T03:59:04.817950+00:00",
+    "failed_payments": 985,
+    "recoveryos_total_paise": 53086458,
+    "baseline_total_paise": 99051294,
+    "incremental_recovery_paise": -45964836,
+    "revenue_at_risk_paise": 253932619,
+    "recovery_rate": 0.150253807106599,
+    "revenue_recovery_rate": 0.20905726176123912,
+    "intervention_rate": 0.37766497461928933,
+    "unnecessary_intervention_rate": 0.9731182795698925,
+    "policy_blocks": 613,
+    "policy_escalates": 0,
+    "root_cause_accuracy_raw": 0.23045685279187816,
+    "root_cause_accuracy_committed_only": 0.8764478764478765,
+    "abstention_rate": 0.7370558375634517,
+    "wall_clock_seconds_full_run": 607.1671397686005,
+    "avg_throughput_latency_ms_per_payment": 616.4133398665994
+  }
+]
