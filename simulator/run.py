@@ -45,6 +45,7 @@ from simulator.payments.generator import GeneratedBatchResult, PaymentGenerator
 from simulator.episodes.generator import EpisodeGenerator
 from simulator.episodes.models import EpisodeBatchResult
 from simulator.dataset.builder import DatasetBuilder
+from services.customer_engine.opt_out import apply_customer_opt_out
 from pathlib import Path
 
 GENERATOR_VERSION = "simulator-v2.0"
@@ -154,19 +155,29 @@ def save_to_database(
         session.flush()
 
         # 2. Upsert Customers
+        # opted_out_at is applied via apply_customer_opt_out (gaps.md
+        # sec:A.1), the SAME function POST /v1/customers/{id}/opt-out uses --
+        # not set directly on the constructor -- so the synthetic dataset's
+        # opt-outs go through identical logic (idempotency check, audit_log
+        # row) to a real customer's, not a DB-write shortcut. The RNG-drawn
+        # WHETHER/WHEN a customer opts out still comes entirely from
+        # CustomerGenerator (c.opted_out_at) -- passing it through as `now`
+        # keeps this deterministic and byte-identical to before, run-for-run.
         for c in customers:
             existing = session.get(Customer, c.customer_id)
             if not existing:
-                session.add(
-                    Customer(
-                        customer_id=c.customer_id,
-                        merchant_id=c.merchant_id,
-                        is_returning=c.is_returning,
-                        lifetime_value_paise=c.lifetime_value_paise,
-                        opted_out_at=c.opted_out_at,
-                        created_at=c.created_at,
-                    )
+                customer_row = Customer(
+                    customer_id=c.customer_id,
+                    merchant_id=c.merchant_id,
+                    is_returning=c.is_returning,
+                    lifetime_value_paise=c.lifetime_value_paise,
+                    created_at=c.created_at,
                 )
+                session.add(customer_row)
+                if c.opted_out_at is not None:
+                    audit_row = apply_customer_opt_out(customer_row, now=c.opted_out_at)
+                    if audit_row is not None:
+                        session.add(audit_row)
         session.flush()
 
         # 3. Create Simulation Manifest

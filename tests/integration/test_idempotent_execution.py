@@ -334,3 +334,116 @@ def test_exception_path_still_clears_failed_transaction_before_unlock(scratch_ta
         "that the exception-path rollback should have cleared"
     )
     engine.dispose()
+
+
+# ─── gaps.md §B.2's own named backstop test ─────────────────────────────────
+#
+# The advisory lock is the primary idempotency mechanism (proved above), but
+# gaps.md §B.2 explicitly calls for a SECOND, independent proof: even if the
+# lock logic itself has a bug and two callers both reach the INSERT, the real
+# recoveries.idempotency_key UNIQUE constraint (migrations/0001) must reject
+# the second one outright. test_schema_and_roles.py's own
+# test_recoveries_idempotency_key_is_unique only confirms the constraint
+# EXISTS (an information_schema lookup) -- it never actually attempts a
+# duplicate INSERT, so it can't prove the constraint does what it's for. This
+# is the test gaps.md named and neither of those covers: a real duplicate
+# INSERT, lock deliberately bypassed, asserted to raise IntegrityError.
+
+
+def test_db_unique_constraint_backstop_rejects_duplicate_insert_even_if_lock_logic_is_bypassed(
+    db_url_sync: str,
+):
+    from sqlalchemy.exc import IntegrityError
+
+    engine = create_engine(db_url_sync, pool_pre_ping=True)
+    merchant_id = str(uuid.uuid4())
+    customer_id = str(uuid.uuid4())
+    payment_id = str(uuid.uuid4())
+    policy_config_id = str(uuid.uuid4())
+    candidate_id = str(uuid.uuid4())
+    decision_id = str(uuid.uuid4())
+    idempotency_key = f"recovery:{payment_id}:RETRY_NOW:1"
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO merchants (merchant_id, name) VALUES (:mid, :name)"),
+            {"mid": merchant_id, "name": f"test-merchant-{merchant_id[:8]}"},
+        )
+        conn.execute(
+            text("INSERT INTO customers (customer_id, merchant_id) VALUES (:cid, :mid)"),
+            {"cid": customer_id, "mid": merchant_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO payments (payment_id, merchant_id, customer_id, amount_paise, "
+                "method, bank, status, failure_code, is_synthetic, created_at, failed_at) "
+                "VALUES (:pid, :mid, :cid, 100000, 'upi', 'HDFC', 'failed', 'TIMEOUT', true, now(), now())"
+            ),
+            {"pid": payment_id, "mid": merchant_id, "cid": customer_id},
+        )
+        conn.execute(
+            text("INSERT INTO policy_configs (policy_config_id) VALUES (:pcid)"),
+            {"pcid": policy_config_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO candidate_actions (candidate_id, payment_id, action_type, "
+                "recovery_prob_bps, expected_value_paise, cost_paise, friction_penalty_paise, "
+                "risk_penalty_paise, model_version, created_at) "
+                "VALUES (:cid, :pid, 'RETRY_NOW', 8000, 80000, 0, 0, 0, 'test-v1', now())"
+            ),
+            {"cid": candidate_id, "pid": payment_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO policy_decisions (decision_id, payment_id, candidate_id, "
+                "policy_config_id, verdict, rule_trace, created_at) "
+                "VALUES (:did, :pid, :cid, :pcid, 'ALLOW', '[]'::jsonb, now())"
+            ),
+            {"did": decision_id, "pid": payment_id, "cid": candidate_id, "pcid": policy_config_id},
+        )
+        # The FIRST insert -- succeeds, exactly like a real execute_with_idempotency
+        # call's action_fn would produce.
+        conn.execute(
+            text(
+                "INSERT INTO recoveries (recovery_id, payment_id, decision_id, idempotency_key, "
+                "attempt_number, action_type, scheduled_for, executed_at, outcome, "
+                "recovered_amount_paise, created_at) "
+                "VALUES (:rid, :pid, :did, :ik, 1, 'RETRY_NOW', now(), now(), 'FAILED', 0, now())"
+            ),
+            {"rid": str(uuid.uuid4()), "pid": payment_id, "did": decision_id, "ik": idempotency_key},
+        )
+
+    # The SECOND insert -- deliberately bypasses execute_with_idempotency's
+    # own lock-then-check entirely (raw INSERT, no advisory_lock, no
+    # get_existing check) to prove the schema-level backstop holds even when
+    # application-level idempotency logic is skipped outright, not just
+    # buggy. A different recovery_id (a real duplicate INSERT has its own
+    # PK), same idempotency_key.
+    with pytest.raises(IntegrityError, match="idempotency_key"):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO recoveries (recovery_id, payment_id, decision_id, idempotency_key, "
+                    "attempt_number, action_type, scheduled_for, executed_at, outcome, "
+                    "recovered_amount_paise, created_at) "
+                    "VALUES (:rid, :pid, :did, :ik, 1, 'RETRY_NOW', now(), now(), 'FAILED', 0, now())"
+                ),
+                {
+                    "rid": str(uuid.uuid4()),
+                    "pid": payment_id,
+                    "did": decision_id,
+                    "ik": idempotency_key,
+                },
+            )
+
+    with engine.connect() as conn:
+        row_count = conn.execute(
+            text("SELECT count(*) FROM recoveries WHERE idempotency_key = :ik"),
+            {"ik": idempotency_key},
+        ).scalar_one()
+    assert row_count == 1, (
+        "the rejected duplicate INSERT must not have left a second row behind -- "
+        f"found {row_count} rows for the same idempotency_key"
+    )
+    engine.dispose()

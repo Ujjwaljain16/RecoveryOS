@@ -103,3 +103,45 @@ def test_every_fallback_rule_respects_confidence_cap():
         )
         assert output.confidence <= FALLBACK_CONFIDENCE_CAP
         assert output.is_fallback is True
+
+
+def test_fallback_output_matches_exact_schema():
+    """
+    gaps.md §A.3's own named test: fallback output validates against the
+    SAME Pydantic model class real AI output uses -- not a same-shaped but
+    separately-defined lookalike. `diagnose_fallback` already can't return
+    anything else (it's typed to construct `DiagnosisOutput` directly,
+    Pydantic would raise on the spot if a field violated the schema), so
+    this both proves that by construction (sweeping every real failure_code
+    in the mapping table, not just one) and pins the exact shape of what
+    gaps.md's own example JSON described, in case a future edit ever swaps
+    fallback_rules.py to build some other object by hand.
+    """
+    import services.diagnosis_engine.fallback_rules as fallback_module
+    import services.diagnosis_engine.llm_diagnoser as llm_module
+    from services.diagnosis_engine.schemas import DiagnosisOutput, Evidence, RootCause
+
+    # Same class, not a lookalike -- both modules import it from the one
+    # place schemas.py defines it (see that module's own docstring).
+    assert fallback_module.DiagnosisOutput is DiagnosisOutput
+    assert llm_module.DiagnosisOutput is DiagnosisOutput
+
+    for failure_code in list(FALLBACK_MAP.keys()) + [None, "AN_UNMAPPED_CODE"]:
+        output = diagnose_fallback(
+            _base_input(failure_code=failure_code), reason="ai_diagnoser_timeout"
+        )
+
+        assert isinstance(output, DiagnosisOutput)
+        assert isinstance(output.root_cause, RootCause)
+        assert 0.0 <= output.confidence <= 1.0
+        assert output.evidence, "evidence must never be empty (min_length=1 on the schema)"
+        assert all(isinstance(e, Evidence) and e.fact and e.source for e in output.evidence)
+        assert any(
+            e.source == "system" and "fallback_triggered=true" in e.fact for e in output.evidence
+        ), "the fallback_triggered=true system fact must always be present (gaps.md §A.3)"
+        assert output.model_version == "fallback-rule-v1"
+        assert output.is_fallback is True
+        # cohort_id is deliberately always None straight out of
+        # diagnose_fallback -- diagnoser.py attaches it uniformly afterward
+        # for EITHER path (fallback_rules.py's own module docstring).
+        assert output.cohort_id is None

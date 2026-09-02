@@ -971,6 +971,15 @@ class AuditLog(Base):
         ForeignKey("recoveries.recovery_id"),
         nullable=True,
     )
+    # gaps.md sec:A.1 (migration 0023) -- a customer-level action (e.g. an
+    # opt-out) has no payment to anchor to; events.payment_id is NOT NULL so
+    # events can't hold it either. Nullable, same pattern as every other FK
+    # on this table.
+    customer_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("customers.customer_id"),
+        nullable=True,
+    )
     # human-readable one-liner for the audit explorer
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -983,6 +992,7 @@ class AuditLog(Base):
     candidate: Mapped[CandidateAction | None] = relationship(back_populates="audit_logs")
     policy_decision: Mapped[PolicyDecision | None] = relationship(back_populates="audit_logs")
     recovery: Mapped[Recovery | None] = relationship(back_populates="audit_logs")
+    customer: Mapped[Customer | None] = relationship()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

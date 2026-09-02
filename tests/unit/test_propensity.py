@@ -19,8 +19,10 @@ from services.recovery_engine.propensity import (
     CATEGORICAL_FEATURES,
     FEATURE_ORDER,
     MODEL_ARTIFACT_PATH,
+    MODEL_NAME,
     TRANSFORMER_ARTIFACT_PATH,
     PropensityContext,
+    _context_to_transformer_frame,
     build_propensity_context,
     predict_recovery_probability,
 )
@@ -242,4 +244,89 @@ def test_lgbm_does_not_beat_baseline_on_the_real_holdout_so_lr_stays_default():
     assert "logistic_regression" in MODEL_NAME, (
         "production model_name must reflect that LR (not LightGBM) is the certified default "
         "given the gate does not pass on clean data"
+    )
+
+
+# ─── gaps.md §B.1's remaining two named tests ───────────────────────────────
+
+
+def test_feature_vector_only_contains_allowed_columns():
+    """
+    gaps.md §B.1: for a sweep of varied payments, the REAL feature vector
+    built for the model (propensity.py::_context_to_transformer_frame --
+    the actual DataFrame handed to the transformer, not just the
+    PropensityContext dataclass one step removed from it) must contain
+    ONLY FEATURE_ORDER's columns, nothing extra. test_no_latent_fields_can_
+    enter_inference above checks a related but different claim (the
+    dataclass's fields don't intersect a specific forbidden list) -- this
+    is gaps.md's own positive allow-list version, against the actual
+    model-facing artifact, swept across randomized inputs rather than one
+    fixed sample.
+    """
+    import random
+
+    rng = random.Random(20260902)
+    banks = ("HDFC", "ICICI", "SBI", "AXIS", "KOTAK")
+    methods = ("upi", "card", "netbanking", "wallet")
+    failure_codes = ("TIMEOUT", "BANK_DOWN", "INVALID_CREDS", "INSUFFICIENT_FUNDS")
+    failure_classes = ("TEMPORARY", "PERMANENT")
+
+    for _ in range(100):
+        context = build_propensity_context(
+            amount_paise=rng.randint(100, 5_000_000),
+            method=rng.choice(methods),
+            bank=rng.choice(banks),
+            is_returning_customer=rng.choice([True, False]),
+            lifetime_value_paise=rng.randint(0, 2_000_000),
+            initial_failure_code=rng.choice(failure_codes),
+            initial_failure_class=rng.choice(failure_classes),
+            created_at=datetime(2026, rng.randint(1, 12), rng.randint(1, 28), rng.randint(0, 23)),
+            merchant_id=str(rng.randint(1, 3)),
+        )
+
+        # The dataclass itself, belt-and-suspenders (proven once per
+        # iteration is enough -- it can't vary across instances of a frozen
+        # dataclass with a fixed field set, but keeps this self-contained).
+        assert {f.name for f in dataclasses.fields(context)} == set(FEATURE_ORDER)
+
+        # The actual model-facing artifact.
+        frame = _context_to_transformer_frame(context)
+        assert set(frame.columns) == set(FEATURE_ORDER), (
+            f"feature vector columns {sorted(frame.columns)} must exactly match "
+            f"FEATURE_ORDER {sorted(FEATURE_ORDER)}, nothing extra, nothing missing"
+        )
+
+
+def test_model_auc_does_not_suspiciously_spike_after_feature_changes():
+    """
+    gaps.md §B.1's regression guard: if a future change to the feature
+    pipeline pushes the certified model's reported AUC above a ceiling no
+    honest feature set should cross, that's the signature of a leak
+    (ground_truth_recoverable or an equivalent latent field sneaking back
+    into inference), not a genuine improvement -- flag it for manual review
+    rather than silently accepting a suspiciously good number.
+
+    Recorded baseline (models/recovery/artifacts/eval_test_temporal.json,
+    the one split verified to have zero overlap with train -- see gaps.md
+    §C.2): LR AUC = 0.8378. The ceiling is deliberately generous (0.97,
+    gaps.md's own suggested threshold) -- this is a tripwire for "something
+    is badly wrong", not a tight tolerance band around the exact number.
+    """
+    import json
+
+    eval_path = (
+        MODEL_ARTIFACT_PATH.parent / "eval_test_temporal.json"
+    )
+    with open(eval_path) as f:
+        eval_data = json.load(f)
+    lr_auc = eval_data["propensity_metrics"]["lr_auc_roc"]
+
+    print(f"\n[AUC regression guard] lr_auc={lr_auc} (suspicious-spike ceiling=0.97)")
+
+    assert 0.5 < lr_auc <= 0.97, (
+        f"LR AUC on the clean test_temporal holdout is {lr_auc}, outside the expected "
+        f"[0.5, 0.97] range -- either below-chance (something is broken) or above the "
+        f"suspicious-spike ceiling (a feature pipeline change likely reintroduced a "
+        f"ground_truth_recoverable-style leak; this needs manual review before merge, "
+        f"gaps.md §B.1)"
     )

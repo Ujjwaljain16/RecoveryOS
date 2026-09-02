@@ -18,6 +18,8 @@ type Chain = {
     confidence: number | null;
     confidence_band: string | null;
     evidence: { fact: string; source: string }[] | null;
+    is_fallback: boolean;
+    model_version: string;
   } | null;
   propensity: { recovery_prob_bps: number; model_version: string; source: string } | null;
   actions: { candidate_id: string; action_type: string; recovery_prob_bps: number; is_selected: boolean }[];
@@ -131,7 +133,26 @@ export default function AuditDetailPage({ params }: { params: { id: string } }) 
                   ? `${(chain.diagnosis.confidence * 100).toFixed(0)}%`
                   : chain.diagnosis.confidence_band ?? "—"}
               </dd>
+              <dt>Model</dt>
+              <dd>
+                {chain.diagnosis.model_version}
+                {chain.diagnosis.is_fallback ? " (fallback)" : ""}
+              </dd>
             </div>
+            {chain.diagnosis.is_fallback && (
+              <div
+                className="badge"
+                style={{
+                  marginTop: "0.5rem",
+                  display: "inline-block",
+                  border: "1px solid var(--amber)",
+                  color: "var(--amber)",
+                  background: "transparent",
+                }}
+              >
+                DETERMINISTIC FALLBACK — no LLM involved in this diagnosis
+              </div>
+            )}
             {chain.diagnosis.evidence && chain.diagnosis.evidence.length > 0 && (
               <>
                 <div style={{ marginTop: "0.75rem", color: "var(--text-dim)", fontSize: "0.85rem" }}>

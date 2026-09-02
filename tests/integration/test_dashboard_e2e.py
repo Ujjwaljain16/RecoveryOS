@@ -522,3 +522,78 @@ def test_audit_explorer_chain_matches_db_joins(
             expect(page.get_by_text(recovery_row["outcome"], exact=False)).to_be_visible()
 
     sync_engine.dispose()
+
+
+def test_fallback_flagged_visibly_in_audit_explorer(
+    migrated_db, redis_url, demo_merchant, dashboard_server, bg_loop, page: Page, monkeypatch
+):
+    """
+    gaps.md §A.3's own named test: trigger a real fallback diagnosis (the
+    deterministic rule-table path, gaps.md §A.3), run it through the REAL
+    pipeline, and assert the Audit Explorer visibly flags it -- not just
+    that the backend recorded is_fallback=true, but that a judge looking
+    at the real rendered page can see it.
+
+    Both real LLM entry points diagnoser.py can reach (services.diagnosis_
+    engine.diagnoser.investigate for the Gemini investigator loop,
+    diagnose_with_llm for the OpenAI path) are forced to report "no result"
+    here -- not by relying on whatever provider/API key this test
+    environment's .env happens to have configured (which may or may not
+    already fail, and for the Gemini path specifically would otherwise
+    attempt a REAL network call), but by patching both entry points
+    directly. bg_loop runs the real API server on a background THREAD in
+    this SAME process (see that fixture's own docstring), so a plain
+    monkeypatch.setattr from this test's main thread genuinely reaches the
+    code the server executes -- no subprocess boundary to cross.
+    """
+    import services.diagnosis_engine.diagnoser as diagnoser_module
+    import services.diagnosis_engine.investigator as investigator_module
+
+    async def _always_no_investigation(*args, **kwargs):
+        return None
+
+    async def _always_no_llm_output(*args, **kwargs):
+        return None, "test_forced_fallback"
+
+    # `investigate` is imported LOCALLY inside diagnoser.diagnose() (fresh
+    # `from services.diagnosis_engine.investigator import investigate` on
+    # every call) -- patching diagnoser_module's own attribute wouldn't
+    # reach it; the source module is the real target. diagnose_with_llm, by
+    # contrast, IS a top-of-file import in diagnoser.py, so patching it
+    # there is correct.
+    monkeypatch.setattr(investigator_module, "investigate", _always_no_investigation)
+    monkeypatch.setattr(diagnoser_module, "diagnose_with_llm", _always_no_llm_output)
+
+    merchant_id, _raw_key = demo_merchant
+    payment_id = _run_async(bg_loop, _seed_and_run_full_chain(migrated_db, redis_url, merchant_id))
+
+    sync_engine = create_engine(migrated_db, pool_pre_ping=True)
+    with sync_engine.connect() as conn:
+        diagnosis_row = (
+            conn.execute(
+                text(
+                    "SELECT root_cause, is_fallback, model_version FROM diagnoses "
+                    "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
+    sync_engine.dispose()
+
+    assert diagnosis_row is not None, "pipeline must have produced a real diagnosis"
+    assert diagnosis_row["is_fallback"] is True, (
+        "both LLM entry points were forced to fail -- the pipeline must have taken the "
+        "deterministic fallback path (gaps.md §A.3), not a real AI diagnosis"
+    )
+
+    page.goto(f"{dashboard_server}/audit/{payment_id}", wait_until="networkidle")
+
+    expect(page.get_by_text(diagnosis_row["root_cause"], exact=False)).to_be_visible(timeout=15000)
+    # Three separate places the flag is visible (proves it's not one lucky
+    # string match): the model-version line, the dedicated badge, and the
+    # fallback_triggered=true evidence fact itself.
+    expect(page.get_by_text(f"{diagnosis_row['model_version']} (fallback)")).to_be_visible()
+    expect(page.get_by_text("DETERMINISTIC FALLBACK", exact=False)).to_be_visible()
+    expect(page.get_by_text("fallback_triggered=true", exact=False)).to_be_visible()
