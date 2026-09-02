@@ -513,7 +513,9 @@ async def build_decision(
         last_attempt_at=last_attempt_at,
     )
 
-    is_expired = payment_row["failed_at"] is not None and (now - payment_row["failed_at"] > timedelta(days=7))
+    is_expired = payment_row["failed_at"] is not None and (
+        now - payment_row["failed_at"] > timedelta(days=7)
+    )
     is_high_severity_anomaly = bool(
         anomaly_context is not None
         and anomaly_context.severity == "high"

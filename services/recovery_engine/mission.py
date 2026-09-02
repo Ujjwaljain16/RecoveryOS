@@ -634,7 +634,9 @@ def transition_mission_sync(
     return dict(updated)
 
 
-def log_mission_event_sync(conn, *, mission_id: str, event_type: str, actor: str, payload: dict) -> None:
+def log_mission_event_sync(
+    conn, *, mission_id: str, event_type: str, actor: str, payload: dict
+) -> None:
     """Sync mirror of log_mission_event_async -- see its docstring."""
     from sqlalchemy import text
 

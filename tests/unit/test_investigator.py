@@ -116,7 +116,9 @@ async def test_investigation_calls_a_tool_then_finalizes(monkeypatch):
     assert calls["round"] == [1, 2]
     assert result.recommendation.recommended_action == RecommendedAction.RETRY_LATER
     assert result.recommendation.recommended_delay_minutes == 30
-    assert result.recommendation.confidence == 0.70  # capped at the guard-applied diagnosis confidence (LIKELY)
+    assert (
+        result.recommendation.confidence == 0.70
+    )  # capped at the guard-applied diagnosis confidence (LIKELY)
     assert result.recommendation.risk_flags == []
 
 

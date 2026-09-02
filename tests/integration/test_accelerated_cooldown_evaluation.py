@@ -120,12 +120,18 @@ class AlwaysFailsOnce:
     def __init__(self):
         self.calls = 0
 
-    def retry(self, conn, payment_id: str, amount_paise: int, attempt_number: int) -> ProviderResult:
+    def retry(
+        self, conn, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         self.calls += 1
         if self.calls == 1:
-            return ProviderResult(outcome="FAILED", provider_ref="accel_1", recovered_amount_paise=0)
+            return ProviderResult(
+                outcome="FAILED", provider_ref="accel_1", recovered_amount_paise=0
+            )
         return ProviderResult(
-            outcome="SUCCESS", provider_ref=f"accel_{self.calls}", recovered_amount_paise=amount_paise
+            outcome="SUCCESS",
+            provider_ref=f"accel_{self.calls}",
+            recovered_amount_paise=amount_paise,
         )
 
 
@@ -141,7 +147,9 @@ async def test_production_default_retry_cooldown_hours_is_still_twelve(migrated_
         )
         row = (
             await conn.execute(
-                text("SELECT retry_cooldown_hours FROM policy_configs WHERE policy_config_id = :pcid"),
+                text(
+                    "SELECT retry_cooldown_hours FROM policy_configs WHERE policy_config_id = :pcid"
+                ),
                 {"pcid": pcid},
             )
         ).first()
@@ -178,12 +186,15 @@ async def test_accelerate_evaluation_cooldown_is_deterministic_and_idempotent(mi
     async with engine.begin() as conn:
         count = (
             await conn.execute(
-                text("SELECT count(*) FROM policy_configs WHERE policy_config_id = :pcid"), {"pcid": pcid}
+                text("SELECT count(*) FROM policy_configs WHERE policy_config_id = :pcid"),
+                {"pcid": pcid},
             )
         ).scalar_one()
         cooldown = (
             await conn.execute(
-                text("SELECT retry_cooldown_hours FROM policy_configs WHERE policy_config_id = :pcid"),
+                text(
+                    "SELECT retry_cooldown_hours FROM policy_configs WHERE policy_config_id = :pcid"
+                ),
                 {"pcid": pcid},
             )
         ).scalar_one()
@@ -249,9 +260,9 @@ async def test_failed_attempt_reschedules_almost_immediately_when_cooldown_accel
         f"scheduled_for={reeval_row['scheduled_for']} is not due almost immediately -- "
         f"the accelerated cooldown did not take effect"
     )
-    assert reeval_row["scheduled_for"] < real_now + timedelta(hours=1), (
-        "still scheduled hours out -- this would be the unaccelerated 12h production default"
-    )
+    assert reeval_row["scheduled_for"] < real_now + timedelta(
+        hours=1
+    ), "still scheduled hours out -- this would be the unaccelerated 12h production default"
 
 
 @pytest.mark.asyncio
@@ -335,9 +346,10 @@ async def test_retry_scheduler_fires_accelerated_reevaluation_without_any_time_t
             .mappings()
             .first()
         )
-    assert [r[1] for r in recoveries] == ["FAILED", "SUCCESS"], (
-        "expected exactly one failed attempt followed by one successful attempt"
-    )
+    assert [r[1] for r in recoveries] == [
+        "FAILED",
+        "SUCCESS",
+    ], "expected exactly one failed attempt followed by one successful attempt"
     assert ledger["actual_recovery_paise"] > 0, (
         "the ledger must reflect the eventual SUCCESS, not get stuck at the round-1 FAILED value -- "
         "this is exactly the value the fair baseline would already credit itself with"
@@ -377,12 +389,16 @@ async def test_same_seed_and_start_time_produce_identical_two_round_outcome(
 
         await process_payment_failure(payment_id, bank, redis_client)
         entries = await redis_client.xrange("stream:recovery_jobs", min="-", max="+")
-        job1_id, job1_fields = next((eid, f) for eid, f in entries if f.get("payment_id") == payment_id)
+        job1_id, job1_fields = next(
+            (eid, f) for eid, f in entries if f.get("payment_id") == payment_id
+        )
         with sync_engine.connect() as conn:
             process_job(conn, job1_fields, provider=provider)
 
         await run_once(redis_client)
-        entries_after = await redis_client.xrange("stream:recovery_jobs", min="(" + job1_id, max="+")
+        entries_after = await redis_client.xrange(
+            "stream:recovery_jobs", min="(" + job1_id, max="+"
+        )
         _job2_id, job2_fields = next(
             (eid, f) for eid, f in entries_after if f.get("payment_id") == payment_id
         )
@@ -398,7 +414,11 @@ async def test_same_seed_and_start_time_produce_identical_two_round_outcome(
                 .mappings()
                 .first()
             )
-        return job1_fields["action_type"], job2_fields["action_type"], ledger["actual_recovery_paise"]
+        return (
+            job1_fields["action_type"],
+            job2_fields["action_type"],
+            ledger["actual_recovery_paise"],
+        )
 
     result_a = await run_once_through_both_rounds()
     result_b = await run_once_through_both_rounds()

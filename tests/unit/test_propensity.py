@@ -19,7 +19,6 @@ from services.recovery_engine.propensity import (
     CATEGORICAL_FEATURES,
     FEATURE_ORDER,
     MODEL_ARTIFACT_PATH,
-    MODEL_NAME,
     TRANSFORMER_ARTIFACT_PATH,
     PropensityContext,
     _context_to_transformer_frame,
@@ -314,9 +313,7 @@ def test_model_auc_does_not_suspiciously_spike_after_feature_changes():
     """
     import json
 
-    eval_path = (
-        MODEL_ARTIFACT_PATH.parent / "eval_test_temporal.json"
-    )
+    eval_path = MODEL_ARTIFACT_PATH.parent / "eval_test_temporal.json"
     with open(eval_path) as f:
         eval_data = json.load(f)
     lr_auc = eval_data["propensity_metrics"]["lr_auc_roc"]

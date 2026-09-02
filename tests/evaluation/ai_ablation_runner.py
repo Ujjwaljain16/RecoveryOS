@@ -40,7 +40,7 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg2
@@ -62,7 +62,7 @@ _env_start_time = os.environ.get("EVALUATION_START_TIME_ISO")
 EVALUATION_START_TIME = (
     datetime.fromisoformat(_env_start_time)
     if _env_start_time
-    else datetime.now(timezone.utc) - timedelta(hours=1)
+    else datetime.now(UTC) - timedelta(hours=1)
 )
 
 # Reduced-scale mode: the free-tier Gemini quota (per key, per model) is
@@ -148,7 +148,10 @@ def wait_for_reevaluations_drained(timeout=600, stable_polls_required=3):
         pending = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM scheduled_reevaluations")
         total = cur.fetchone()[0]
-        print(f"  round-2 (rescheduled) drain progress: pending={pending}/{total} scheduled", flush=True)
+        print(
+            f"  round-2 (rescheduled) drain progress: pending={pending}/{total} scheduled",
+            flush=True,
+        )
         if pending == 0:
             stable_count = stable_count + 1 if total == last_total else 1
             last_total = total
@@ -177,7 +180,7 @@ def regenerate_dataset(seed: int, fusion_enabled: bool, tolerance_bps: int):
     run(
         f"python -m dotenv run -- python -m simulator.run "
         f'--n={N_PAYMENTS} --seed={seed} --customers=2000 --scenario-weights="{{}}" '
-        f'--start-time={EVALUATION_START_TIME.isoformat()} --output=db',
+        f"--start-time={EVALUATION_START_TIME.isoformat()} --output=db",
         env=env,
     )
     run(f"{COMPOSE} up -d --build", env=env)
@@ -243,7 +246,9 @@ def wait_for_drain(expected_ledger_rows: int, timeout=1800):
     raise RuntimeError("pipeline never fully drained within timeout")
 
 
-def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bps: int, start_wall_time: float) -> dict:
+def collect_metrics(
+    run_name: str, seed: int, fusion_enabled: bool, tolerance_bps: int, start_wall_time: float
+) -> dict:
     conn = psycopg2.connect(PG_DSN)
     cur = conn.cursor()
 
@@ -350,7 +355,9 @@ def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bp
         "revenue_per_attempt_paise": recoveryos_total / total_attempts if total_attempts else None,
         "ai_recommendations_available": recommendations_available,
         "ai_recommendation_acceptance_rate": (
-            ai_outcome_delta_total / recommendations_available if recommendations_available else None
+            ai_outcome_delta_total / recommendations_available
+            if recommendations_available
+            else None
         ),
         "ai_tie_break_applied": tie_break_applied,
         "ai_risk_escalations": risk_escalation_applied,
@@ -364,7 +371,10 @@ def collect_metrics(run_name: str, seed: int, fusion_enabled: bool, tolerance_bp
 
 
 def main():
-    print(f"sim_start_time (shared across all 4 arms this run): {EVALUATION_START_TIME.isoformat()}", flush=True)
+    print(
+        f"sim_start_time (shared across all 4 arms this run): {EVALUATION_START_TIME.isoformat()}",
+        flush=True,
+    )
     RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     results = []
     if RESULTS_FILE.exists():
@@ -378,8 +388,11 @@ def main():
         if name in done_runs:
             print(f"run={name} already done, skipping")
             continue
-        print(f"\n{'=' * 60}\nRUN {name} (fusion_enabled={run_config['fusion_enabled']}, "
-              f"tolerance_bps={run_config['tolerance_bps']})\n{'=' * 60}", flush=True)
+        print(
+            f"\n{'=' * 60}\nRUN {name} (fusion_enabled={run_config['fusion_enabled']}, "
+            f"tolerance_bps={run_config['tolerance_bps']})\n{'=' * 60}",
+            flush=True,
+        )
         start = time.time()
         regenerate_dataset(
             SEED,

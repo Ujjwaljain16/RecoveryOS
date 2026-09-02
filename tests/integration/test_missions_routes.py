@@ -87,7 +87,13 @@ async def _seed_mission(
                     "event_type, actor, payload) "
                     "VALUES (gen_random_uuid(), :mid, :seq, :state, :event_type, :actor, '{}'::jsonb)"
                 ),
-                {"mid": mission_id, "seq": seq, "state": ev_state, "event_type": event_type, "actor": actor},
+                {
+                    "mid": mission_id,
+                    "seq": seq,
+                    "state": ev_state,
+                    "event_type": event_type,
+                    "actor": actor,
+                },
             )
     await engine.dispose()
     return mission_id
@@ -138,7 +144,9 @@ async def test_active_missions_scoped_to_the_authenticated_merchant(async_client
 async def test_payment_mission_404s_when_no_mission_exists(async_client, migrated_db):
     merchant_id, api_key = await _seed_merchant(migrated_db)
     payment_id = await _seed_payment(migrated_db, merchant_id)
-    resp = await async_client.get(f"/v1/payments/{payment_id}/mission", headers={"X-API-Key": api_key})
+    resp = await async_client.get(
+        f"/v1/payments/{payment_id}/mission", headers={"X-API-Key": api_key}
+    )
     assert resp.status_code == 404
 
 
@@ -149,7 +157,9 @@ async def test_payment_mission_404s_for_a_different_merchants_payment(async_clie
     payment_id = await _seed_payment(migrated_db, merchant_a)
     await _seed_mission(migrated_db, payment_id, state="EXECUTING")
 
-    resp = await async_client.get(f"/v1/payments/{payment_id}/mission", headers={"X-API-Key": api_key_b})
+    resp = await async_client.get(
+        f"/v1/payments/{payment_id}/mission", headers={"X-API-Key": api_key_b}
+    )
     assert resp.status_code == 404
 
 
@@ -157,9 +167,13 @@ async def test_payment_mission_404s_for_a_different_merchants_payment(async_clie
 async def test_payment_mission_returns_the_full_ordered_event_trace(async_client, migrated_db):
     merchant_id, api_key = await _seed_merchant(migrated_db)
     payment_id = await _seed_payment(migrated_db, merchant_id, amount_paise=842_000)
-    mission_id = await _seed_mission(migrated_db, payment_id, state="EXECUTING", amount_paise=842_000)
+    mission_id = await _seed_mission(
+        migrated_db, payment_id, state="EXECUTING", amount_paise=842_000
+    )
 
-    resp = await async_client.get(f"/v1/payments/{payment_id}/mission", headers={"X-API-Key": api_key})
+    resp = await async_client.get(
+        f"/v1/payments/{payment_id}/mission", headers={"X-API-Key": api_key}
+    )
     assert resp.status_code == 200
     body = resp.json()
 

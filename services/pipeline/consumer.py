@@ -214,7 +214,9 @@ async def process_payment_failure(
 
     if mission_trackable:
         async with get_app_session_factory()() as session:
-            await _log_investigation_events(session, mission_id=mission_id, diagnosis_id=diagnosis_id)
+            await _log_investigation_events(
+                session, mission_id=mission_id, diagnosis_id=diagnosis_id
+            )
             await transition_mission_async(
                 session,
                 mission_id=mission_id,

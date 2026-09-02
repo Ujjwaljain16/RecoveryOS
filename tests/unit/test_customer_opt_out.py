@@ -61,5 +61,9 @@ def test_idempotent_second_call_is_a_no_op():
 
     second_audit_row = apply_customer_opt_out(customer, now=later, channel="email", reason="again")
 
-    assert second_audit_row is None, "a customer already opted out must not produce a second audit row"
-    assert customer.opted_out_at == first, "the original opt-out timestamp must never be overwritten"
+    assert (
+        second_audit_row is None
+    ), "a customer already opted out must not produce a second audit row"
+    assert (
+        customer.opted_out_at == first
+    ), "the original opt-out timestamp must never be overwritten"

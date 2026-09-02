@@ -98,7 +98,9 @@ async def _process_one(row: dict, redis_client) -> None:
     reevaluation_id = row["reevaluation_id"]
     fired_source_event_id = str(uuid.uuid4())
     async with get_app_session_factory()() as session:
-        won = await claim_reevaluation(session, reevaluation_id, fired_source_event_id, clock.utcnow())
+        won = await claim_reevaluation(
+            session, reevaluation_id, fired_source_event_id, clock.utcnow()
+        )
     if not won:
         # Another scheduler instance (or another poll cycle) claimed it
         # first -- not an error.

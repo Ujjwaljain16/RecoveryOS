@@ -89,12 +89,14 @@ async def test_lock_releases_after_the_wrapped_block_commits_the_session(migrate
     key = f"test-advisory-lock-commit-{uuid.uuid4()}"
     session_factory = get_app_session_factory()
 
-    async with session_factory() as session:
-        async with advisory_lock_async(session, key):
-            # The exact shape both real callers use: a real write, then a
-            # commit, still INSIDE the lock.
-            await session.execute(text("SELECT 1"))
-            await session.commit()
+    async with (
+        session_factory() as session,
+        advisory_lock_async(session, key),
+    ):
+        # The exact shape both real callers use: a real write, then a
+        # commit, still INSIDE the lock.
+        await session.execute(text("SELECT 1"))
+        await session.commit()
 
     # A fresh acquisition of the SAME key, from a DIFFERENT session, must
     # succeed promptly -- not hang forever the way the live bug did.
@@ -134,7 +136,9 @@ async def test_lock_and_unlock_never_go_through_the_callers_session(migrated_db,
         async def _spy_execute(clause, *args, **kwargs):
             sql = str(clause)
             assert "pg_advisory_lock" not in sql, "lock must not go through the caller's session"
-            assert "pg_advisory_unlock" not in sql, "unlock must not go through the caller's session"
+            assert (
+                "pg_advisory_unlock" not in sql
+            ), "unlock must not go through the caller's session"
             return await original_execute(clause, *args, **kwargs)
 
         monkeypatch.setattr(session, "execute", _spy_execute)

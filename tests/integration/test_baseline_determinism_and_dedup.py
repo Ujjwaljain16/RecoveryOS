@@ -167,7 +167,13 @@ async def test_concurrent_baseline_runs_for_the_same_payment_converge_to_one_row
 # RecoveryOS decision tables
 # ═══════════════════════════════════════════════════════════════════════
 
-_DECISION_TABLES = ("policy_decisions", "candidate_actions", "diagnoses", "recoveries", "recovery_ledger")
+_DECISION_TABLES = (
+    "policy_decisions",
+    "candidate_actions",
+    "diagnoses",
+    "recoveries",
+    "recovery_ledger",
+)
 
 
 async def _count_rows(engine, table: str) -> int:
@@ -213,6 +219,11 @@ async def test_baseline_computation_never_touches_recoveryos_decision_tables(mig
     # not passed the isolation check by silently doing nothing.
     async with create_async_engine(to_async_url(migrated_db)).connect() as conn:
         n_baseline_rows = (
-            await conn.execute(text("SELECT count(*) FROM baseline_runs WHERE payment_id = :pid"), {"pid": payment_id})
+            await conn.execute(
+                text("SELECT count(*) FROM baseline_runs WHERE payment_id = :pid"),
+                {"pid": payment_id},
+            )
         ).scalar_one()
-    assert n_baseline_rows == 3, f"expected 3 baseline_runs rows (one per comparator), got {n_baseline_rows}"
+    assert (
+        n_baseline_rows == 3
+    ), f"expected 3 baseline_runs rows (one per comparator), got {n_baseline_rows}"

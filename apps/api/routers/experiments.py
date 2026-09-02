@@ -297,7 +297,8 @@ def _phase8_baseline_experiment() -> dict:
             # depends on it and the value's meaning hasn't changed, only the
             # internal artifact's field name.
             "unnecessary_intervention_rate_bps": round(
-                statistics.mean([s["did_not_beat_single_attempt_baseline_rate"] for s in seeds]) * 10_000
+                statistics.mean([s["did_not_beat_single_attempt_baseline_rate"] for s in seeds])
+                * 10_000
             ),
         },
         "incremental_recovery_paise_mean": round(mean_incremental),

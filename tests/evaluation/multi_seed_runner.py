@@ -20,7 +20,7 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg2
@@ -49,7 +49,7 @@ _env_start_time = os.environ.get("EVALUATION_START_TIME_ISO")
 EVALUATION_START_TIME = (
     datetime.fromisoformat(_env_start_time)
     if _env_start_time
-    else datetime.now(timezone.utc) - timedelta(hours=1)
+    else datetime.now(UTC) - timedelta(hours=1)
 )
 
 
@@ -122,7 +122,7 @@ def regenerate_dataset(seed: int):
     run(
         f"python -m dotenv run -- python -m simulator.run "
         f'--n=10000 --seed={seed} --customers=2000 --scenario-weights="{{}}" '
-        f'--start-time={EVALUATION_START_TIME.isoformat()} --output=db'
+        f"--start-time={EVALUATION_START_TIME.isoformat()} --output=db"
     )
     run(f"{COMPOSE} up -d --build")
     time.sleep(15)
@@ -205,7 +205,10 @@ def wait_for_reevaluations_drained(timeout=600, stable_polls_required=3):
         pending = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM scheduled_reevaluations")
         total = cur.fetchone()[0]
-        print(f"  round-2 (rescheduled) drain progress: pending={pending}/{total} scheduled", flush=True)
+        print(
+            f"  round-2 (rescheduled) drain progress: pending={pending}/{total} scheduled",
+            flush=True,
+        )
         if pending == 0:
             stable_count = stable_count + 1 if total == last_total else 1
             last_total = total
@@ -375,7 +378,9 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
     recoveries_distinct_attempts = scalar(
         "SELECT count(DISTINCT (payment_id, attempt_number)) FROM recoveries"
     )
-    cur.execute("SELECT attempt_number, count(*) FROM recoveries GROUP BY attempt_number ORDER BY attempt_number")
+    cur.execute(
+        "SELECT attempt_number, count(*) FROM recoveries GROUP BY attempt_number ORDER BY attempt_number"
+    )
     attempts_by_number = {str(row[0]): row[1] for row in cur.fetchall()}
     ledger_total = scalar("SELECT count(*) FROM recovery_ledger")
     ledger_distinct_payments = scalar("SELECT count(DISTINCT payment_id) FROM recovery_ledger")
@@ -427,8 +432,10 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
         GROUP BY fair.recovered, reos.recovered
         """
     )
-    confusion = {f"baseline_{'recovered' if br else 'missed'}_recoveryos_{'recovered' if rr else 'missed'}": n
-                 for br, rr, n in cur.fetchall()}
+    confusion = {
+        f"baseline_{'recovered' if br else 'missed'}_recoveryos_{'recovered' if rr else 'missed'}": n
+        for br, rr, n in cur.fetchall()
+    }
     cur.execute(
         """
         WITH missed AS (
@@ -555,7 +562,10 @@ def collect_metrics(seed: int, start_wall_time: float) -> dict:
 
 
 def main():
-    print(f"sim_start_time (shared across all seeds this run): {EVALUATION_START_TIME.isoformat()}", flush=True)
+    print(
+        f"sim_start_time (shared across all seeds this run): {EVALUATION_START_TIME.isoformat()}",
+        flush=True,
+    )
     RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     results = []
     if RESULTS_FILE.exists():

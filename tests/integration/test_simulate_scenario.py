@@ -112,7 +112,9 @@ async def _demo_client(*, ai_recommendation_fusion_enabled: bool) -> AsyncClient
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _seeded_merchant(migrated_db: str, name: str = "scenario-test-merchant") -> tuple[str, str]:
+async def _seeded_merchant(
+    migrated_db: str, name: str = "scenario-test-merchant"
+) -> tuple[str, str]:
     merchant_id = str(uuid.uuid4())
     raw_key = generate_api_key()
     await seed_merchant_with_api_key(migrated_db, merchant_id, name, raw_key)
@@ -260,9 +262,7 @@ async def test_recover_via_replan_scenario_closes_the_loop(migrated_db, redis_cl
         engine = create_engine(migrated_db, pool_pre_ping=True)
         with engine.connect() as conn:
             recovered_row = conn.execute(
-                text(
-                    "SELECT actual_recovery_paise FROM recovery_ledger WHERE payment_id = :pid"
-                ),
+                text("SELECT actual_recovery_paise FROM recovery_ledger WHERE payment_id = :pid"),
                 {"pid": payment_id},
             ).first()
         engine.dispose()
@@ -328,12 +328,16 @@ async def test_world_changed_scenario_closes_mission_via_external_resolution(
 
         engine = create_engine(migrated_db, pool_pre_ping=True)
         with engine.connect() as conn:
-            recovery_row = conn.execute(
-                text(
-                    "SELECT outcome, recovered_amount_paise FROM recoveries WHERE payment_id = :pid"
-                ),
-                {"pid": payment_id},
-            ).mappings().first()
+            recovery_row = (
+                conn.execute(
+                    text(
+                        "SELECT outcome, recovered_amount_paise FROM recoveries WHERE payment_id = :pid"
+                    ),
+                    {"pid": payment_id},
+                )
+                .mappings()
+                .first()
+            )
         engine.dispose()
         assert recovery_row is not None
         assert recovery_row["outcome"] == "SUCCESS"

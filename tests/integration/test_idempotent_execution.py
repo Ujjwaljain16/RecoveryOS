@@ -411,7 +411,12 @@ def test_db_unique_constraint_backstop_rejects_duplicate_insert_even_if_lock_log
                 "recovered_amount_paise, created_at) "
                 "VALUES (:rid, :pid, :did, :ik, 1, 'RETRY_NOW', now(), now(), 'FAILED', 0, now())"
             ),
-            {"rid": str(uuid.uuid4()), "pid": payment_id, "did": decision_id, "ik": idempotency_key},
+            {
+                "rid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": decision_id,
+                "ik": idempotency_key,
+            },
         )
 
     # The SECOND insert -- deliberately bypasses execute_with_idempotency's
@@ -420,22 +425,24 @@ def test_db_unique_constraint_backstop_rejects_duplicate_insert_even_if_lock_log
     # application-level idempotency logic is skipped outright, not just
     # buggy. A different recovery_id (a real duplicate INSERT has its own
     # PK), same idempotency_key.
-    with pytest.raises(IntegrityError, match="idempotency_key"):
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "INSERT INTO recoveries (recovery_id, payment_id, decision_id, idempotency_key, "
-                    "attempt_number, action_type, scheduled_for, executed_at, outcome, "
-                    "recovered_amount_paise, created_at) "
-                    "VALUES (:rid, :pid, :did, :ik, 1, 'RETRY_NOW', now(), now(), 'FAILED', 0, now())"
-                ),
-                {
-                    "rid": str(uuid.uuid4()),
-                    "pid": payment_id,
-                    "did": decision_id,
-                    "ik": idempotency_key,
-                },
-            )
+    with (
+        pytest.raises(IntegrityError, match="idempotency_key"),
+        engine.begin() as conn,
+    ):
+        conn.execute(
+            text(
+                "INSERT INTO recoveries (recovery_id, payment_id, decision_id, idempotency_key, "
+                "attempt_number, action_type, scheduled_for, executed_at, outcome, "
+                "recovered_amount_paise, created_at) "
+                "VALUES (:rid, :pid, :did, :ik, 1, 'RETRY_NOW', now(), now(), 'FAILED', 0, now())"
+            ),
+            {
+                "rid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": decision_id,
+                "ik": idempotency_key,
+            },
+        )
 
     with engine.connect() as conn:
         row_count = conn.execute(

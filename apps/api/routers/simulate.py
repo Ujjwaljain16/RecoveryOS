@@ -255,7 +255,9 @@ async def _ensure_demo_policy_config(session: AsyncSession, merchant_id: str) ->
     if existing_id is not None:
         cfg = (
             await session.execute(
-                text("SELECT retry_cooldown_hours FROM policy_configs WHERE policy_config_id = :pcid"),
+                text(
+                    "SELECT retry_cooldown_hours FROM policy_configs WHERE policy_config_id = :pcid"
+                ),
                 {"pcid": existing_id},
             )
         ).first()
@@ -566,10 +568,15 @@ async def _run_safety_escalation_scenario(payment_id: str) -> str:
 
     async with get_app_session_factory()() as session:
         payment_row = (
-            await session.execute(
-                text("SELECT amount_paise FROM payments WHERE payment_id = :pid"), {"pid": payment_id}
+            (
+                await session.execute(
+                    text("SELECT amount_paise FROM payments WHERE payment_id = :pid"),
+                    {"pid": payment_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         amount_paise = payment_row["amount_paise"] if payment_row else 0
 
         mission, was_created = await get_or_create_mission_async(
@@ -597,8 +604,8 @@ async def _run_safety_escalation_scenario(payment_id: str) -> str:
                 "INSERT INTO diagnoses (diagnosis_id, payment_id, root_cause, confidence, "
                 "evidence, model_version, is_fallback, created_at) "
                 "VALUES (:did, :pid, 'customer_specific', 0.930, "
-                "'[{\"fact\": \"repeated failed attempts across multiple payment methods in a short "
-                "window\", \"source\": \"payment_history\"}]'::jsonb, "
+                '\'[{"fact": "repeated failed attempts across multiple payment methods in a short '
+                'window", "source": "payment_history"}]\'::jsonb, '
                 "'demo-scenario-scripted-v1', false, now())"
             ),
             {"did": diagnosis_id, "pid": payment_id},

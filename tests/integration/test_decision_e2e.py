@@ -51,7 +51,9 @@ async def _insert_failed_payment(
                 "cid": customer_id,
                 "amount": amount_paise,
                 "is_synthetic": is_synthetic,
-                "ts": failed_at if failed_at is not None else datetime.now(UTC) - timedelta(hours=1),
+                "ts": (
+                    failed_at if failed_at is not None else datetime.now(UTC) - timedelta(hours=1)
+                ),
             },
         )
     await engine.dispose()
@@ -294,9 +296,7 @@ async def test_synthetic_payment_decision_is_identical_regardless_of_real_execut
 
     from services.recovery_engine.orchestrator import build_decision
 
-    monkeypatch.setattr(
-        clock_module, "utcnow", lambda: datetime(2026, 9, 1, 8, 0, 0, tzinfo=UTC)
-    )
+    monkeypatch.setattr(clock_module, "utcnow", lambda: datetime(2026, 9, 1, 8, 0, 0, tzinfo=UTC))
     nba_1, decision_1, _ = await build_decision(payment_id)
 
     monkeypatch.setattr(

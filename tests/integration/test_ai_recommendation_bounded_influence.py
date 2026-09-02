@@ -93,7 +93,12 @@ async def _insert_diagnosis_and_recommendation(
                 f"VALUES (gen_random_uuid(), :did, :pid, :action, 0, :conf, "
                 f"{_pg_text_array(risk_flags or [])}, 'test rationale', 'test-v1', now())"
             ),
-            {"did": diagnosis_id, "pid": payment_id, "action": recommended_action, "conf": confidence},
+            {
+                "did": diagnosis_id,
+                "pid": payment_id,
+                "action": recommended_action,
+                "conf": confidence,
+            },
         )
     await engine.dispose()
     return diagnosis_id
@@ -103,7 +108,11 @@ def _fixed_candidates(evi_by_action: dict[str, int]):
     action_types = ("RETRY_NOW", "RETRY_LATER", "ALT_ROUTE", "REMINDER", "ESCALATE", "DO_NOTHING")
 
     async def _fake_generate_candidate_actions(
-        session, merchant_id, amount_paise, customer_is_returning, base_propensity_prob_bps,
+        session,
+        merchant_id,
+        amount_paise,
+        customer_is_returning,
+        base_propensity_prob_bps,
         anomaly_context,
     ):
         return tuple(
@@ -143,7 +152,9 @@ async def test_tie_break_applies_for_near_tied_policy_allowed_recommendation(
     monkeypatch.setattr(
         orchestrator_module,
         "generate_candidate_actions",
-        _fixed_candidates({"RETRY_NOW": 8_200, "ALT_ROUTE": 8_170, "REMINDER": 1_000, "ESCALATE": 500}),
+        _fixed_candidates(
+            {"RETRY_NOW": 8_200, "ALT_ROUTE": 8_170, "REMINDER": 1_000, "ESCALATE": 500}
+        ),
     )
     _enable_fusion(monkeypatch)
 
@@ -174,7 +185,9 @@ async def test_tie_break_rejected_when_recommendation_confidence_below_floor(
     monkeypatch.setattr(
         orchestrator_module,
         "generate_candidate_actions",
-        _fixed_candidates({"RETRY_NOW": 8_200, "ALT_ROUTE": 8_170, "REMINDER": 1_000, "ESCALATE": 500}),
+        _fixed_candidates(
+            {"RETRY_NOW": 8_200, "ALT_ROUTE": 8_170, "REMINDER": 1_000, "ESCALATE": 500}
+        ),
     )
     _enable_fusion(monkeypatch)
 
@@ -252,7 +265,9 @@ async def test_risk_flag_escalates_regardless_of_strongly_positive_evi(migrated_
         risk_flags=["HIGH_FRAUD_RISK"],
     )
     monkeypatch.setattr(
-        orchestrator_module, "generate_candidate_actions", _fixed_candidates({"RETRY_NOW": 1_000_000})
+        orchestrator_module,
+        "generate_candidate_actions",
+        _fixed_candidates({"RETRY_NOW": 1_000_000}),
     )
     _enable_fusion(monkeypatch)
 
@@ -264,7 +279,9 @@ async def test_risk_flag_escalates_regardless_of_strongly_positive_evi(migrated_
 
 
 @pytest.mark.asyncio
-async def test_fusion_disabled_ignores_recommendation_even_though_it_exists(migrated_db, monkeypatch):
+async def test_fusion_disabled_ignores_recommendation_even_though_it_exists(
+    migrated_db, monkeypatch
+):
     payment_id, _, _ = await _insert_payment(migrated_db)
     diagnosis_id = await _insert_diagnosis_and_recommendation(
         migrated_db, payment_id=payment_id, recommended_action="ALT_ROUTE", confidence=0.9

@@ -368,7 +368,9 @@ def test_ai_risk_signal_pass_case_no_flags():
 
 def test_ai_risk_signal_fails_when_a_flag_is_present():
     result = AIRiskSignalEscalationRule().check(
-        _payment(), _candidate(ai_risk_flags=frozenset({"DUPLICATE_PAYMENT_RISK"})), _policy_config()
+        _payment(),
+        _candidate(ai_risk_flags=frozenset({"DUPLICATE_PAYMENT_RISK"})),
+        _policy_config(),
     )
     assert result.passed is False
 

@@ -88,7 +88,12 @@ async def _insert_diagnosis_and_recommendation(
                 f"VALUES (gen_random_uuid(), :did, :pid, :action, 0, :conf, "
                 f"{_pg_text_array(risk_flags or [])}, 'test rationale', 'test-v1', now())"
             ),
-            {"did": diagnosis_id, "pid": payment_id, "action": recommended_action, "conf": confidence},
+            {
+                "did": diagnosis_id,
+                "pid": payment_id,
+                "action": recommended_action,
+                "conf": confidence,
+            },
         )
     await engine.dispose()
     return diagnosis_id
@@ -98,7 +103,11 @@ def _fixed_candidates(evi_by_action: dict[str, int]):
     action_types = ("RETRY_NOW", "RETRY_LATER", "ALT_ROUTE", "REMINDER", "ESCALATE", "DO_NOTHING")
 
     async def _fake_generate_candidate_actions(
-        session, merchant_id, amount_paise, customer_is_returning, base_propensity_prob_bps,
+        session,
+        merchant_id,
+        amount_paise,
+        customer_is_returning,
+        base_propensity_prob_bps,
         anomaly_context,
     ):
         return tuple(
@@ -117,9 +126,7 @@ def _fixed_candidates(evi_by_action: dict[str, int]):
 
 
 @pytest.mark.asyncio
-async def test_ai_contribution_reflects_a_real_tie_break(
-    async_client, migrated_db, monkeypatch
-):
+async def test_ai_contribution_reflects_a_real_tie_break(async_client, migrated_db, monkeypatch):
     monkeypatch.setenv("AI_RECOMMENDATION_FUSION_ENABLED", "true")
     monkeypatch.setenv("AI_TIE_BREAK_TOLERANCE_BPS", "100")
     from recoveryos.config import get_settings

@@ -383,7 +383,10 @@ async def _create_mission_in_observing_outcome_and_link(
     real RETRY_LATER path establishes at creation time.
     """
     from recoveryos.database import get_app_session_factory
-    from services.recovery_engine.mission import get_or_create_mission_async, transition_mission_async
+    from services.recovery_engine.mission import (
+        get_or_create_mission_async,
+        transition_mission_async,
+    )
 
     now = datetime.now(UTC)
     async with get_app_session_factory()() as session:
@@ -417,7 +420,9 @@ async def _create_mission_in_observing_outcome_and_link(
     engine = create_async_engine(to_async_url(migrated_db))
     async with engine.begin() as conn:
         await conn.execute(
-            text("UPDATE scheduled_reevaluations SET mission_id = :mid WHERE reevaluation_id = :rid"),
+            text(
+                "UPDATE scheduled_reevaluations SET mission_id = :mid WHERE reevaluation_id = :rid"
+            ),
             {"mid": mission_id, "rid": reevaluation_id},
         )
     await engine.dispose()
@@ -429,7 +434,8 @@ async def _mission_event_count(migrated_db: str, mission_id: str) -> int:
     async with engine.connect() as conn:
         count = (
             await conn.execute(
-                text("SELECT count(*) FROM mission_events WHERE mission_id = :mid"), {"mid": mission_id}
+                text("SELECT count(*) FROM mission_events WHERE mission_id = :mid"),
+                {"mid": mission_id},
             )
         ).scalar_one()
     await engine.dispose()
@@ -461,7 +467,7 @@ async def test_reclaimed_reevaluation_when_mission_still_waiting_reprocesses_and
     result = await decide_and_persist(payment_id, redis_client=redis_client)
     assert result["chosen_action"] == "RETRY_LATER"
     reevaluation_id = result["scheduled_reevaluation_id"]
-    mission_id = await _create_mission_in_observing_outcome_and_link(
+    await _create_mission_in_observing_outcome_and_link(
         migrated_db, payment_id=payment_id, reevaluation_id=reevaluation_id
     )
 
@@ -487,7 +493,9 @@ async def test_reclaimed_reevaluation_when_mission_still_waiting_reprocesses_and
             return await real_process_payment_failure(pid, *args, **kwargs)
         call_count["n"] += 1
         if call_count["n"] == 1:
-            raise RuntimeError("simulated crash mid-reevaluation, after the claim already committed")
+            raise RuntimeError(
+                "simulated crash mid-reevaluation, after the claim already committed"
+            )
         return await real_process_payment_failure(pid, *args, **kwargs)
 
     monkeypatch.setattr(retry_scheduler_module, "process_payment_failure", _crash_once_then_succeed)
@@ -516,7 +524,9 @@ async def test_reclaimed_reevaluation_when_mission_still_waiting_reprocesses_and
             .mappings()
             .first()
         )
-    assert fired_row["status"] == "FIRED", "claimed but crashed -- must still be FIRED, not orphan-lost"
+    assert (
+        fired_row["status"] == "FIRED"
+    ), "claimed but crashed -- must still be FIRED, not orphan-lost"
     assert fired_row["lease_expires_at"] is not None
 
     # Second poll, past the lease -- this is the reclaim (and stands in for
@@ -552,7 +562,9 @@ async def test_reclaimed_reevaluation_when_mission_still_waiting_reprocesses_and
         f"a successfully reprocessed reclaim must reach the terminal COMPLETED status, "
         f"got {final_row['status']!r} -- no orphan should survive"
     )
-    assert diagnoses_after > diagnoses_before, "the reclaimed reprocessing must have genuinely re-run"
+    assert (
+        diagnoses_after > diagnoses_before
+    ), "the reclaimed reprocessing must have genuinely re-run"
 
 
 @pytest.mark.asyncio
@@ -628,7 +640,9 @@ async def test_reclaimed_reevaluation_when_mission_already_advanced_is_cancelled
         second_poll = await run_once(redis_client)
     finally:
         clock_module.utcnow = original_utcnow
-    assert second_poll >= 1, "the lease-expired row must still be picked up (claim succeeds either way)"
+    assert (
+        second_poll >= 1
+    ), "the lease-expired row must still be picked up (claim succeeds either way)"
 
     assert call_count["n"] == 1, (
         "process_payment_failure must NOT be called again -- the mission already moved on, "
@@ -654,9 +668,9 @@ async def test_reclaimed_reevaluation_when_mission_already_advanced_is_cancelled
     )
 
     events_after_reclaim = await _mission_event_count(migrated_db, mission_id)
-    assert events_after_reclaim == events_before_reclaim, (
-        "no new mission_events row may be written by a cancelled (not reprocessed) reclaim"
-    )
+    assert (
+        events_after_reclaim == events_before_reclaim
+    ), "no new mission_events row may be written by a cancelled (not reprocessed) reclaim"
 
 
 @pytest.mark.asyncio
@@ -688,9 +702,7 @@ async def test_mission_reaches_terminal_state_despite_a_crash_during_replan(
     async with engine.connect() as conn:
         before = (
             await conn.execute(
-                text(
-                    "SELECT state, current_round FROM recovery_missions WHERE mission_id = :mid"
-                ),
+                text("SELECT state, current_round FROM recovery_missions WHERE mission_id = :mid"),
                 {"mid": mission_id},
             )
         ).first()

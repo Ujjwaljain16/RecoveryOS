@@ -284,7 +284,9 @@ class TestCalibrationLoader:
         rng = SimRng(seed)
         clock = SimClock(datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC))
         merchants = MerchantGenerator(id_gen, rng, clock.get_time()).generate_merchants()
-        customers = CustomerGenerator(id_gen, rng, clock.get_time()).generate_customers(100, merchants)
+        customers = CustomerGenerator(id_gen, rng, clock.get_time()).generate_customers(
+            100, merchants
+        )
         noise = ObservationNoisePipeline(rng, ambiguity_rate=0.10)
         latent_fn = LatentRecoverabilityFunction(rng)
 
@@ -298,9 +300,9 @@ class TestCalibrationLoader:
             noise_pipeline=noise,
             latent_function=latent_fn,
         )
-        assert gen._baseline_failure_rate == 0.9, (
-            "PaymentGenerator did not pick up the patched calibration value"
-        )
+        assert (
+            gen._baseline_failure_rate == 0.9
+        ), "PaymentGenerator did not pick up the patched calibration value"
 
         batch = gen.generate_batch(400, "sim-test")
         observed_rate = sum(1 for p in batch.payments if p.status == "failed") / len(batch.payments)
@@ -333,9 +335,9 @@ class TestCalibrationLoader:
             noise_pipeline=gen.noise_pipeline,
             latent_function=gen.latent_function,
         )
-        assert ep_gen._baseline_failure_rate == 0.9, (
-            "EpisodeGenerator did not pick up the patched calibration value"
-        )
+        assert (
+            ep_gen._baseline_failure_rate == 0.9
+        ), "EpisodeGenerator did not pick up the patched calibration value"
 
     @staticmethod
     def _build_episode_gen_scenarios_shared():
@@ -343,7 +345,12 @@ class TestCalibrationLoader:
 
         from simulator.run import build_simulator
 
-        return build_simulator(seed=321, scenario_config={}, customer_count=100, start_time=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC))
+        return build_simulator(
+            seed=321,
+            scenario_config={},
+            customer_count=100,
+            start_time=datetime(2026, 1, 1, 9, 0, 0, tzinfo=UTC),
+        )
 
 
 # ─── Episode engine smoke test ────────────────────────────────────────────────

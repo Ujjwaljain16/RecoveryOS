@@ -95,7 +95,9 @@ async def _run(monkeypatch, finalize_response: dict):
 
 
 async def test_recommended_action_outside_enum_fails_closed(monkeypatch):
-    result = await _run(monkeypatch, _valid_finalize_fields(recommended_action="TRANSFER_ALL_FUNDS"))
+    result = await _run(
+        monkeypatch, _valid_finalize_fields(recommended_action="TRANSFER_ALL_FUNDS")
+    )
     assert result is None
 
 
@@ -131,7 +133,10 @@ async def test_smuggled_execution_parameters_are_inert(monkeypatch):
     result = await _run(
         monkeypatch,
         _valid_finalize_fields(
-            amount_paise=4_700_000, customer_id="cust_victim", order_id="order_1", provider="razorpay"
+            amount_paise=4_700_000,
+            customer_id="cust_victim",
+            order_id="order_1",
+            provider="razorpay",
         ),
     )
     assert result is not None
@@ -426,10 +431,15 @@ def test_fusion_never_selects_a_candidate_whose_own_verdict_is_not_allow(
     from services.policy_engine.evaluate import evaluate
 
     decision = evaluate(
-        payment_ctx, CandidateContext(action_type="RETRY_NOW", expected_value_paise=8_200), policy_config_ctx
+        payment_ctx,
+        CandidateContext(action_type="RETRY_NOW", expected_value_paise=8_200),
+        policy_config_ctx,
     )
     recommendation = _RecommendationContext(
-        recommendation_id="rec_1", recommended_action=recommended_action, confidence=0.9, risk_flags=frozenset()
+        recommendation_id="rec_1",
+        recommended_action=recommended_action,
+        confidence=0.9,
+        risk_flags=frozenset(),
     )
 
     fused_nba, _fused_decision, provenance = _apply_ai_fusion(
@@ -475,7 +485,10 @@ def test_fusion_never_selects_a_near_tied_candidate_individually_blocked_while_w
     assert decision.verdict == "ALLOW"  # sanity: the winner itself is fine
 
     recommendation = _RecommendationContext(
-        recommendation_id="rec_2", recommended_action="RETRY_NOW", confidence=0.9, risk_flags=frozenset()
+        recommendation_id="rec_2",
+        recommended_action="RETRY_NOW",
+        confidence=0.9,
+        risk_flags=frozenset(),
     )
     fused_nba, _fused_decision, provenance = _apply_ai_fusion(
         candidates=candidates,

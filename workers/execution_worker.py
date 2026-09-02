@@ -178,7 +178,9 @@ def _fetch_retry_cooldown_hours(conn: Connection, decision_id: str) -> int:
         ),
         {"decision_id": decision_id},
     ).first()
-    return row[0] if row is not None else 12  # matches PolicyConfig.retry_cooldown_hours' own default
+    return (
+        row[0] if row is not None else 12
+    )  # matches PolicyConfig.retry_cooldown_hours' own default
 
 
 def _advance_mission_after_outcome(
@@ -222,7 +224,10 @@ def _advance_mission_after_outcome(
             to_state="OBSERVING_OUTCOME",
             event_type="RECOVERY_SUCCEEDED",
             actor="execution_worker",
-            payload={"action_type": action_type, "recovered_amount_paise": result.recovered_amount_paise},
+            payload={
+                "action_type": action_type,
+                "recovered_amount_paise": result.recovered_amount_paise,
+            },
             increment_attempt=True,
             now=now,
         )

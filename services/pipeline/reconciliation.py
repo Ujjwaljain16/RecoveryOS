@@ -96,7 +96,9 @@ async def _fetch_retry_cooldown_hours_async(app_session: AsyncSession, decision_
             {"decision_id": decision_id},
         )
     ).first()
-    return row[0] if row is not None else 12  # matches PolicyConfig.retry_cooldown_hours' own default
+    return (
+        row[0] if row is not None else 12
+    )  # matches PolicyConfig.retry_cooldown_hours' own default
 
 
 async def _advance_mission_on_external_resolution(

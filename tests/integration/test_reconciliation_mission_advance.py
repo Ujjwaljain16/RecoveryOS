@@ -63,9 +63,7 @@ async def _seed_pending_recovery_with_mission(
             },
         )
         await conn.execute(
-            text(
-                "INSERT INTO policy_configs (policy_config_id, max_retries) VALUES (:pcid, :mr)"
-            ),
+            text("INSERT INTO policy_configs (policy_config_id, max_retries) VALUES (:pcid, :mr)"),
             {"pcid": policy_config_id, "mr": max_retries},
         )
         await conn.execute(
@@ -331,7 +329,6 @@ async def test_reconciliation_without_an_active_mission_is_a_safe_no_op(migrated
             },
         )
     await engine.dispose()
-
 
     async with get_app_session_factory()() as session:
         recovery_id_result = await reconcile_pending_recovery(

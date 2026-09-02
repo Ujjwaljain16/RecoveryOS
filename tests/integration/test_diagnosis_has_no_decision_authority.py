@@ -137,11 +137,7 @@ def test_ai_risk_signal_escalation_rule_is_the_only_ai_aware_rule():
         and issubclass(cls, rules_module.PolicyRule)
         and cls is not rules_module.PolicyRule
     ]
-    ai_aware = [
-        cls
-        for cls in all_rule_classes
-        if "ai_risk" in inspect.getsource(cls).lower()
-    ]
+    ai_aware = [cls for cls in all_rule_classes if "ai_risk" in inspect.getsource(cls).lower()]
     assert [cls.__name__ for cls in ai_aware] == ["AIRiskSignalEscalationRule"]
 
 

@@ -539,17 +539,23 @@ async def compute_and_persist_compliance_aware_baseline_run(
         merchant_row[0] if merchant_row and merchant_row[0] else PLATFORM_DEFAULT_POLICY_CONFIG_ID
     )
     policy_config_row = (
-        await session.execute(
-            text(
-                "SELECT max_retries, retry_cooldown_hours, max_amount_paise, "
-                "escalate_after_failures, min_expected_value_paise FROM policy_configs "
-                "WHERE policy_config_id = :pcid"
-            ),
-            {"pcid": policy_config_id},
+        (
+            await session.execute(
+                text(
+                    "SELECT max_retries, retry_cooldown_hours, max_amount_paise, "
+                    "escalate_after_failures, min_expected_value_paise FROM policy_configs "
+                    "WHERE policy_config_id = :pcid"
+                ),
+                {"pcid": policy_config_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     policy_config_ctx = (
-        PolicyConfigContext(**policy_config_row) if policy_config_row else _DEFAULT_POLICY_CONFIG_CTX
+        PolicyConfigContext(**policy_config_row)
+        if policy_config_row
+        else _DEFAULT_POLICY_CONFIG_CTX
     )
 
     # Same signal SystemicSuppressionRule's real caller

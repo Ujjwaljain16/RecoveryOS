@@ -50,9 +50,7 @@ async def _seed_retry_now_favored_payment(
         # max_retries for their own scenario, and this test's stopping-rule
         # assertions need a value under this test's own control.
         await conn.execute(
-            text(
-                "INSERT INTO policy_configs (policy_config_id, max_retries) VALUES (:pcid, 3)"
-            ),
+            text("INSERT INTO policy_configs (policy_config_id, max_retries) VALUES (:pcid, 3)"),
             {"pcid": policy_config_id},
         )
         await conn.execute(
@@ -94,9 +92,13 @@ async def _seed_retry_now_favored_payment(
     return payment_id, merchant_id, bank
 
 
-async def _jobs_for_payment(redis_client, payment_id: str, after_id: str = "-") -> list[tuple[str, dict]]:
+async def _jobs_for_payment(
+    redis_client, payment_id: str, after_id: str = "-"
+) -> list[tuple[str, dict]]:
     entries = await redis_client.xrange("stream:recovery_jobs", min=after_id, max="+")
-    return [(entry_id, fields) for entry_id, fields in entries if fields.get("payment_id") == payment_id]
+    return [
+        (entry_id, fields) for entry_id, fields in entries if fields.get("payment_id") == payment_id
+    ]
 
 
 class FlakyProvider:
@@ -107,12 +109,18 @@ class FlakyProvider:
     def __init__(self):
         self.calls = 0
 
-    def retry(self, conn, payment_id: str, amount_paise: int, attempt_number: int) -> ProviderResult:
+    def retry(
+        self, conn, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         self.calls += 1
         if self.calls == 1:
-            return ProviderResult(outcome="FAILED", provider_ref="flaky_1", recovered_amount_paise=0)
+            return ProviderResult(
+                outcome="FAILED", provider_ref="flaky_1", recovered_amount_paise=0
+            )
         return ProviderResult(
-            outcome="SUCCESS", provider_ref=f"flaky_{self.calls}", recovered_amount_paise=amount_paise
+            outcome="SUCCESS",
+            provider_ref=f"flaky_{self.calls}",
+            recovered_amount_paise=amount_paise,
         )
 
 
@@ -173,7 +181,9 @@ async def test_mission_closes_the_loop_fails_then_succeeds(migrated_db, redis_cl
     with sync_engine.connect() as conn:
         mission_after_failure = (
             conn.execute(
-                text("SELECT state, current_attempt FROM recovery_missions WHERE mission_id = :mid"),
+                text(
+                    "SELECT state, current_attempt FROM recovery_missions WHERE mission_id = :mid"
+                ),
                 {"mid": mission_id},
             )
             .mappings()
@@ -236,7 +246,9 @@ async def test_mission_closes_the_loop_fails_then_succeeds(migrated_db, redis_cl
             .first()
         )
     assert mission_after_reinvestigation["state"] == "EXECUTING"
-    assert mission_after_reinvestigation["current_round"] == 1, "REINVESTIGATION_STARTED increments the round"
+    assert (
+        mission_after_reinvestigation["current_round"] == 1
+    ), "REINVESTIGATION_STARTED increments the round"
 
     jobs_round2 = await _jobs_for_payment(redis_client, payment_id, after_id="(" + job1_id)
     assert len(jobs_round2) == 1
@@ -289,11 +301,15 @@ async def test_mission_closes_the_loop_fails_then_succeeds(migrated_db, redis_cl
 
 class _AlwaysPending:
     def retry(self, conn, payment_id, amount_paise, attempt_number):
-        return ProviderResult(outcome="PENDING", provider_ref="race_test_order", recovered_amount_paise=0)
+        return ProviderResult(
+            outcome="PENDING", provider_ref="race_test_order", recovered_amount_paise=0
+        )
 
 
 @pytest.mark.asyncio
-async def test_mission_reaches_executing_before_job_is_enqueued(migrated_db, redis_client, monkeypatch):
+async def test_mission_reaches_executing_before_job_is_enqueued(
+    migrated_db, redis_client, monkeypatch
+):
     """
     Regression test for a real race found live-testing the Phase 12/13 demo
     endpoints (POST /v1/simulate/scenario) against a genuinely separate,
@@ -355,9 +371,7 @@ async def test_mission_reaches_executing_before_job_is_enqueued(migrated_db, red
             process_job(conn, job_fields, provider=_AlwaysPending())
         return "0-1"
 
-    monkeypatch.setattr(
-        "services.execution_engine.publisher.enqueue_recovery_job", _race_enqueue
-    )
+    monkeypatch.setattr("services.execution_engine.publisher.enqueue_recovery_job", _race_enqueue)
 
     await process_payment_failure(payment_id, bank, redis_client)
 

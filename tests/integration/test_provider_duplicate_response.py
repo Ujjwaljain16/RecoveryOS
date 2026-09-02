@@ -39,7 +39,9 @@ class DuplicateSuccessProvider:
     def __init__(self):
         self.call_count = 0
 
-    def retry(self, conn, payment_id: str, amount_paise: int, attempt_number: int) -> ProviderResult:
+    def retry(
+        self, conn, payment_id: str, amount_paise: int, attempt_number: int
+    ) -> ProviderResult:
         self.call_count += 1
         return ProviderResult(
             outcome="SUCCESS",
@@ -102,7 +104,9 @@ async def _seed_decision_fk_chain(migrated_db: str, payment_id: str, amount_pais
     return decision_id
 
 
-def _make_job(payment_id: str, decision_id: str, amount_paise: int, attempt_number: int = 1) -> dict:
+def _make_job(
+    payment_id: str, decision_id: str, amount_paise: int, attempt_number: int = 1
+) -> dict:
     return {
         "payment_id": payment_id,
         "idempotency_key": f"recovery:{payment_id}:RETRY_NOW:{attempt_number}",
@@ -140,7 +144,9 @@ async def test_provider_reinvoked_after_already_recorded_success_does_not_double
         f"the provider must be invoked exactly once for a job whose idempotency_key "
         f"already has a persisted outcome -- it was invoked {spy.call_count} times"
     )
-    assert first == second, "the redelivered call must return the SAME persisted result, not a fresh one"
+    assert (
+        first == second
+    ), "the redelivered call must return the SAME persisted result, not a fresh one"
 
     with engine.connect() as conn:
         recoveries_count = conn.execute(
@@ -148,7 +154,9 @@ async def test_provider_reinvoked_after_already_recorded_success_does_not_double
             {"key": job["idempotency_key"]},
         ).scalar_one()
         ledger_total = conn.execute(
-            text("SELECT COALESCE(SUM(actual_recovery_paise), 0) FROM recovery_ledger WHERE payment_id = :pid"),
+            text(
+                "SELECT COALESCE(SUM(actual_recovery_paise), 0) FROM recovery_ledger WHERE payment_id = :pid"
+            ),
             {"pid": payment_id},
         ).scalar_one()
 

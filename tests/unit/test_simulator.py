@@ -90,7 +90,7 @@ class TestSimulatorStartTimeControl:
         gen_b, _, _, manifest_b = build_simulator(seed=7, customer_count=100, start_time=seed_b)
         batch_b = gen_b.generate_batch(150, manifest_b.simulation_id)
 
-        for pa, pb in zip(batch_a.payments, batch_b.payments):
+        for pa, pb in zip(batch_a.payments, batch_b.payments, strict=False):
             assert pa.payment_id == pb.payment_id
             assert pa.method == pb.method
             assert pa.bank == pb.bank
@@ -255,7 +255,14 @@ class TestSimulatorSplitIndependence:
         # alone could theoretically still coincide in content, so also check
         # the underlying feature tuples aren't a positional re-run of train.
         def _content(ep):
-            return (ep.amount_paise, ep.method, ep.bank, ep.hour_of_day, ep.day_of_week, ep.merchant_id)
+            return (
+                ep.amount_paise,
+                ep.method,
+                ep.bank,
+                ep.hour_of_day,
+                ep.day_of_week,
+                ep.merchant_id,
+            )
 
         train_content = [_content(e) for e in train_eps]
         val_content = [_content(e) for e in val_eps]

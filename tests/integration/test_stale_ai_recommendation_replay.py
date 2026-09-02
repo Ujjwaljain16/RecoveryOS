@@ -37,7 +37,11 @@ def _fixed_candidates(evi_by_action: dict[str, int]):
     action_types = ("RETRY_NOW", "RETRY_LATER", "ALT_ROUTE", "REMINDER", "ESCALATE", "DO_NOTHING")
 
     async def _fake_generate_candidate_actions(
-        session, merchant_id, amount_paise, customer_is_returning, base_propensity_prob_bps,
+        session,
+        merchant_id,
+        amount_paise,
+        customer_is_returning,
+        base_propensity_prob_bps,
         anomaly_context,
     ):
         return tuple(
