@@ -1069,6 +1069,11 @@ class BaselineRun(Base):
     # before success/exhaustion -- NULL for the original single-attempt
     # baseline runs, which have no concept of "attempts used" beyond 1.
     attempts_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Migration 0024: which policy_engine rule (if any) stopped a
+    # compliance-aware baseline run short of max_retries/success -- NULL for
+    # the single-attempt baseline and the compliance-blind fair baseline,
+    # neither of which evaluate the compliance-rule chain at all.
+    blocked_by_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=func.now()
     )

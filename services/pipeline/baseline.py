@@ -32,6 +32,7 @@ ground truth exists at all.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +41,21 @@ from integrations.razorpay.adapter import (
     _recompute_attempt_aware_prob_bps,
     resolve_simulated_outcome,
 )
+from recoveryos import clock
+
+# Evaluation-only import, deliberately breaking this module's usual
+# no-cross-service-import discipline (see PLATFORM_DEFAULT_POLICY_CONFIG_ID's
+# comment below): the compliance-aware baseline's entire purpose is to prove
+# it is bound by the EXACT SAME compliance machinery RecoveryOS itself runs,
+# not a second, independently-written approximation of it that could quietly
+# drift out of sync. evaluate()/resolve_decision_now() are pure/deterministic
+# given their inputs -- calling them here does not invoke EVI, propensity, or
+# next-best-action selection (see compute_and_persist_compliance_aware_baseline_run's
+# own docstring for why that boundary matters).
+from services.policy_engine.evaluate import evaluate
+from services.policy_engine.rules import CandidateContext, PaymentContext, PolicyConfigContext
+from services.recovery_engine.orchestrator import resolve_decision_now
+from services.risk_engine.anomaly import is_cohort_suppressed
 
 # Baseline heuristic — matches models/recovery/certificate.py's naive
 # baseline exactly: retry everything except PERMANENT failure_class or an
@@ -188,8 +204,35 @@ async def compute_and_persist_baseline_run(session: AsyncSession, payment_id: st
 # Merchant's own policy_config_id is NULL until explicitly set — mirrors
 # services/recovery_engine/orchestrator.py's own PLATFORM_DEFAULT_POLICY_
 # CONFIG_ID sentinel value exactly (not imported from there, per this
-# module's own "no cross-service import" discipline stated above).
+# module's own "no cross-service import" discipline stated above -- the
+# compliance-aware baseline below is the one deliberate exception to that
+# discipline, and only for evaluate()/resolve_decision_now()).
 PLATFORM_DEFAULT_POLICY_CONFIG_ID = "00000000-0000-0000-0000-000000000001"
+
+# PolicyConfig's own column defaults (recoveryos/models.py) -- used only if
+# a payment's merchant somehow resolves to no policy_config row at all
+# (shouldn't happen in the evaluation harness: accelerate_evaluation_cooldown()
+# pre-seeds the platform-default row before any payment is decided). Matches
+# compute_and_persist_fair_baseline_run's own max_retries=2 fallback, extended
+# to all 5 fields since this baseline needs the full PolicyConfigContext.
+_DEFAULT_POLICY_CONFIG_CTX = PolicyConfigContext(
+    max_retries=2,
+    retry_cooldown_hours=12,
+    max_amount_paise=2_500_000,
+    escalate_after_failures=2,
+    min_expected_value_paise=0,
+)
+
+# A candidate's expected_value_paise only needs to clear
+# policy_config.min_expected_value_paise (MinExpectedValueRule) -- this
+# baseline never scores EVI, so it uses a fixed, deliberately large dummy
+# constant that trivially clears any realistic floor, exactly like
+# ai_risk_flags=frozenset() trivially clears AIRiskSignalEscalationRule. Not
+# a real economic signal; never fed into any decision, persisted anywhere, or
+# compared against RecoveryOS's own EVI.
+_COMPLIANCE_BASELINE_DUMMY_EVI_PAISE = 10**12
+
+PIPELINE_BASELINE_COMPLIANCE_AWARE_EXPERIMENT_ID = "00000000-0000-0000-0000-0000000000ea"
 
 
 async def compute_and_persist_fair_baseline_run(
@@ -372,5 +415,285 @@ async def compute_and_persist_fair_baseline_run(
             "outcome": outcome,
             "recovered_amount_paise": recovered_amount_paise,
             "attempts_used": attempts_used,
+        }
+    )
+
+
+async def compute_and_persist_compliance_aware_baseline_run(
+    session: AsyncSession, payment_id: str
+) -> dict | None:
+    """
+    compute_and_persist_fair_baseline_run() above gives the naive baseline
+    RecoveryOS's own attempt BUDGET (max_retries), but its decision policy
+    (_would_baseline_retry) ignores every services.policy_engine rule --
+    OptOutRule, AmountLimitRule, and the real regulatory rules
+    (EMandateRetryComplianceRule/AutopayExecutionWindowRule/
+    QuietHoursComplianceRule) included. A negative incremental-revenue
+    number against THAT baseline conflates "RecoveryOS made worse choices"
+    with "RecoveryOS obeys compliance constraints the baseline is allowed to
+    ignore" -- not a fair product comparison.
+
+    This baseline gives the naive strategy the SAME compliance envelope, by
+    running each simulated attempt through the real
+    services.policy_engine.evaluate() rule chain -- imported and called
+    unmodified, not reimplemented -- with resolve_decision_now() supplying
+    the same "now" semantics a real decision would get. The candidate is
+    always a fixed RETRY_NOW proposal with a dummy, trivially-large EVI
+    (_COMPLIANCE_BASELINE_DUMMY_EVI_PAISE) and no ai_risk_flags: this
+    deliberately never invokes propensity scoring, EVI calculation, or
+    next-best-action selection (RecoveryOS's own decision-intelligence
+    layer) -- only the compliance-blocking machinery every candidate action
+    must clear regardless of how it was chosen. That is what keeps this a
+    counterfactual COMPARATOR, not a copy of RecoveryOS: the attempt policy
+    stays exactly as naive as its sibling (always propose RETRY_NOW, subject
+    to the same _would_baseline_retry hopeless-failure filter), only now
+    each attempt can also be compliance-blocked the same way a real one
+    could be.
+
+    On the first BLOCK/ESCALATE verdict, the run stops (matching
+    RecoveryOS's own behavior -- a blocked payment gets no further attempts
+    in that round) and blocked_by_rule records which rule stopped it, taken
+    from the verdict's own rule_trace (services/policy_engine/evaluate.py)
+    -- not re-derived by inspecting rule internals separately.
+
+    Same shared resolve_simulated_outcome()/_recompute_attempt_aware_prob_bps
+    functions and seed_key=f"{payment_id}:{attempt_number}" as both
+    RecoveryOS's real execution and the existing fair baseline -- the outcome
+    dice-roll is identical across all three, only which attempts are even
+    allowed to roll differs.
+
+    Persisted under a THIRD experiment_id
+    (PIPELINE_BASELINE_COMPLIANCE_AWARE_EXPERIMENT_ID) -- additive, does not
+    touch the single-attempt or compliance-blind fair baseline rows.
+
+    Returns {"outcome", "recovered_amount_paise", "attempts_used",
+    "blocked_by_rule"} or None if this payment has no simulator ground truth
+    to compare against.
+    """
+    existing = (
+        (
+            await session.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise, attempts_used, blocked_by_rule "
+                    "FROM baseline_runs WHERE payment_id = :pid AND experiment_id = :exp_id"
+                ),
+                {"pid": payment_id, "exp_id": PIPELINE_BASELINE_COMPLIANCE_AWARE_EXPERIMENT_ID},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if existing is not None:
+        return dict(existing)
+
+    payment_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT amount_paise, failure_class, failure_code, merchant_id, "
+                    "customer_id, method, bank, failed_at FROM payments WHERE payment_id = :pid"
+                ),
+                {"pid": payment_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if payment_row is None:
+        return None
+
+    latent_row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT true_recovery_prob_bps, customer_patience_score, bank_latent_health, "
+                    "latent_customer_propensity, true_failure_type FROM simulator_latent_state "
+                    "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if latent_row is None:
+        # No ground truth (a genuinely live payment) — same as both sibling
+        # baselines, do not fabricate a number.
+        return None
+
+    customer_row = (
+        await session.execute(
+            text("SELECT opted_out_at FROM customers WHERE customer_id = :cid"),
+            {"cid": payment_row["customer_id"]},
+        )
+    ).first()
+    opted_out_at = customer_row[0] if customer_row else None
+
+    merchant_row = (
+        await session.execute(
+            text("SELECT policy_config_id FROM merchants WHERE merchant_id = :mid"),
+            {"mid": payment_row["merchant_id"]},
+        )
+    ).first()
+    policy_config_id = (
+        merchant_row[0] if merchant_row and merchant_row[0] else PLATFORM_DEFAULT_POLICY_CONFIG_ID
+    )
+    policy_config_row = (
+        await session.execute(
+            text(
+                "SELECT max_retries, retry_cooldown_hours, max_amount_paise, "
+                "escalate_after_failures, min_expected_value_paise FROM policy_configs "
+                "WHERE policy_config_id = :pcid"
+            ),
+            {"pcid": policy_config_id},
+        )
+    ).mappings().first()
+    policy_config_ctx = (
+        PolicyConfigContext(**policy_config_row) if policy_config_row else _DEFAULT_POLICY_CONFIG_CTX
+    )
+
+    # Same signal SystemicSuppressionRule's real caller
+    # (orchestrator._fetch_anomaly_context) reads -- is_cohort_suppressed()
+    # only ever returns a fresh, active HIGH-severity window or None, so
+    # "suppression is not None" is exactly the boolean
+    # orchestrator.py:505-509 derives from its own AnomalyContext, without
+    # needing this module to also fetch observed_rate/baseline_rate (only
+    # used by EVI/timing penalties, which this baseline never computes).
+    suppression = await is_cohort_suppressed(session, bank=payment_row["bank"])
+    is_high_severity_anomaly = suppression is not None
+
+    would_retry = _would_baseline_retry(payment_row["failure_class"], payment_row["failure_code"])
+
+    if not would_retry:
+        outcome, recovered_amount_paise, attempts_used, blocked_by_rule = (
+            OUTCOME_NOT_ATTEMPTED,
+            0,
+            0,
+            None,
+        )
+    else:
+        outcome, recovered_amount_paise, attempts_used, blocked_by_rule = (
+            OUTCOME_NOT_RECOVERED,
+            0,
+            0,
+            None,
+        )
+        last_attempt_at = None
+        for attempt_number in range(1, policy_config_ctx.max_retries + 1):
+            now = resolve_decision_now(
+                is_synthetic=True,
+                failed_at=payment_row["failed_at"],
+                last_attempt_at=last_attempt_at,
+            )
+            is_expired = payment_row["failed_at"] is not None and (
+                now - payment_row["failed_at"] > timedelta(days=7)
+            )
+            payment_ctx = PaymentContext(
+                payment_id=payment_id,
+                status="failed",
+                is_expired=is_expired,
+                opted_out_at=opted_out_at,
+                last_attempt_at=last_attempt_at,
+                attempt_number=attempt_number,
+                amount_paise=payment_row["amount_paise"],
+                now=now,
+                method=payment_row["method"],
+                is_high_severity_anomaly=is_high_severity_anomaly,
+            )
+            candidate_ctx = CandidateContext(
+                action_type="RETRY_NOW",
+                expected_value_paise=_COMPLIANCE_BASELINE_DUMMY_EVI_PAISE,
+                ai_risk_flags=frozenset(),
+            )
+            decision = evaluate(payment_ctx, candidate_ctx, policy_config_ctx)
+            if decision.verdict != "ALLOW":
+                blocked_by_rule = decision.rule_trace[-1]["rule"]
+                break
+
+            attempts_used = attempt_number
+            if attempt_number == 1:
+                true_recovery_prob_bps = latent_row["true_recovery_prob_bps"]
+            else:
+                true_recovery_prob_bps = _recompute_attempt_aware_prob_bps(
+                    customer_patience_score=float(latent_row["customer_patience_score"]),
+                    bank_latent_health=float(latent_row["bank_latent_health"]),
+                    latent_customer_propensity=float(latent_row["latent_customer_propensity"]),
+                    true_failure_type_value=latent_row["true_failure_type"],
+                    attempt_number=attempt_number,
+                    seed_key=f"{payment_id}:{attempt_number}",
+                )
+            # This attempt now genuinely "executes" -- resolve_decision_now's
+            # own contract (services/recovery_engine/orchestrator.py) is that
+            # every decision AFTER the first always uses the REAL clock,
+            # because the previous attempt was actually scheduled and
+            # executed in real time; a synthetic payment's first decision
+            # borrows its simulated failed_at only for THAT decision, not for
+            # when the resulting attempt runs. last_attempt_at fed into the
+            # next round must therefore be the real execution moment, not
+            # attempt 1's synthetic decision `now` -- otherwise a failed_at
+            # that lands in the simulated future relative to real wall-clock
+            # time makes CooldownRule's elapsed go negative and wrongly
+            # blocks every second attempt (found live: seed=5 leftover-state
+            # smoke test showed exactly this before this fix). For
+            # attempt_number > 1, `now` is already clock.utcnow() per
+            # resolve_decision_now's own contract, so this is a no-op there.
+            last_attempt_at = now if attempt_number > 1 else clock.utcnow()
+            if resolve_simulated_outcome(
+                true_recovery_prob_bps, seed_key=f"{payment_id}:{attempt_number}"
+            ):
+                outcome, recovered_amount_paise = OUTCOME_RECOVERED, payment_row["amount_paise"]
+                break
+
+    inserted = (
+        (
+            await session.execute(
+                text(
+                    "INSERT INTO baseline_runs (run_id, experiment_id, payment_id, "
+                    "recovered_amount_paise, outcome, attempts_used, blocked_by_rule) "
+                    "VALUES (:run_id, :exp_id, :pid, :amount, :outcome, :attempts_used, :blocked_by_rule) "
+                    "ON CONFLICT (payment_id, experiment_id) DO NOTHING "
+                    "RETURNING outcome, recovered_amount_paise, attempts_used, blocked_by_rule"
+                ),
+                {
+                    "run_id": str(uuid.uuid4()),
+                    "exp_id": PIPELINE_BASELINE_COMPLIANCE_AWARE_EXPERIMENT_ID,
+                    "pid": payment_id,
+                    "amount": recovered_amount_paise,
+                    "outcome": outcome,
+                    "attempts_used": attempts_used,
+                    "blocked_by_rule": blocked_by_rule,
+                },
+            )
+        )
+        .mappings()
+        .first()
+    )
+    await session.commit()
+
+    if inserted is not None:
+        return dict(inserted)
+
+    # Lost the race to a concurrent caller — re-select the row it inserted.
+    existing = (
+        (
+            await session.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise, attempts_used, blocked_by_rule "
+                    "FROM baseline_runs WHERE payment_id = :pid AND experiment_id = :exp_id"
+                ),
+                {"pid": payment_id, "exp_id": PIPELINE_BASELINE_COMPLIANCE_AWARE_EXPERIMENT_ID},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    return (
+        dict(existing)
+        if existing is not None
+        else {
+            "outcome": outcome,
+            "recovered_amount_paise": recovered_amount_paise,
+            "attempts_used": attempts_used,
+            "blocked_by_rule": blocked_by_rule,
         }
     )
