@@ -4,8 +4,8 @@ Phase 10 — Prometheus metrics (TRD §10), real Postgres/Redis, zero mocks.
 Two mandatory tests (deliverable spec):
   - the /metrics endpoint exposes all 9 required series
   - the AI-diagnoser fallback counter genuinely increments when the LLM
-    path fails (reusing Phase 4's real fallback trigger: an invalid
-    OPENAI_API_KEY, the same mechanism
+    path fails (reusing Phase 4's real fallback trigger: an empty
+    GEMINI_API_KEY, the same mechanism
     tests/integration/test_pipeline_e2e.py's outage test uses)
 """
 
@@ -63,15 +63,15 @@ async def test_metrics_endpoint_exposes_all_required_series(async_client, migrat
 @pytest.mark.asyncio
 async def test_fallback_counter_increments_on_diagnoser_timeout(migrated_db, monkeypatch):
     """
-    Reuses Phase 4's real fallback trigger (an invalid OPENAI_API_KEY --
+    Reuses Phase 4's real fallback trigger (an empty GEMINI_API_KEY --
     same mechanism test_pipeline_e2e.py::test_pipeline_handles_ai_diagnoser_outage_gracefully
     uses) and asserts ai_diagnoser_fallback_total genuinely increments by
     exactly 1 -- not just that the resulting Diagnosis row has
     is_fallback=True (already proven elsewhere), but that the METRIC
     actually moved.
     """
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-    monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "openai")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "gemini")
     from recoveryos.config import get_settings
 
     get_settings.cache_clear()

@@ -133,9 +133,9 @@ async def test_non_gemini_provider_returns_none_immediately(monkeypatch):
     result = await investigate(
         _base_input(),
         diagnoser_session=object(),
-        model="gpt-4o-mini",
+        model="some-other-model",
         api_key="fake",
-        provider="openai",
+        provider="some_other_provider",
         round_timeout_seconds=5.0,
     )
     assert result is None

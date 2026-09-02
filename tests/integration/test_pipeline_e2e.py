@@ -235,11 +235,11 @@ async def test_pipeline_handles_ai_diagnoser_outage_gracefully(
     migrated_db, redis_client, monkeypatch
 ):
     """
-    Kill the AI Diagnoser (no OPENAI_API_KEY) and confirm the pipeline still
+    Kill the AI Diagnoser (no GEMINI_API_KEY) and confirm the pipeline still
     completes via the Phase 4 deterministic fallback — doesn't hang, doesn't
     silently drop the payment, still reaches a terminal ledger row.
     """
-    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
     from recoveryos.config import get_settings
 
     get_settings.cache_clear()

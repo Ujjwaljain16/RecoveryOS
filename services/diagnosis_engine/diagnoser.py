@@ -161,9 +161,12 @@ def _attach_cohort_if_systemic(
 async def diagnose(payment_id: str) -> tuple[DiagnosisOutput, InvestigationResult | None] | None:
     """
     Full diagnosis pipeline for one payment: read (diagnoser_role) ->
-    investigative multi-round loop (Task AGENT1, gemini only) OR single-call
-    LLM attempt (openai) -> deterministic fallback if needed -> uniform
-    cohort attachment. Does NOT persist — diagnoser_role can't write
+    investigative multi-round loop (Task AGENT1, gemini only) ->
+    deterministic fallback if needed -> uniform cohort attachment.
+    diagnose_with_llm()'s single-call path is only ever reached for an
+    unrecognized ai_diagnoser_provider value (gemini always takes the
+    investigative branch above) -- kept as a defensive guard, not a live
+    second provider. Does NOT persist — diagnoser_role can't write
     anywhere, so persistence is always a separate app_role step
     (persist_diagnosis / persist_investigation).
 

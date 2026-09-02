@@ -536,12 +536,12 @@ def test_fallback_flagged_visibly_in_audit_explorer(
 
     Both real LLM entry points diagnoser.py can reach (services.diagnosis_
     engine.diagnoser.investigate for the Gemini investigator loop,
-    diagnose_with_llm for the OpenAI path) are forced to report "no result"
-    here -- not by relying on whatever provider/API key this test
-    environment's .env happens to have configured (which may or may not
-    already fail, and for the Gemini path specifically would otherwise
-    attempt a REAL network call), but by patching both entry points
-    directly. bg_loop runs the real API server on a background THREAD in
+    diagnose_with_llm for the unknown-provider defensive guard) are forced
+    to report "no result" here -- not by relying on whatever provider/API
+    key this test environment's .env happens to have configured (which may
+    or may not already fail, and for the Gemini path specifically would
+    otherwise attempt a REAL network call), but by patching both entry
+    points directly. bg_loop runs the real API server on a background THREAD in
     this SAME process (see that fixture's own docstring), so a plain
     monkeypatch.setattr from this test's main thread genuinely reaches the
     code the server executes -- no subprocess boundary to cross.

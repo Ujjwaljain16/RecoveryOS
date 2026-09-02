@@ -20,7 +20,6 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from recoveryos.database import get_app_session_factory, get_diagnoser_session_factory
-from services.diagnosis_engine import llm_diagnoser as llm_diagnoser_module
 from services.diagnosis_engine.diagnoser import diagnose, persist_diagnosis
 from services.risk_engine.anomaly import AnomalyResult, derive_cohort_id, persist_anomaly_window
 from tests.integration.conftest import seed_merchant_and_customer, to_async_url
@@ -120,25 +119,28 @@ async def test_diagnoser_role_has_no_write_access(migrated_db):
 @pytest.mark.asyncio
 async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, monkeypatch):
     """
-    Forces a REAL asyncio.wait_for timeout (the LLM call coroutine genuinely
-    sleeps longer than settings.ai_diagnoser_timeout_seconds — this is not a
-    simulated/mocked timeout signal, wait_for really fires) and confirms the
-    full diagnose() pipeline falls back to the deterministic rule table with
-    the correct evidence trail, exactly as TRD §4.2's state machine specifies
-    (DIAGNOSING --(AI timeout)--> FALLBACK_DIAGNOSIS).
+    Forces a REAL asyncio.wait_for timeout (the LLM round call coroutine
+    genuinely sleeps longer than settings.ai_diagnoser_gemini_timeout_seconds
+    — this is not a simulated/mocked timeout signal, wait_for really fires)
+    and confirms the full diagnose() pipeline falls back to the
+    deterministic rule table with the correct evidence trail, exactly as
+    TRD §4.2's state machine specifies (DIAGNOSING --(AI timeout)-->
+    FALLBACK_DIAGNOSIS).
     """
-    monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "openai")  # pin regardless of .env's default
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
-    monkeypatch.setenv("AI_DIAGNOSER_TIMEOUT_SECONDS", "0.2")
+    monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "gemini")  # pin regardless of .env's default
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key-not-real")
+    monkeypatch.setenv("AI_DIAGNOSER_GEMINI_TIMEOUT_SECONDS", "0.2")
     from recoveryos.config import get_settings
 
     get_settings.cache_clear()
 
-    async def _hanging_call_llm(diagnosis_input, model, api_key):
+    async def _hanging_generate_json(**kwargs):
         await asyncio.sleep(5.0)  # much longer than the 0.2s timeout above
         raise AssertionError("should never complete — the timeout must fire first")
 
-    monkeypatch.setattr(llm_diagnoser_module, "_call_llm_openai", _hanging_call_llm)
+    monkeypatch.setattr(
+        "services.diagnosis_engine.llm_client.gemini_generate_json", _hanging_generate_json
+    )
 
     merchant_id = str(uuid.uuid4())
     customer_id = str(uuid.uuid4())
@@ -148,7 +150,7 @@ async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, m
     )
 
     output, investigation = await diagnose(payment_id)
-    assert investigation is None  # openai path never runs the investigator
+    assert investigation is None  # the investigator round timed out and failed closed
 
     print(f"\n[test_diagnoser_timeout_falls_back] output={output!r}")
 
@@ -157,8 +159,8 @@ async def test_diagnoser_timeout_falls_back_to_deterministic_rule(migrated_db, m
     assert output.model_version == "fallback-rule-v1"
     assert output.confidence <= 0.6
     assert any(
-        "ai_diagnoser_timeout" in e.fact for e in output.evidence
-    ), f"expected fallback evidence to name the timeout reason, got: {output.evidence}"
+        "ai_investigator_failed" in e.fact for e in output.evidence
+    ), f"expected fallback evidence to name why the investigator didn't produce a result, got: {output.evidence}"
 
     get_settings.cache_clear()
 
@@ -174,12 +176,10 @@ async def test_systemic_degradation_produces_cohort_diagnosis(migrated_db, monke
     actually runs against real persisted data, not just in the unit-level
     manual check done during development.
     """
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-    from recoveryos.config import get_settings
-
-    get_settings.cache_clear()
-
+    # tests/conftest.py's session-wide fixture already forces an empty
+    # GEMINI_API_KEY -> deterministic fallback for every test by default;
+    # no extra env-forcing needed here, this test cares about cohort
+    # attachment, not which path produced the diagnosis.
     merchant_id = str(uuid.uuid4())
     customer_id = str(uuid.uuid4())
     await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
@@ -218,5 +218,3 @@ async def test_systemic_degradation_produces_cohort_diagnosis(migrated_db, monke
     async with get_app_session_factory()() as app_session:
         diagnosis = await persist_diagnosis(app_session, payment_id, output)
     assert diagnosis.cohort_id == expected_cohort_id
-
-    get_settings.cache_clear()

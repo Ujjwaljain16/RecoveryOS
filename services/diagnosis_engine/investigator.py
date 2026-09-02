@@ -492,20 +492,18 @@ async def _run_investigation(
 
 async def _generic_llm_json_call(system_prompt, user_content, schema, model, api_key):
     """
-    llm_diagnoser's _call_llm_gemini/_call_llm_openai have a FIXED schema/
-    prompt baked in for the single-call diagnosis path. The investigator
-    needs a different schema/prompt per round, so it goes straight to the
-    shared low-level client instead.
+    llm_diagnoser's _call_llm_gemini has a FIXED schema/prompt baked in for
+    the single-call diagnosis path. The investigator needs a different
+    schema/prompt per round, so it goes straight to the shared low-level
+    client instead.
     """
     from services.diagnosis_engine.llm_client import (
         gemini_generate_json,
         strip_additional_properties,
     )
 
-    # Only Gemini is wired for the multi-round investigation loop today
-    # (Task AGENT1) -- OpenAI's Structured Outputs path could be added the
-    # same way llm_diagnoser.py's single-call path supports both, but no
-    # OpenAI key has ever been available to build/test that here.
+    # Only Gemini is wired for the multi-round investigation loop (Task
+    # AGENT1) -- the only LLM provider this codebase supports at all.
     return await gemini_generate_json(
         system_prompt=system_prompt,
         user_content=user_content,

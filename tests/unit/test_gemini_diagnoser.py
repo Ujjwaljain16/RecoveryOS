@@ -1,11 +1,11 @@
 """
-Priority 11 -- Gemini provider for the real LLM diagnosis path.
+Priority 11 -- Gemini provider for the real LLM diagnosis path (the only
+LLM provider this codebase supports).
 
-Mirrors test_llm_diagnoser_guards.py's OpenAI-path coverage exactly, but
-through _call_llm_gemini, proving the SAME TRD §9 boundary (typed input,
-schema-constrained output, Pydantic re-validation, apply_adversarial_guards)
-holds regardless of which provider ai_diagnoser_provider selects -- provider
-choice must never be able to weaken the safety boundary.
+Proves the TRD §9 boundary (typed input, schema-constrained output,
+Pydantic re-validation, apply_adversarial_guards) holds through
+_call_llm_gemini, the same guards the deterministic fallback path
+enforces -- no provider-specific carve-out weakens the safety boundary.
 """
 
 from __future__ import annotations
@@ -127,8 +127,8 @@ async def test_gemini_path_non_adversarial_input_is_unaffected(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gemini_missing_api_key_falls_back_cleanly(monkeypatch):
-    """No GEMINI_API_KEY configured -> same fail-closed contract as the
-    OpenAI path: return (None, reason), never raise, caller falls back."""
+    """No GEMINI_API_KEY configured -> fail-closed contract holds: return
+    (None, reason), never raise, caller falls back."""
     monkeypatch.setenv("AI_DIAGNOSER_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "")
     from recoveryos.config import get_settings

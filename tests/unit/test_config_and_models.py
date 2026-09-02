@@ -37,11 +37,11 @@ class TestSettings:
         assert s.default_max_amount_paise == 2_500_000
         assert isinstance(s.default_max_amount_paise, int)
 
-    def test_ai_timeout_is_2_point_5_seconds(self):
+    def test_ai_gemini_timeout_is_4_seconds(self):
         from recoveryos.config import Settings
 
         s = Settings()
-        assert s.ai_diagnoser_timeout_seconds == 2.5
+        assert s.ai_diagnoser_gemini_timeout_seconds == 4.0
 
     def test_cors_allowed_origins_defaults_to_dev_server(self):
         """Task A4: CORS origin is config-driven, not hardcoded in main.py."""

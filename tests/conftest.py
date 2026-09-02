@@ -33,16 +33,17 @@ def _no_real_llm_calls_by_default():
     .env defaults AI_DIAGNOSER_PROVIDER to 'gemini' with a real, working
     free-tier key (Task P11) -- correct for local/docker runs, but the test
     suite must stay hermetic: most integration tests don't mock the LLM
-    path at all and rely on it failing instantly (a placeholder key ->
-    immediate 401 -> deterministic fallback), not on a real network call
-    that can rate-limit (429) under back-to-back test runs. Forces the
-    pre-P11 safe default for the whole session; any test that specifically
-    wants the real Gemini path already monkeypatches AI_DIAGNOSER_PROVIDER
-    itself (see tests/unit/test_gemini_diagnoser.py), which correctly
-    overrides this for the duration of that one test.
+    path at all and rely on it failing instantly with NO network call at
+    all (an empty api_key -> diagnose_with_llm()'s own missing-key
+    short-circuit -> deterministic fallback), not on a real network call
+    that can rate-limit (429) under back-to-back test runs or depend on
+    network reachability at all. Forces an empty key for the whole
+    session; any test that specifically wants the real Gemini path already
+    monkeypatches GEMINI_API_KEY itself (see
+    tests/unit/test_gemini_diagnoser.py), which correctly overrides this
+    for the duration of that one test.
     """
-    os.environ["AI_DIAGNOSER_PROVIDER"] = "openai"
-    os.environ["OPENAI_API_KEY"] = "sk-placeholder"
+    os.environ["AI_DIAGNOSER_PROVIDER"] = "gemini"
     os.environ["GEMINI_API_KEY"] = ""
 
     from recoveryos.config import get_settings

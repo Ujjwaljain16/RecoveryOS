@@ -12,12 +12,12 @@ TRD §9 threat model:
     module ever sees it, and length/character-bounded at the API ingest
     boundary too (apps/api/routers/events.py's `pattern`) -- bounded, not
     absent.
-  - OUTPUT: OpenAI Structured Outputs (`response_format=json_schema,
-    strict=True`) constrains the model to the exact shape below, then this
-    module ALSO re-validates through the same `DiagnosisOutput` Pydantic
-    model real fallback output uses — belt-and-suspenders, since "the API
-    enforced the schema" and "our own code validated it" are two
-    independent guarantees.
+  - OUTPUT: Gemini's schema-constrained structured output
+    (`generationConfig.responseSchema`) constrains the model to the exact
+    shape below, then this module ALSO re-validates through the same
+    `DiagnosisOutput` Pydantic model real fallback output uses —
+    belt-and-suspenders, since "the API enforced the schema" and "our own
+    code validated it" are two independent guarantees.
 
 Failure handling: this function NEVER raises past its own boundary and
 NEVER writes to any table. Timeout, network error, missing API key, or a
@@ -30,7 +30,6 @@ FALLBACK_DIAGNOSIS.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 from pydantic import ValidationError
@@ -89,28 +88,6 @@ def _build_user_payload(diagnosis_input: DiagnosisInput) -> dict:
     return diagnosis_input.model_dump(mode="json")
 
 
-async def _call_llm_openai(diagnosis_input: DiagnosisInput, model: str, api_key: str) -> dict:
-    # Imported lazily so importing this module (e.g. for the fallback-only
-    # test suite) never requires the `openai` package to even be installed,
-    # let alone configured.
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=api_key)
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(_build_user_payload(diagnosis_input))},
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"name": "diagnosis", "schema": _RESPONSE_JSON_SCHEMA, "strict": True},
-        },
-    )
-    content = response.choices[0].message.content
-    return json.loads(content)
-
-
 # Gemini's responseSchema is a trimmed OpenAPI subset -- no
 # `additionalProperties` keyword. Built from _RESPONSE_JSON_SCHEMA via the
 # shared strip helper, not maintained by hand, so schema drift between
@@ -157,12 +134,6 @@ async def diagnose_with_llm(diagnosis_input: DiagnosisInput) -> tuple[DiagnosisO
         call_fn = _call_llm_gemini
         missing_key_reason = "ai_diagnoser_not_configured_gemini"
         timeout_seconds = settings.ai_diagnoser_gemini_timeout_seconds
-    elif provider == "openai":
-        api_key = settings.openai_api_key
-        model = settings.ai_diagnoser_model
-        call_fn = _call_llm_openai
-        missing_key_reason = "ai_diagnoser_not_configured_openai"
-        timeout_seconds = settings.ai_diagnoser_timeout_seconds
     else:
         logger.warning(
             "[Diagnoser] Unknown ai_diagnoser_provider=%r -- skipping LLM path", provider

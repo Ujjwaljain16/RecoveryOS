@@ -112,28 +112,23 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # LLM / AI
     # ─────────────────────────────────────────────────────────────────────────
-    openai_api_key: str = Field(default="", description="API key for the OpenAI provider.")
     gemini_api_key: str = Field(default="", description="API key for the Gemini provider.")
     ai_diagnoser_provider: str = Field(
-        default="openai",
+        default="gemini",
         description=(
-            "Which LLM provider diagnose_with_llm() calls: 'openai' or 'gemini'. Both share "
-            "the exact same TRD §9 boundary (typed input, schema-constrained output, Pydantic "
-            "re-validation, apply_adversarial_guards) -- this only selects which API is called."
+            "Which LLM provider diagnose_with_llm() calls -- currently only 'gemini' is "
+            "supported (the OpenAI path was removed as unused). Any other value skips the LLM "
+            "path entirely and falls back to the deterministic diagnoser."
         ),
-    )
-    ai_diagnoser_timeout_seconds: float = Field(
-        default=2.5,
-        description="Hard timeout for AI Diagnoser (TRD §8). Triggers deterministic fallback.",
     )
     ai_diagnoser_gemini_timeout_seconds: float = Field(
         default=4.0,
-        description="Gemini-specific timeout -- free-tier flash-lite's observed cold-start "
-        "latency runs higher than OpenAI's typical response time; tested live at 2.5s and saw "
-        "3/6 calls time out even though every completed call was correct, so this is slightly "
-        "more generous rather than treating slow-but-eventually-correct responses as failures.",
+        description="Gemini-specific timeout (TRD §8) -- free-tier flash-lite's observed "
+        "cold-start latency runs higher than 2.5s; tested live at 2.5s and saw 3/6 calls time "
+        "out even though every completed call was correct, so this is slightly more generous "
+        "rather than treating slow-but-eventually-correct responses as failures. Triggers "
+        "deterministic fallback on expiry.",
     )
-    ai_diagnoser_model: str = Field(default="gpt-4o-mini")
     ai_diagnoser_gemini_model: str = Field(
         default="gemini-2.5-flash-lite",
         description="Gemini model id when ai_diagnoser_provider='gemini' -- flash-lite chosen "
@@ -239,7 +234,7 @@ class Settings(BaseSettings):
     razorpay_base_url: str = Field(default="https://api.razorpay.com/v1")
     razorpay_timeout_seconds: float = Field(
         default=10.0,
-        description="HTTP timeout for Razorpay API calls. Matches ai_diagnoser_timeout_seconds' pattern — was a bare hardcoded 10 in adapter.py.",
+        description="HTTP timeout for Razorpay API calls. Matches ai_diagnoser_gemini_timeout_seconds' pattern — was a bare hardcoded 10 in adapter.py.",
     )
     razorpay_webhook_secret: str = Field(
         default="",
