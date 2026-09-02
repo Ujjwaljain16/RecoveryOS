@@ -1,0 +1,41 @@
+# RecoveryOS — pinned dev/test dependencies.
+#
+# pyproject.toml declares this as a Poetry project, but nothing in this
+# repo (including CI — see .github/workflows/ci.yml) actually installs via
+# `poetry install`; CI installs an explicit, unpinned pip list instead.
+# This file closes that reproducibility gap for local development: exact
+# versions pinned from an environment that has been verified, end to end,
+# against the full unit + integration + dashboard-E2E suite (315 unit,
+# 226 integration, 4 Playwright E2E, all green).
+#
+# Install with:
+#   pip install -e .                     # runtime deps, from pyproject.toml
+#   pip install -r requirements-dev.txt   # everything needed to run the tests
+#
+# For the Playwright E2E suite specifically (tests/integration/test_dashboard_e2e.py,
+# `pytest -m e2e`), also run once: playwright install chromium
+
+pytest==8.4.2
+pytest-asyncio==0.26.0
+pytest-cov==7.1.0
+pydantic==2.12.4
+pydantic-settings==2.5.0
+sqlalchemy==2.0.35
+asyncpg==0.31.0
+psycopg2-binary==2.9.9
+alembic==1.16.5
+fastapi==0.115.0
+uvicorn==0.30.0
+httpx==0.28.1
+aiohttp==3.12.15
+redis==8.1.0
+structlog==25.5.0
+prometheus-client==0.26.0
+pandas==2.2.0
+scikit-learn==1.7.2
+pyyaml==6.0.2
+testcontainers[postgres,redis]==4.15.0
+playwright==1.62.0
+pytest-playwright==0.9.0
+ruff==0.8.6
+black==24.10.0

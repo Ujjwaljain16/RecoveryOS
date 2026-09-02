@@ -97,7 +97,8 @@ for the minimal `payments`/`customers` insert shape used throughout the test sui
 ### Running tests
 
 ```bash
-pip install -r requirements.txt   # or however your local env is set up
+pip install -e .                    # runtime deps, from pyproject.toml
+pip install -r requirements-dev.txt # test/lint deps, pinned to a verified-working set
 pytest tests/unit tests/integration
 ```
 

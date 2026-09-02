@@ -31,21 +31,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # never carried them -- same class of gap Task MD1 already fixed in
 # apps/api/Dockerfile (see that file's comment), just not mirrored here
 # because execution_worker.py alone never reached that import chain.
+#
+# Versions pinned to match requirements-dev.txt / apps/api/Dockerfile
+# exactly -- sklearn's pickle format is version-sensitive, and
+# model_lr.pkl/feature_transformer_v1.pkl were pickled with these exact
+# versions; an unpinned install pulling a newer major version at build
+# time risks failing (or silently differing) at unpickle time.
 RUN pip install --no-cache-dir \
-    pydantic \
-    pydantic-settings \
-    "sqlalchemy[asyncio]" \
-    asyncpg \
-    psycopg2-binary \
-    alembic \
-    redis \
-    prometheus-client \
-    httpx \
-    structlog \
-    openai \
-    pandas \
-    scikit-learn \
-    pyyaml
+    pydantic==2.12.4 \
+    pydantic-settings==2.5.0 \
+    "sqlalchemy[asyncio]"==2.0.35 \
+    asyncpg==0.31.0 \
+    psycopg2-binary==2.9.9 \
+    alembic==1.16.5 \
+    redis==8.1.0 \
+    prometheus-client==0.26.0 \
+    httpx==0.28.1 \
+    structlog==25.5.0 \
+    pandas==2.2.0 \
+    scikit-learn==1.7.2 \
+    pyyaml==6.0.2
 
 COPY recoveryos/    ./recoveryos/
 COPY workers/       ./workers/
