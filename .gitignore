@@ -74,3 +74,11 @@ data_pre_step3_backup/
 .idea/
 *.swp
 *.swo
+
+# ─── OS junk ────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Playwright (scripts/capture_screenshots.py) ──────────────────────────────
+test-results/
+playwright-report/

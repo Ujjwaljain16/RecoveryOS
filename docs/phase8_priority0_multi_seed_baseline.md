@@ -1,5 +1,10 @@
 # Priority 0 — Multi-Seed Baseline v1
 
+> **Superseded by the compliance-aware study** — see README §10/§11 and
+> [`tests/evaluation/artifacts/multi_seed_compliance_aware_aggregate.json`](../tests/evaluation/artifacts/multi_seed_compliance_aware_aggregate.json)
+> for the current headline number. Kept for the fairness-methodology narrative (§11), not as the
+> current result.
+
 TRD §7's headline number (Phase 8, `tests/evaluation/report.md`) was computed from a single
 seed (42): **+₹42,491.88 incremental recovery**. Before touching the engine further, this
 records whether that number is representative or a lucky/unlucky draw — run across 5
