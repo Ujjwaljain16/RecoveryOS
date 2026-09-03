@@ -187,6 +187,10 @@ async def get_cohort_failure_rate(
 async def get_recent_anomalies(
     session: AsyncSession, bank: str | None, method: str, window_minutes: int = 120
 ) -> list[dict]:
+    # method is unused here -- every TOOL_REGISTRY tool shares the same
+    # (bank, method) calling convention (investigator.py's generic
+    # argument derivation), but anomaly_windows only tracks bank-scoped
+    # anomalies for this lookup, never method-scoped ones.
     if bank is None:
         return []
     since = datetime.now(UTC) - timedelta(minutes=window_minutes)

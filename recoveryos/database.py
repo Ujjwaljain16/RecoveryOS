@@ -120,12 +120,6 @@ async def get_diagnoser_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-async def get_inference_session() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency — yields an inference_role session (read-only, no ground_truth)."""
-    async with get_inference_session_factory()() as session:
-        yield session
-
-
 _sync_engine = None
 
 

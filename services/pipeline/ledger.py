@@ -558,7 +558,8 @@ async def _record_diagnosis_outcome_async(
     session,
     *,
     diagnosis_id: str,
-    payment_id: str,
+    payment_id: str,  # unused -- re-derived via diagnosis_id's own join below; kept so the
+    # caller can pass every field it already has without special-casing this one
     verdict: str,
     chosen_action: str,
     outcome: str | None,
@@ -946,7 +947,7 @@ def _record_diagnosis_outcome_sync(
     conn,
     *,
     diagnosis_id: str,
-    payment_id: str,
+    payment_id: str,  # unused -- see _record_diagnosis_outcome_async's own comment
     verdict: str,
     chosen_action: str,
     outcome: str | None,

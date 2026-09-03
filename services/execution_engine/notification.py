@@ -25,6 +25,11 @@ observable STUB, not a half-built SMS/email integration. Records a real
 only event-log pattern execution_worker.py already uses for
 RECOVERY_SCHEDULED/EXECUTING/etc -- with status='simulated', never 'sent'.
 Nothing here claims a real message left this system.
+
+amount_paise is accepted but unused in send_reminder() -- kept only so
+this Protocol's call shape matches PaymentProvider.retry()'s
+(payment_id, amount_paise, attempt_number), letting workers/
+execution_worker.py dispatch to either without special-casing REMINDER.
 """
 
 from __future__ import annotations

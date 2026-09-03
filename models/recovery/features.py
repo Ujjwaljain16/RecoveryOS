@@ -79,12 +79,10 @@ class FeatureTransformer:
         Fit transformer on TRAIN features only.
         episode_ids should be the train episode_id list for audit purposes.
         """
-        # Fit OneHotEncoder on categorical columns present in the dataframe
         present_cats = [c for c in CATEGORICAL_COLS if c in features_df.columns]
         self._ohe.fit(features_df[present_cats].fillna("__MISSING__").astype(str))
         self._present_cats = present_cats
 
-        # Fit StandardScaler on log1p of continuous columns
         present_cont = [c for c in CONTINUOUS_COLS if c in features_df.columns]
         self._present_cont = present_cont
         if present_cont:

@@ -81,10 +81,7 @@ class LatentRecoverabilityFunction:
         customer_patience = customer.latent_patience_mean * math.exp(-decay_rate * (attempt_number - 1))
         customer_patience = max(0.01, min(1.0, customer_patience))
 
-        # 2. Latent Bank Health
         bank_health = max(0.01, min(1.0, latent_bank_health))
-
-        # 3. Latent Customer Propensity
         customer_propensity = customer.latent_propensity_bias
 
         # 4. Latent External Stochastic Noise: N(0, 1.5) to ensure AUC < 0.85 leakage threshold

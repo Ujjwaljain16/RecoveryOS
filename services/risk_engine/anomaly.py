@@ -394,14 +394,20 @@ async def run_anomaly_detection(
     session: AsyncSession | None = None,
 ) -> list[AnomalyResult]:
     """
-    Entry point for one detection pass over one bucket: discovers every
-    (scope_type, scope_entity) combination with traffic in the bucket,
-    computes and persists an anomaly window for each.
+    Entry point for one detection pass over ALL entities in one bucket:
+    discovers every (scope_type, scope_entity) combination with traffic in
+    the bucket, computes and persists an anomaly window for each. This is
+    the proactive/sweep counterpart to the reactive path production
+    actually uses today — services/pipeline/consumer.py calls
+    compute_anomaly_window/persist_anomaly_window directly, per payment, as
+    each failure arrives, and never goes through this bucket-wide sweep.
 
-    This is a single callable batch pass, not a standing service — wiring it
-    into a scheduler (a cron-style loop, or the event_processor consumer
-    loop) is a deployment concern for a later phase, out of scope for this
-    task's explicit deliverable ("writes to anomaly_windows").
+    Unused today — no scheduler, no caller, no test exercises this
+    function specifically (only its two building blocks, via the reactive
+    path above). Kept as the batch entry point a future periodic sweep
+    (catching entities with no fresh failures to react to, e.g. a bank
+    that's been quietly degraded with low volume) would call; wiring that
+    scheduler is a deployment concern for a later phase.
     Pass `session` to reuse an existing app_role session (e.g. in tests);
     otherwise a fresh one is opened and closed here.
     """

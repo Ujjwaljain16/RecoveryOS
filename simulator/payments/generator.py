@@ -208,7 +208,6 @@ class PaymentGenerator:
 
             latent_records.append(latent_record)
 
-            # Create payment record
             payment_record = SimulatedPaymentRecord(
                 payment_id=p_id,
                 merchant_id=merchant.merchant_id,
@@ -227,7 +226,6 @@ class PaymentGenerator:
             payments.append(payment_record)
 
             # 7. Create Event Records
-            # Event: PAYMENT_CREATED
             e1_id = self.id_gen.event_id(event_counter)
             event_counter += 1
             events.append(

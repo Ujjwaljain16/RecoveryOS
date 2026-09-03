@@ -1,4 +1,7 @@
 # RecoveryOS — .gitignore
+# ─── AI assistant tooling (local only, not part of the submission) ────────────
+.claude/
+
 # ─── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

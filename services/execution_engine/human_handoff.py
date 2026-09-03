@@ -7,6 +7,11 @@ never to PaymentProvider.retry().
 
 recovered_amount_paise is ALWAYS 0 -- creating an escalation record never
 itself recovers money.
+
+amount_paise is accepted but unused in create_escalation() -- kept only so
+this Protocol's call shape matches PaymentProvider.retry()'s
+(payment_id, amount_paise, attempt_number), letting workers/
+execution_worker.py dispatch to either without special-casing ESCALATE.
 """
 
 from __future__ import annotations

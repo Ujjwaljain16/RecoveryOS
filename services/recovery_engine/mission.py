@@ -14,12 +14,17 @@ set once at creation from recoveryos.config.Settings and are read-only from
 that point on -- check_budget() is a pure function of the mission's own
 row, nothing an LLM output can influence.
 
-Two call sites, same async/sync split as services/pipeline/ledger.py, for
-the same reason: services/pipeline/consumer.py (async) drives missions
-through OBSERVED -> INVESTIGATING -> PLANNING -> AWAITING_AUTHORIZATION,
-workers/execution_worker.py (sync) drives them through
-EXECUTING -> OBSERVING_OUTCOME -> {RECOVERED | ESCALATED | TERMINATED} (or
-back to OBSERVING_OUTCOME awaiting a scheduled re-evaluation, Phase 13).
+Two call sites, same async/sync split as services/pipeline/ledger.py --
+but NOT a symmetric mirror on both sides, by design. The async side
+(services/pipeline/consumer.py) both CREATES missions and drives them
+through OBSERVED -> INVESTIGATING -> PLANNING -> AWAITING_AUTHORIZATION.
+The sync side (workers/execution_worker.py) only ever REUSES a mission the
+async side already created -- it looks one up read-only
+(find_mission_for_payment_sync, deliberately not a get-or-create; see that
+function's own docstring for the real redelivery bug that pattern caused)
+and drives it through EXECUTING -> OBSERVING_OUTCOME ->
+{RECOVERED | ESCALATED | TERMINATED} (or back to OBSERVING_OUTCOME
+awaiting a scheduled re-evaluation, Phase 13). It never originates one.
 """
 
 from __future__ import annotations
@@ -138,15 +143,15 @@ def find_mission_for_payment_sync(conn, payment_id: str) -> dict | None:
     workers/execution_worker.py actually uses. Deliberately NOT get-or-
     create: execution_worker never originates a mission, only reacts to a
     job services/pipeline/consumer.py already decided to run, so the
-    mission should already exist. Using get_or_create_mission_sync here
-    (as an earlier version of this code did) meant a genuinely redelivered
+    mission should already exist. An earlier version of this code used a
+    get-or-create pattern here instead, which meant a genuinely redelivered
     job (Redis's normal at-least-once guarantee) landing AFTER its mission
     had already reached a terminal state (RECOVERED/ESCALATED/TERMINATED)
     would spuriously spawn a second, orphaned OBSERVED mission for that
-    payment -- get_or_create_mission_sync's own "state NOT IN (terminal)"
-    filter correctly excludes it from being found, then creates a new one
-    since none is "active." This function has no such filter and never
-    creates anything -- a redelivery reaching here just finds the (possibly
+    payment -- its own "state NOT IN (terminal)" filter correctly excluded
+    the terminal one from being found, then created a new one since none
+    was "active." This function has no such filter and never creates
+    anything -- a redelivery reaching here just finds the (possibly
     already-terminal) real mission, and process_job's own mission_trackable
     guard (state != EXECUTING) already skips re-advancing it either way.
     """
@@ -446,108 +451,12 @@ def _json_dumps(payload: dict) -> str:
 
 
 # ─── Sync writer (workers/execution_worker.py) ─────────────────────────────
-
-
-def get_or_create_mission_sync(
-    conn,
-    *,
-    payment_id: str,
-    amount_paise: int,
-    now: datetime,
-    max_investigation_rounds: int,
-    max_attempts: int,
-    max_mission_duration_seconds: int,
-) -> tuple[dict, bool]:
-    """Sync mirror of get_or_create_mission_async -- see its docstring.
-    In practice, execution_worker.py only ever REUSES a mission
-    services/pipeline/consumer.py already created (a job only reaches
-    execution_worker after a decision was made), but this stays
-    lookup-then-create rather than lookup-or-raise for the same reason
-    every other role boundary in this codebase fails safe instead of
-    crashing: a direct test/manual invocation without a prior consumer.py
-    pass must not blow up."""
-    from sqlalchemy import text
-
-    existing = (
-        conn.execute(
-            text(
-                "SELECT mission_id, payment_id, state, objective, max_investigation_rounds, "
-                "max_attempts, max_mission_duration_seconds, max_money_exposure_paise, "
-                "current_round, current_attempt, started_at, expires_at, ended_at "
-                "FROM recovery_missions WHERE payment_id = :pid "
-                "AND state NOT IN ('RECOVERED','ESCALATED','TERMINATED') "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"pid": payment_id},
-        )
-        .mappings()
-        .first()
-    )
-    if existing is not None:
-        return dict(existing), False
-
-    mission_id = str(uuid.uuid4())
-    objective = (
-        "maximize expected recovered revenue subject to deterministic "
-        "safety, policy, and budget constraints"
-    )
-    expires_at = now + timedelta(seconds=max_mission_duration_seconds)
-    # Same race-safe ON CONFLICT DO NOTHING as get_or_create_mission_async --
-    # see that function's comment. Sync side matters even more here: two
-    # execution_worker.py threads/processes calling process_job() for the
-    # SAME payment concurrently is exactly what
-    # tests/integration/test_execution_worker.py's advisory-lock tests
-    # exercise for real.
-    row = (
-        conn.execute(
-            text(
-                "INSERT INTO recovery_missions "
-                "(mission_id, payment_id, state, objective, max_investigation_rounds, "
-                "max_attempts, max_mission_duration_seconds, max_money_exposure_paise, "
-                "current_round, current_attempt, started_at, expires_at) "
-                "VALUES (:mid, :pid, 'OBSERVED', :objective, :max_rounds, :max_attempts, "
-                ":max_duration, :max_exposure, 0, 0, :started_at, :expires_at) "
-                "ON CONFLICT (payment_id) WHERE state NOT IN "
-                "('RECOVERED','ESCALATED','TERMINATED') DO NOTHING "
-                "RETURNING mission_id, payment_id, state, objective, max_investigation_rounds, "
-                "max_attempts, max_mission_duration_seconds, max_money_exposure_paise, "
-                "current_round, current_attempt, started_at, expires_at, ended_at"
-            ),
-            {
-                "mid": mission_id,
-                "pid": payment_id,
-                "objective": objective,
-                "max_rounds": max_investigation_rounds,
-                "max_attempts": max_attempts,
-                "max_duration": max_mission_duration_seconds,
-                "max_exposure": amount_paise,
-                "started_at": now,
-                "expires_at": expires_at,
-            },
-        )
-        .mappings()
-        .first()
-    )
-    if row is None:
-        conn.commit()
-        winner = (
-            conn.execute(
-                text(
-                    "SELECT mission_id, payment_id, state, objective, max_investigation_rounds, "
-                    "max_attempts, max_mission_duration_seconds, max_money_exposure_paise, "
-                    "current_round, current_attempt, started_at, expires_at, ended_at "
-                    "FROM recovery_missions WHERE payment_id = :pid "
-                    "AND state NOT IN ('RECOVERED','ESCALATED','TERMINATED') "
-                    "ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"pid": payment_id},
-            )
-            .mappings()
-            .first()
-        )
-        return dict(winner), False
-    conn.commit()
-    return dict(row), True
+#
+# No sync equivalent of get_or_create_mission_async: execution_worker.py
+# never originates a mission, only reacts to a job services/pipeline/
+# consumer.py already decided to run, and looks one up read-only via
+# find_mission_for_payment_sync -- see that function's own docstring and
+# workers/execution_worker.py's own comment at its call site for why.
 
 
 def transition_mission_sync(
@@ -632,45 +541,3 @@ def transition_mission_sync(
     )
     conn.commit()
     return dict(updated)
-
-
-def log_mission_event_sync(
-    conn, *, mission_id: str, event_type: str, actor: str, payload: dict
-) -> None:
-    """Sync mirror of log_mission_event_async -- see its docstring."""
-    from sqlalchemy import text
-
-    row = (
-        conn.execute(
-            text("SELECT state FROM recovery_missions WHERE mission_id = :mid FOR UPDATE"),
-            {"mid": mission_id},
-        )
-        .mappings()
-        .first()
-    )
-    if row is None:
-        raise InvalidMissionTransitionError(f"mission_id={mission_id} does not exist")
-
-    next_seq = conn.execute(
-        text(
-            "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM mission_events WHERE mission_id = :mid"
-        ),
-        {"mid": mission_id},
-    ).scalar_one()
-    conn.execute(
-        text(
-            "INSERT INTO mission_events "
-            "(event_id, mission_id, sequence_number, state, event_type, actor, payload) "
-            "VALUES (:eid, :mid, :seq, :state, :event_type, :actor, :payload)"
-        ),
-        {
-            "eid": str(uuid.uuid4()),
-            "mid": mission_id,
-            "seq": next_seq,
-            "state": row["state"],
-            "event_type": event_type,
-            "actor": actor,
-            "payload": _json_dumps(payload),
-        },
-    )
-    conn.commit()

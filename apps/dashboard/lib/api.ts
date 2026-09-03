@@ -1,7 +1,5 @@
 export type FetchResult<T> = {
   data: T;
-  modelVersion: string | null;
-  policyVersion: string | null;
 };
 
 export class ApiError extends Error {
@@ -20,14 +18,12 @@ export class ApiError extends Error {
  */
 export async function apiGet<T>(path: string): Promise<FetchResult<T>> {
   const res = await fetch(`/api/proxy/${path}`, { cache: "no-store" });
-  const modelVersion = res.headers.get("x-model-version");
-  const policyVersion = res.headers.get("x-policy-version");
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body.detail || `${path} failed with ${res.status}`);
   }
   const data = (await res.json()) as T;
-  return { data, modelVersion, policyVersion };
+  return { data };
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<FetchResult<T>> {
@@ -37,14 +33,12 @@ export async function apiPost<T>(path: string, body: unknown): Promise<FetchResu
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  const modelVersion = res.headers.get("x-model-version");
-  const policyVersion = res.headers.get("x-policy-version");
   if (!res.ok) {
     const respBody = await res.json().catch(() => ({}));
     throw new ApiError(res.status, respBody.detail || `${path} failed with ${res.status}`);
   }
   const data = (await res.json()) as T;
-  return { data, modelVersion, policyVersion };
+  return { data };
 }
 
 export function formatPaise(paise: number): string {
