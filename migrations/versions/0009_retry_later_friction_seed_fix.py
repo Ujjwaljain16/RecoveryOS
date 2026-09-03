@@ -1,4 +1,4 @@
-"""Fix RETRY_LATER's platform-default friction seed — Phase 5 finding.
+"""Fix RETRY_LATER's platform-default friction seed — a real sanity-check finding.
 
 Revision ID: 0009
 Revises: 0008

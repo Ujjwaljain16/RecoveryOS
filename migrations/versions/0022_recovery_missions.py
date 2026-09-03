@@ -1,4 +1,4 @@
-"""Phase 12 -- Recovery Mission + explicit, code-owned state machine.
+"""Recovery Mission -- explicit, code-owned state machine.
 
 Revision ID: 0022
 Revises: 0021
@@ -22,7 +22,7 @@ Two new tables:
   audit_log/events' own REVOKE UPDATE, DELETE FROM app_role pattern,
   migration 0002).
 
-scheduled_reevaluations also gains a nullable mission_id column: Phase 13
+scheduled_reevaluations also gains a nullable mission_id column: this
 generalizes services/recovery_engine/scheduling.py's RETRY_LATER-only
 closed loop to every action outcome (a FAILED RETRY_NOW/ALT_ROUTE now also
 schedules a re-evaluation, from workers/execution_worker.py's sync path) --
@@ -76,8 +76,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("state", sa.Text(), nullable=False, server_default="OBSERVED"),
-        # Fixed, disclosed objective string -- never LLM-generated (Phase 11's
-        # "AI supplies a signal, never authority" principle extended: here,
+        # Fixed, disclosed objective string -- never LLM-generated (the AI-
+        # fusion "AI supplies a signal, never authority" principle extended: here,
         # AI doesn't even get to phrase its own goal).
         sa.Column(
             "objective",

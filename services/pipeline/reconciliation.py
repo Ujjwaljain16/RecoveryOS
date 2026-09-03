@@ -8,8 +8,8 @@ ledger.py's own docstring says a PENDING outcome never got.
 app_role only (same as every other writer in services/pipeline/) — this
 runs from apps/api/routers/razorpay_webhooks.py's request handler.
 
-Phase 12/13 correctness fix: for the real (non-simulator) provider path, a
-PENDING outcome's eventual SUCCESS/FAILED confirmation arrives ONLY through
+Recovery Mission correctness fix: for the real (non-simulator) provider
+path, a PENDING outcome's eventual SUCCESS/FAILED confirmation arrives ONLY through
 this webhook reconciliation call — workers/execution_worker.py's own
 action_fn already returned once it recorded PENDING, so its mission-
 advancing logic (_advance_mission_after_outcome) never runs for these
@@ -352,7 +352,7 @@ async def reconcile_pending_recovery(
             outcome=outcome,
         )
 
-        # Phase 12/13 correctness fix -- see this module's docstring and
+        # Recovery Mission correctness fix -- see this module's docstring and
         # _advance_mission_on_external_resolution's own docstring for why
         # this webhook path is the ONLY place a real (non-simulator)
         # provider's PENDING attempt ever reports its true terminal outcome.

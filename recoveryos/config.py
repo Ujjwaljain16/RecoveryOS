@@ -137,11 +137,11 @@ class Settings(BaseSettings):
     ai_recommendation_fusion_enabled: bool = Field(
         default=False,
         description=(
-            "Phase 11 gate for the bounded AI tie-break/risk-escalation fusion step in "
+            "Gate for the bounded AI tie-break/risk-escalation fusion step in "
             "services/recovery_engine/orchestrator.py. Off by default -- ships dark, same "
             "pattern as ai_diagnoser_provider gating the investigator itself. When off (or when "
             "no diagnosis_id is passed to build_decision), the decision pipeline is byte-"
-            "identical to pre-Phase-11 behavior."
+            "identical to the pre-AI-fusion behavior."
         ),
     )
     ai_tie_break_tolerance_bps: int = Field(
@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Phase 12 -- Recovery Mission hard envelope. Code-set at mission
+    # Recovery Mission hard envelope. Code-set at mission
     # creation (services/recovery_engine/mission.py) and never modified by
     # anything downstream, including the AI recommendation -- see that
     # module's check_budget().
@@ -219,7 +219,7 @@ class Settings(BaseSettings):
     anomaly_bucket_minutes: int = Field(default=15)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Payment provider (Phase 6 — integrations/razorpay/adapter.py)
+    # Payment provider (integrations/razorpay/adapter.py)
     # ─────────────────────────────────────────────────────────────────────────
     # 'simulator' | 'razorpay_test' — the ONE line that swaps providers.
     # get_provider_adapter() reads only this field; no other code path

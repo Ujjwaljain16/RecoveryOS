@@ -1,12 +1,12 @@
 """
-Phase 12 -- Recovery Mission: an explicit, code-owned state machine wrapping
-one payment's full investigate -> decide -> execute -> observe lifecycle,
+Recovery Mission: an explicit, code-owned state machine wrapping one
+payment's full investigate -> decide -> execute -> observe lifecycle,
 however many rounds it takes to reach a terminal state.
 
-Governing principle (Phase 12 design doc): **the state machine is code-
-owned, never LLM-owned.** The AI (investigator, Phase 11 recommendation) is
-invoked because a mission is already in a given state (e.g. INVESTIGATING);
-it never announces or causes a transition itself -- only the functions in
+Governing principle: **the state machine is code-owned, never LLM-owned.**
+The AI (investigator, recommendation) is invoked because a mission is
+already in a given state (e.g. INVESTIGATING); it never announces or
+causes a transition itself -- only the functions in
 this module ever write recovery_missions.state, and every write is checked
 against ALLOWED_TRANSITIONS first. A mission's budget fields
 (max_investigation_rounds/max_attempts/max_mission_duration_seconds) are
@@ -24,7 +24,7 @@ async side already created -- it looks one up read-only
 function's own docstring for the real redelivery bug that pattern caused)
 and drives it through EXECUTING -> OBSERVING_OUTCOME ->
 {RECOVERED | ESCALATED | TERMINATED} (or back to OBSERVING_OUTCOME
-awaiting a scheduled re-evaluation, Phase 13). It never originates one.
+awaiting a scheduled re-evaluation). It never originates one.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "PLANNING": frozenset({"AWAITING_AUTHORIZATION", "TERMINATED"}),
     "AWAITING_AUTHORIZATION": frozenset({"EXECUTING", "ESCALATED", "TERMINATED"}),
     "EXECUTING": frozenset({"OBSERVING_OUTCOME"}),
-    # OBSERVING_OUTCOME -> INVESTIGATING is Phase 13's closed loop: a
+    # OBSERVING_OUTCOME -> INVESTIGATING is the closed loop: a
     # deferred RETRY_LATER window elapsing (existing, Task REPLAN1) and a
     # FAILED immediate attempt with budget remaining (new) both resolve
     # through this exact same transition.

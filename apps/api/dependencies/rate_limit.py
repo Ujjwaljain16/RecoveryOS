@@ -42,7 +42,7 @@ from recoveryos.redis import get_redis
 
 # ─── Token bucket constants ────────────────────────────────────────────────────
 # These are the per-merchant defaults. In a multi-tenant setup, they'd come from
-# the merchant's policy_config. For Phase 3, they're global defaults.
+# the merchant's policy_config. For now, they're global defaults.
 BUCKET_CAPACITY: int = 1000  # max burst tokens (generous for demo)
 REFILL_RATE: int = 500  # tokens added per second (TRD §8 target)
 BUCKET_TTL_SECONDS: int = 60  # Redis key TTL to GC inactive merchants

@@ -39,7 +39,7 @@ async def risk_summary(
     session: AsyncSession = Depends(get_app_session),
 ):
     """
-    Real, wired implementation (Phase 9). Every number below is a live
+    Real, wired implementation. Every number below is a live
     aggregate scoped to `merchant.merchant_id` — never a client-supplied
     merchant_id (see apps/api/dependencies/auth.py).
     """

@@ -1,13 +1,13 @@
 """
-Continuous replanning — Task REPLAN1, generalized by Phase 13 beyond
-RETRY_LATER. Writes and claims scheduled_reevaluations rows (migration
-0017, mission_id column added by migration 0022). app_role only, same as
-every other write in services/recovery_engine/services.pipeline.
+Continuous replanning — Task REPLAN1, generalized beyond RETRY_LATER to
+the full closed loop. Writes and claims scheduled_reevaluations rows
+(migration 0017, mission_id column added by migration 0022). app_role
+only, same as every other write in services/recovery_engine/services.pipeline.
 
 Two writers now, same async/sync split as services/pipeline/ledger.py:
   - schedule_reevaluation (async): services/recovery_engine/orchestrator.py's
     existing RETRY_LATER path.
-  - schedule_reevaluation_sync (Phase 13, new): workers/execution_worker.py's
+  - schedule_reevaluation_sync (newer): workers/execution_worker.py's
     sync path, when a FAILED RETRY_NOW/ALT_ROUTE attempt still has mission
     budget remaining -- the closed loop this system was missing (see
     services/recovery_engine/mission.py's module docstring).
@@ -52,7 +52,7 @@ async def schedule_reevaluation(
     of scheduling a second re-evaluation. Returns the reevaluation_id
     (either newly inserted or the pre-existing one).
 
-    mission_id (Phase 12/13, optional): which mission this re-evaluation
+    mission_id (optional): which mission this re-evaluation
     belongs to -- purely for audit/query correlation (workers/
     retry_scheduler.py finds the SAME active mission by payment_id
     regardless, via services.recovery_engine.mission.get_or_create_mission_async's
@@ -107,7 +107,7 @@ def schedule_reevaluation_sync(
     mission_id: str | None = None,
 ) -> str:
     """Sync mirror of schedule_reevaluation, for workers/execution_worker.py's
-    Phase 13 closed-loop-on-FAILED path. Same dedup/ON CONFLICT discipline."""
+    closed-loop-on-FAILED path. Same dedup/ON CONFLICT discipline."""
     reevaluation_id = str(uuid.uuid4())
     result = conn.execute(
         text(

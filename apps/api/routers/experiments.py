@@ -5,7 +5,7 @@ Two real, non-fabricated data sources, selected by `run_id`:
 
   - run_id == "live": aggregates THIS merchant's own recovery_ledger +
     baseline_runs rows (populated by services/pipeline/ledger.py and
-    services/pipeline/baseline.py since Phase 7) for every synthetic
+    services/pipeline/baseline.py) for every synthetic
     payment this merchant has actually processed through the live
     pipeline. Empty/zeroed if the merchant hasn't run any synthetic
     traffic yet -- never a fabricated placeholder.
@@ -17,7 +17,7 @@ Two real, non-fabricated data sources, selected by `run_id`:
     (apps/dashboard/app/experiments/page.tsx's existing fetch and this
     endpoint's own external contract, unchanged) even though the artifact
     it now reads is the newer, compliance-aware study, not the original
-    Phase 8 one (multi_seed_results.json, superseded -- see
+    study (multi_seed_results.json, superseded -- see
     docs/phase8_priority0_multi_seed_baseline.md for that earlier study).
     Found live-screenshotting the dashboard for the README: this endpoint
     was still silently serving the OLDER, explicitly-non-headline study,
@@ -201,7 +201,7 @@ async def _live_experiment(merchant: Merchant, session: AsyncSession) -> dict:
 
 async def _ai_contribution(merchant: Merchant, session: AsyncSession) -> dict:
     """
-    Phase 11's real, load-bearing answer to "did the AI actually change
+    The real, load-bearing answer to "did the AI actually change
     anything" -- same queries as tests/evaluation/ai_ablation_runner.py's
     collect_metrics(), scoped to one merchant instead of a whole ablation
     run, against decision_fusion_trace (written by

@@ -1,10 +1,10 @@
 """
 Event Processor — Downstream Publisher
 ======================================
-Publishes processed events to downstream streams for Phase 4 consumers.
+Publishes processed events to downstream consumers.
 
 Current downstream targets:
-  - stream:risk_engine  → Risk Engine (Phase 4 anomaly detection)
+  - stream:risk_engine  → Risk Engine (anomaly detection)
 
 Architecture note: Redis Streams = at-least-once delivery.
   This publisher runs AFTER the DB commit (Postgres is the durable ledger).

@@ -4,7 +4,7 @@ middleware (apps/api/main.py). TRD §5's stated purpose: "so any dashboard
 screenshot is reproducible against the exact model/policy that produced
 it." A hardcoded literal string defeats that regardless of how confident
 it looks — these two functions are the ONE place either header's value
-comes from, reading the actual sources of truth Phase 5 already built
+comes from, reading the actual sources of truth already built
 (services/recovery_engine/propensity.MODEL_VERSION) and the actual
 platform-default PolicyConfig row's version column, not a re-hardcoded
 constant one layer down from main.py.
@@ -31,7 +31,7 @@ def get_current_model_version() -> str:
     """
     Real, no-I/O: services.recovery_engine.propensity.MODEL_VERSION is a
     plain module attribute reflecting exactly which certified artifact
-    (model_lr.pkl, per Phase 5's LR-vs-LightGBM correction) production
+    (model_lr.pkl, per the LR-vs-LightGBM correction) production
     inference actually loads — reading it directly means this header can
     never drift from what predict_recovery_probability() is really using.
     """

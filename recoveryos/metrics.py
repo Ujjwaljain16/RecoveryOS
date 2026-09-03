@@ -143,7 +143,7 @@ ai_diagnoser_fallback_total = Counter(
     "an honest reliability signal for how often the LLM path degrades",
 )
 
-# ─── Phase 11: bounded AI recommendation fusion ─────────────────────────────
+# ─── Bounded AI recommendation fusion ───────────────────────────────────────
 ai_recommendation_available_total = Counter(
     "ai_recommendation_available_total",
     "A RecoveryRecommendation was successfully produced and available for a decision cycle "
@@ -164,7 +164,7 @@ ai_risk_escalations_total = Counter(
 )
 ai_outcome_delta_total = Counter(
     "ai_outcome_delta_total",
-    "THE headline Phase 11 number: how many decisions ended with a different final action "
+    "THE headline AI-fusion number: how many decisions ended with a different final action "
     "solely because AI recommendation fusion was enabled, by cause.",
     ["cause"],  # tie_break | risk_escalation
 )

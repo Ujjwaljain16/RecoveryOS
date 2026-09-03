@@ -189,7 +189,7 @@ async def audit_trail(
         .first()
     )
 
-    # ─── AI FUSION (Phase 11) ────────────────────────────────────────────
+    # ─── AI FUSION ────────────────────────────────────────────────────────
     # decision_fusion_trace exists only when ai_recommendation_fusion_enabled
     # was on for this decision -- null (not fabricated) otherwise, same
     # discipline as every other step in this chain.

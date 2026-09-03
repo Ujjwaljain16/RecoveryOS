@@ -20,10 +20,10 @@ async def payment_detail(
     session: AsyncSession = Depends(get_app_session),
 ):
     """
-    Real implementation (Phase 9) — diagnosis/candidate_actions/
-    policy_decision/recovery_history are all live queries now; the tables
-    have been real since Phase 5-7, this endpoint just wasn't wired to
-    read them yet.
+    Real implementation — diagnosis/candidate_actions/
+    policy_decision/recovery_history are all live queries now; the
+    underlying tables have been real all along, this endpoint just wasn't
+    wired to read them yet.
 
     Scoped to the authenticated merchant — a payment_id belonging to a
     DIFFERENT merchant (or not existing at all) both 404 identically, so a
@@ -136,7 +136,7 @@ async def payment_detail(
             .first()
         )
 
-    # ─── AI FUSION (Phase 11) ────────────────────────────────────────────
+    # ─── AI FUSION ────────────────────────────────────────────────────────
     fusion_row = None
     if policy_decision_row is not None:
         fusion_row = (
@@ -301,7 +301,7 @@ async def payment_mission(
     session: AsyncSession = Depends(get_app_session),
 ):
     """
-    Phase 12/13 -- the payment's most recent RecoveryMission (migration
+    The payment's most recent RecoveryMission (migration
     0022, services/recovery_engine/mission.py) plus its full, ordered
     mission_events trace. This is the endpoint the Payment Detail hero
     screen polls while a mission is non-terminal: every event here is a

@@ -183,7 +183,7 @@ async def simulate_degrade(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# POST /v1/simulate/scenario -- Phase 12/13 demo scenario trigger
+# POST /v1/simulate/scenario -- Recovery Mission demo scenario trigger
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # Turns "trust me, here's our architecture" into "watch this payment enter
@@ -202,7 +202,7 @@ async def simulate_degrade(
 #     directly (risk_flags=["HIGH_FRAUD_RISK"]) rather than depending on a
 #     live Gemini call happening to flag one -- everything AFTER that point
 #     (AIRiskSignalEscalationRule, the deterministic fusion boundary, the
-#     mission transition) is the real Phase 11 code path, unmodified.
+#     mission transition) is the real AI-fusion code path, unmodified.
 #
 # "world_changed" does NOT force a scripted provider adapter -- an earlier
 # version did (DemoScriptedAdapter / AlwaysPendingProvider), racing this
@@ -244,7 +244,7 @@ async def simulate_degrade(
 # which -- through the SAME real LatentRecoverabilityFunction dice roll
 # every other payment in this system resolves through, not a special case
 # -- deterministically fails attempt 1. workers/execution_worker.py's
-# existing, already-real Phase 13 closed-loop code
+# existing, already-real closed-loop code
 # (_advance_mission_after_outcome's FAILED branch calls
 # schedule_reevaluation_sync) reschedules it for real, due immediately
 # under this merchant's demo policy_config (retry_cooldown_hours=0), and
@@ -257,13 +257,13 @@ async def simulate_degrade(
 # TEMPORARY_GATEWAY_TIMEOUT) -- likely but not guaranteed to succeed,
 # same honesty tradeoff every other seeded outcome in this system makes.
 #
-# Requires settings.ai_recommendation_fusion_enabled=True (off by default,
-# Phase 11) -- both "safety_escalation" and "recover_via_replan" (which
+# Requires settings.ai_recommendation_fusion_enabled=True (off by default)
+# -- both "safety_escalation" and "recover_via_replan" (which
 # demonstrates a real AI-recommendation tie-break/rejection alongside the
 # closed loop) need it; the endpoint 409s with a clear message rather than
 # silently producing a misleading result if it's off. Same
 # docker-compose.override.ai_fusion.yml this repo already ships for the
-# Phase 11 ablation runner sets it -- reuse that override for a live demo
+# AI ablation runner sets it -- reuse that override for a live demo
 # run: `docker compose -f docker-compose.yml -f docker-compose.override.ai_fusion.yml up -d --build`
 # with AI_RECOMMENDATION_FUSION_ENABLED=true in the shell environment.
 
@@ -275,8 +275,8 @@ class ScenarioRequest(BaseModel):
 async def _ensure_demo_policy_config(session: AsyncSession, merchant_id: str) -> None:
     """
     Idempotently points this merchant at a demo-tuned policy_config
-    (retry_cooldown_hours=0) so a Phase 13 reschedule fires immediately,
-    real, via workers/retry_scheduler.py's own run_once() -- no clock
+    (retry_cooldown_hours=0) so a reschedule fires immediately, real, via
+    workers/retry_scheduler.py's own run_once() -- no clock
     patching, no waiting for a real 12-hour cooldown window. Reused across
     every scenario call for this merchant (checked, not re-created, so
     repeated demo clicks share one config).
@@ -500,8 +500,8 @@ async def simulate_scenario(
 
     # recover_via_replan needs no background continuation here -- attempt
     # 1's guaranteed FAILED outcome (true_recovery_prob_bps=0 above) drives
-    # the real Phase 13 reschedule/retry_scheduler loop entirely on its
-    # own, out-of-process, same as any other real failed payment. See this
+    # the real reschedule/retry_scheduler loop entirely on its own,
+    # out-of-process, same as any other real failed payment. See this
     # module's own docstring above.
     if payload.scenario == "world_changed":
         background_tasks.add_task(_continue_world_changed, payment_id, settings)
@@ -611,7 +611,7 @@ async def _run_safety_escalation_scenario(payment_id: str) -> str:
     the mission through the SAME sequence services/pipeline/consumer.py
     would (mission creation, investigation narration, planning,
     authorization), calling the REAL services.recovery_engine.orchestrator.decide_and_persist
-    -- AIRiskSignalEscalationRule and the Phase 11 fusion boundary are 100%
+    -- AIRiskSignalEscalationRule and the AI fusion boundary are 100%
     real from here on; only the diagnosis/recommendation content is
     pre-scripted, not the deterministic response to it.
     """

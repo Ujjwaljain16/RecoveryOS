@@ -2,7 +2,7 @@
 Timing-adjusted recovery probability — the ONLY place action timing changes
 the propensity model's raw P(recover) estimate.
 
-Grounding (see the design discussion this file resulted from): Phase 1/2's
+Grounding (see the design discussion this file resulted from): the
 episode simulator has NO real data to calibrate an hours-scale "wait and
 recovery improves" curve for an individual, non-systemic temporary failure —
 its retry-chain delay tops out at MIN_RETRY_DELAY_SEC..MAX_RETRY_DELAY_SEC
@@ -10,10 +10,11 @@ its retry-chain delay tops out at MIN_RETRY_DELAY_SEC..MAX_RETRY_DELAY_SEC
 retry_cooldown_hours=12 default. The only latent time-decay that DOES exist
 (LatentRecoverabilityFunction's customer-patience exp decay, keyed on
 attempt_number) is explicitly hidden ground truth — using it here would be
-the exact non-circularity leak Phase 1/2 was built to prevent.
+the exact non-circularity leak the simulator's ground-truth separation
+was built to prevent.
 
 The one genuinely real, non-latent, already-measured signal for "is right
-now worse than normal" is Phase 4's anomaly detector: observed_rate vs
+now worse than normal" is the anomaly detector: observed_rate vs
 baseline_rate for a bank, computed from real payment outcomes (see
 services/risk_engine/anomaly.py). So the mechanism here is narrow and
 honest: RETRY_NOW gets penalized during an active HIGH-severity systemic
@@ -27,7 +28,7 @@ than this proves): this mechanism only makes RETRY_LATER win on probability
 during an active systemic anomaly. Outside one, RETRY_LATER can only win on
 cost/friction — an individual customer's non-systemic temporary timeout
 (PRD §32 Scenario D) has NO calibrated wait-benefit in this system, because
-Phase 1/2 never generated data at that timescale. Lean any pitch of "waiting
+the simulator never generated data at that timescale. Lean any pitch of "waiting
 helps" on the systemic-degradation scenario specifically; it is not a
 general claim.
 

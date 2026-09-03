@@ -6,7 +6,7 @@ Two implementations, one Protocol, one-line config swap
 (settings.payment_provider_adapter — see get_provider_adapter()):
 
   - SimulatorAdapter: resolves outcomes from the SAME latent ground truth
-    the Phase 1 simulator already computed for this payment
+    the simulator already computed for this payment
     (simulator_latent_state.true_recovery_prob_bps), stochastically. This
     is standing in for "the outside world responding" in demo mode — NOT
     the AI Diagnoser/propensity model reading latent state to make a
@@ -192,7 +192,7 @@ def _recompute_attempt_aware_prob_bps(
 class SimulatorAdapter:
     """
     Demo-mode provider: resolves a retry's outcome from the SAME latent
-    recoverability model the Phase 1 simulator uses
+    recoverability model the simulator uses
     (LatentRecoverabilityFunction.compute_latent_recovery), re-applying its
     attempt-based patience decay for whichever attempt_number this call
     represents — a live-executed attempt 3 gets genuinely decayed odds,

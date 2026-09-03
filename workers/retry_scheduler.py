@@ -61,7 +61,7 @@ async def _fetch_bank(payment_id: str) -> str | None:
 async def _mission_still_observing_outcome(mission_id: str | None) -> bool:
     """
     True if mission_id is None (nothing to gate against -- a row written
-    before Phase 12 mission tracking existed, or by a caller that doesn't
+    before Recovery Mission tracking existed, or by a caller that doesn't
     track missions; same permissive default services/pipeline/consumer.py's
     own mission_trackable guard uses) OR the mission's REAL current state is
     still OBSERVING_OUTCOME. False means some other path already advanced
@@ -89,8 +89,8 @@ async def _process_one(row: dict, redis_client) -> None:
     # str() here, once, matches every other UUID-bearing row this codebase
     # threads through Redis (e.g. services/pipeline/consumer.py's own
     # payment_id is always already a str by the time it reaches here).
-    # Surfaced by Phase 13: a fired re-evaluation that now genuinely
-    # re-decides an EXECUTING action (RETRY_NOW/ALT_ROUTE) reaches
+    # Surfaced by the closed-loop replan work: a fired re-evaluation that
+    # now genuinely re-decides an EXECUTING action (RETRY_NOW/ALT_ROUTE) reaches
     # enqueue_recovery_job's redis.xadd() call, which -- unlike SQL/asyncpg --
     # rejects a raw UUID object outright; the pre-existing RETRY_LATER-only
     # path never actually enqueued a job, so this was never exercised.

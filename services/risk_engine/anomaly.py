@@ -95,7 +95,7 @@ class AnomalyResult:
 
 @dataclass(frozen=True)
 class SuppressionInfo:
-    """What services/diagnosis_engine (and, later, Phase 5's policy engine)
+    """What services/diagnosis_engine (and, later, the policy engine)
     need to know about an active systemic-suppression cohort."""
 
     scope_type: str
@@ -441,7 +441,7 @@ async def is_cohort_suppressed(
     suppression_window_minutes: int = 30,
 ) -> SuppressionInfo | None:
     """
-    Phase 5 hook: is there an ACTIVE high-severity systemic anomaly currently
+    Is there an ACTIVE high-severity systemic anomaly currently
     suppressing RETRY_NOW for this payment's bank and/or method? Returns the
     matching window info (with its derived cohort_id) if so, else None.
 
@@ -451,7 +451,7 @@ async def is_cohort_suppressed(
     re-evaluation window passes"). Checks bank first, then method; either
     scope being actively degraded is enough to suppress. This function only
     READS anomaly_windows — it makes no policy decision itself (that's
-    Phase 5's SystemicSuppressionRule, which this exists to feed).
+    SystemicSuppressionRule's job, which this exists to feed).
     """
     as_of = as_of or datetime.now(UTC)
     cutoff = as_of - timedelta(minutes=suppression_window_minutes)

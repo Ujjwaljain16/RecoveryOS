@@ -2,17 +2,17 @@
 Pipeline orchestrator — TRD §1.4's full data flow trace, wired end to end:
 
     PAYMENT_FAILED event (stream:risk_engine, published by event_processor)
-        -> risk engine (Phase 4 anomaly detector, bank-scoped)
-        -> diagnosis (Phase 4 AI Diagnoser + fallback)
-        -> recovery engine + policy engine (Phase 5, services/recovery_engine/orchestrator.py)
+        -> risk engine (anomaly detector, bank-scoped)
+        -> diagnosis (AI Diagnoser + fallback)
+        -> recovery engine + policy engine (services/recovery_engine/orchestrator.py)
         -> action queue (stream:recovery_jobs, enqueued by orchestrator.decide_and_persist)
-        -> worker (Phase 6, workers/execution_worker.py) -- async, NOT awaited here
+        -> worker (workers/execution_worker.py) -- async, NOT awaited here
         -> outcome -> recovery_ledger -> audit_log
 
 The correlation ID threading every one of these tables together is simply
 payment_id — every table in this chain (events, diagnoses, candidate_actions,
 policy_decisions, recoveries, recovery_ledger, audit_log) already carries it
-as a real FK (TRD §2's schema, not a new column this phase invents).
+as a real FK (TRD §2's schema, not a new column invented here).
 
 Terminal-row responsibility split (why this consumer sometimes writes
 recovery_ledger/audit_log itself and sometimes doesn't):
@@ -103,9 +103,9 @@ async def process_payment_failure(
     infrastructure failure (DB unreachable, etc.) so the caller leaves the
     stream message pending for retry -- does NOT raise merely because the
     AI Diagnoser was unavailable, since diagnose_and_persist already
-    resolves that internally via the deterministic fallback (Phase 4).
+    resolves that internally via the deterministic fallback.
 
-    source_event_id (Task S1, pre-Phase-8 audit): the triggering
+    source_event_id (Task S1, an early audit): the triggering
     stream:risk_engine message's own source_event_id (see
     services/event_processor/publisher.py), threaded through to
     diagnose_and_persist/decide_and_persist so a message redelivered after
@@ -114,11 +114,11 @@ async def process_payment_failure(
     into the SAME diagnosis/candidate_actions/policy_decision rows instead
     of creating duplicates -- see migrations/0013's UNIQUE constraints.
 
-    Phase 12/13: this function drives a payment's RecoveryMission through
+    This function drives a payment's RecoveryMission through
     OBSERVED/OBSERVING_OUTCOME -> INVESTIGATING -> PLANNING ->
     AWAITING_AUTHORIZATION -> {EXECUTING | ESCALATED | TERMINATED}. It
     doesn't need to know whether it's handling a brand-new PAYMENT_FAILED
-    event or a Phase-13 replan fired by workers/retry_scheduler.py --
+    event or a replan fired by workers/retry_scheduler.py --
     get_or_create_mission_async's own lookup-by-payment_id finds the SAME
     active mission either way, and was_created alone decides whether to log
     MISSION_CREATED or REINVESTIGATION_STARTED. See services/recovery_engine/
@@ -307,7 +307,7 @@ async def process_payment_failure(
             if result["verdict"] == "ALLOW" and result["chosen_action"] == "RETRY_LATER":
                 # "Executing" a deferred wait completes instantly -- the actual
                 # observation period is the wait itself, resolved later by
-                # workers/retry_scheduler.py firing (Phase 13's shared
+                # workers/retry_scheduler.py firing (the shared
                 # OBSERVING_OUTCOME -> INVESTIGATING loop, the same transition
                 # a FAILED immediate attempt's reschedule also resolves through).
                 await transition_mission_async(
@@ -348,9 +348,9 @@ async def process_payment_failure(
 async def _log_investigation_events(
     session: AsyncSession, *, mission_id: str, diagnosis_id: str | None
 ) -> None:
-    """Phase 12 -- HYPOTHESIS_UPDATED (always, when a diagnosis exists) and
+    """Logs HYPOTHESIS_UPDATED (always, when a diagnosis exists) and
     AI_RECOMMENDATION (only when the investigator actually ran and produced
-    one, Phase 11). Narration only -- logged via log_mission_event_async,
+    one). Narration only -- logged via log_mission_event_async,
     which does NOT change recovery_missions.state; the mission is still
     INVESTIGATING at this point."""
     from services.recovery_engine.mission import log_mission_event_async

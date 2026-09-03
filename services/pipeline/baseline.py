@@ -1,11 +1,11 @@
 """
 Minimal baseline strategy for TRD §2's recovery_ledger.baseline_outcome —
-NOT Phase 8's full BaselineSimulator/evaluation harness (TRD §7), which
+NOT the full evaluation harness's BaselineSimulator (TRD §7), which
 runs many strategies across many experiments. This is the smallest thing
 that makes recovery_ledger's baseline_outcome column real for a payment
-processed through THIS pipeline, using the SAME heuristic Phase 2's own
-certificate.py already established as "the baseline to beat": retry
-everything except failures already known to be hopeless.
+processed through THIS pipeline, using the SAME heuristic the certified
+model's own certificate.py already established as "the baseline to
+beat": retry everything except failures already known to be hopeless.
 
 Ground truth dependency: this reads simulator_latent_state.true_recovery_prob_bps
 (app_role — NOT diagnoser_role/inference_role, which correctly have zero

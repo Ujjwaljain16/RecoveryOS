@@ -143,8 +143,8 @@ def upgrade() -> None:
     # diagnosis, written once a terminal outcome exists. diagnosis_correct
     # is nullable and ONLY ever populated in the simulator/offline-eval
     # context (via app_role reading simulator_latent_state.true_failure_type,
-    # exactly like Phase 8's AI-eval already does) -- a real production
-    # case has no ground truth to check the diagnosis against, only whether
+    # exactly like the evaluation harness's AI-eval already does) -- a real
+    # production case has no ground truth to check the diagnosis against, only whether
     # the chosen action worked (action_effective).
     op.create_table(
         "diagnosis_outcomes",

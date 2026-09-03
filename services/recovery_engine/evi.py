@@ -22,8 +22,8 @@ Two hardening decisions carried over verbatim from gaps.md, both non-negotiable:
    itself is a pure function over already-fetched values, same purity
    discipline as services/policy_engine.
 
-Economic interpretation of "amount" (resolved per this phase's design
-discussion, not invented fresh): Phase 2's certified economics
+Economic interpretation of "amount" (resolved per an earlier design
+discussion, not invented fresh): the certified model's own economics
 (simulator/episodes/models.py, models/recovery/evaluate.py) both define the
 platform's actual recovered value as amount_paise x RECOVERY_MARGIN (15%),
 not the full transaction amount — a recovered payment is revenue the
@@ -111,7 +111,7 @@ async def get_action_cost(
     Resolve action cost: merchant-specific row first, platform default
     (merchant_id IS NULL) second (gaps.md §A.2's exact resolution order).
     Raises if even the platform default is missing — that would mean the
-    Phase 0 seed data (migrations/0001) was never applied, a real
+    original seed data (migrations/0001) was never applied, a real
     configuration error that should fail loudly, not silently return zeros.
     """
     if merchant_id is not None:

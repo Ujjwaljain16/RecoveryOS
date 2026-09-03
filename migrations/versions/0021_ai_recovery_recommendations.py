@@ -1,4 +1,4 @@
-"""Phase 11 -- bounded AI recovery recommendation + decision fusion trace.
+"""Bounded AI recovery recommendation + decision fusion trace.
 
 Revision ID: 0021
 Revises: 0020
@@ -17,7 +17,7 @@ available" / "fusion disabled" rows, fusion_reason explains which) -- this
 is what lets the AI-on/AI-off ablation (tests/evaluation/ai_ablation_runner.py)
 query a uniform provenance trail across both arms, and what lets a judge
 trace exactly how much authority the AI recommendation had for any single
-payment (Phase 11 design doc, invariant 7).
+payment (a governing invariant of this design).
 
 diagnoser_role needs NO grant on either table -- it only ever reads via
 DIAGNOSER_SAFE_TABLES (migration 0002); both new tables are app_role write

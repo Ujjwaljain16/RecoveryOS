@@ -165,7 +165,7 @@ class Payment(Base):
     method: Mapped[str] = mapped_column(Text, nullable=False)  # upi | card | netbanking | wallet
     bank: Mapped[str | None] = mapped_column(Text, nullable=True)
     # created|authorized|failed|success|expired|recovered
-    # 'recovered' (Task E1, Phase 8 Scenario 4 fix): set by
+    # 'recovered' (Task E1, an evaluation-harness Scenario 4 fix): set by
     # services/pipeline/ledger.py when a recovery attempt reaches a real
     # SUCCESS outcome -- distinct from 'success', which means the ORIGINAL
     # authorization succeeded on the first attempt and was never failed.
@@ -447,8 +447,8 @@ class InvestigationStep(Base):
 
 class RecoveryRecommendation(Base):
     """
-    Phase 11 -- the AI investigator's bounded, advisory recovery
-    recommendation. Written by services/diagnosis_engine/diagnoser.py's
+    The AI investigator's bounded, advisory recovery recommendation.
+    Written by services/diagnosis_engine/diagnoser.py's
     persist_investigation, alongside diagnosis_hypotheses/investigation_steps.
     recommended_action is one of the SAME six action_type strings
     candidate_actions already uses -- the recommendation cannot name an
@@ -487,7 +487,7 @@ class RecoveryRecommendation(Base):
 
 class DecisionFusionTrace(Base):
     """
-    Phase 11 -- persisted provenance for exactly how (or whether) an AI
+    Persisted provenance for exactly how (or whether) an AI
     recommendation influenced one policy_decision. Written for EVERY
     decision once ai_recommendation_fusion_enabled is on, including
     "no recommendation available"/"fusion disabled" rows -- see
@@ -526,7 +526,7 @@ class DiagnosisOutcome(Base):
     """Closes the loop (Task AGENT1, agent-design review point 4): one row
     per diagnosis, written once a terminal outcome exists. diagnosis_correct
     is nullable and ONLY ever populated in the simulator/offline-eval
-    context (ground truth via app_role, same as Phase 8's AI-eval) -- a
+    context (ground truth via app_role, same as the evaluation harness's AI-eval) -- a
     real production case has no ground truth to check the diagnosis
     against, only whether the chosen action worked (action_effective)."""
 
@@ -800,10 +800,10 @@ class ScheduledReevaluation(Base):
     # rows -- never a match for "expired" comparisons.
     lease_expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     fired_source_event_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
-    # Phase 12/13 -- which mission this re-evaluation belongs to, so
+    # Which mission this re-evaluation belongs to, so
     # workers/retry_scheduler.py can REUSE (not recreate) that mission on
-    # firing. Nullable: rows written before Phase 12, or by a caller that
-    # doesn't track missions, still insert cleanly.
+    # firing. Nullable: rows written before Recovery Missions existed, or
+    # by a caller that doesn't track missions, still insert cleanly.
     mission_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), ForeignKey("recovery_missions.mission_id"), nullable=True
     )
@@ -814,7 +814,7 @@ class ScheduledReevaluation(Base):
 
 class RecoveryMission(Base):
     """
-    Phase 12 -- one row per payment's mission lifecycle: an explicit,
+    One row per payment's mission lifecycle: an explicit,
     code-owned state machine wrapping however many investigate -> decide ->
     execute -> observe rounds it takes to reach a terminal state. See
     services/recovery_engine/mission.py for the transition table and budget
@@ -869,7 +869,7 @@ class RecoveryMission(Base):
 
 class MissionEvent(Base):
     """
-    Phase 12 -- the append-only, ordered trace of everything that happened
+    The append-only, ordered trace of everything that happened
     to a RecoveryMission. This IS the "open one payment, see its entire
     autonomous trajectory" artifact -- one row per meaningful transition
     (PAYMENT_FAILED, MISSION_CREATED, INVESTIGATION_STARTED,

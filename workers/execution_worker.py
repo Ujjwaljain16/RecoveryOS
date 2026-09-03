@@ -166,7 +166,7 @@ def _compute_stopping_rule(
 def _fetch_retry_cooldown_hours(conn: Connection, decision_id: str) -> int:
     """This merchant's actual retry_cooldown_hours, via the same
     policy_decisions -> policy_configs join _compute_stopping_rule uses.
-    Phase 13's rescheduled re-evaluation waits this long before firing, so
+    The rescheduled re-evaluation waits this long before firing, so
     it finds a genuinely CooldownRule-eligible payment rather than
     immediately re-blocking on the same cooldown a fresh decision cycle
     would enforce anyway."""
@@ -194,14 +194,14 @@ def _advance_mission_after_outcome(
     result: ProviderResult,
 ) -> None:
     """
-    Phase 12/13 -- advances the mission from EXECUTING once a real outcome
-    is known. RETRY_NOW/ALT_ROUTE are the only "retryable" (money-moving)
-    actions in the Phase 13 closed-loop sense: a FAILED attempt with
-    mission AND policy budget still remaining schedules a re-evaluation
+    Advances the mission from EXECUTING once a real outcome is known.
+    RETRY_NOW/ALT_ROUTE are the only "retryable" (money-moving) actions in
+    the closed-loop sense: a FAILED attempt with mission AND policy budget
+    still remaining schedules a re-evaluation
     (services.recovery_engine.scheduling.schedule_reevaluation_sync) at
     now + the SAME retry_cooldown_hours CooldownRule would enforce anyway --
-    this IS the gap this phase closes (see services/recovery_engine/
-    mission.py's module docstring): before Phase 13, a FAILED immediate
+    this IS the gap the closed loop closes (see services/recovery_engine/
+    mission.py's module docstring): before it existed, a FAILED immediate
     retry was a dead end unless some unrelated new event happened to arrive
     for this payment.
 
@@ -301,7 +301,7 @@ def _advance_mission_after_outcome(
         )
         # Mission stays in OBSERVING_OUTCOME -- workers/retry_scheduler.py
         # firing this re-evaluation later is what advances it to
-        # INVESTIGATING again (Phase 13's shared closed-loop transition).
+        # INVESTIGATING again (the shared closed-loop transition).
         return
 
     if action_type == "REMINDER":
@@ -505,7 +505,7 @@ def process_job(
     implementations. `provider` is resolved LAZILY -- a REMINDER/ESCALATE
     job never needs a configured payment provider at all.
 
-    Phase 12/13: mission_id is looked up (never created here under normal
+    mission_id is looked up (never created here under normal
     operation -- services/pipeline/consumer.py already created/transitioned
     the mission to EXECUTING before this job was ever enqueued) OUTSIDE the
     idempotency boundary, same as this function's own RECOVERY_SCHEDULED
@@ -650,7 +650,7 @@ def process_job(
             # writes recovery_ledger + audit_log for an executed job.
             _write_ledger_and_audit(conn, payment_id, decision_id, action_type, result)
 
-        # Phase 12/13 -- advance the mission from EXECUTING now that a real
+        # Advance the mission from EXECUTING now that a real
         # outcome is known. Inside action_fn (not process_job's top level):
         # execute_with_idempotency's own get_existing() check means a
         # redelivery that finds recoveries already committed never re-

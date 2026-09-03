@@ -1,5 +1,5 @@
 """
-Recovery Episode data models for RecoveryOS Simulator (TRD §6, Phase 2).
+Recovery Episode data models for RecoveryOS Simulator (TRD §6).
 
 An "episode" is the core unit of the recovery decision problem:
     1. A payment fails (attempt 1)
@@ -52,8 +52,8 @@ def derive_optimal_action(
     amount_paise: int,
 ) -> Literal["RETRY_NOW", "DO_NOT_RETRY"]:
     """
-    Phase 2 binary decision.
-    Phase 3 will introduce WAIT with optimal timing.
+    Binary decision for now (RETRY_NOW vs DO_NOT_RETRY); a future version
+    will introduce WAIT with optimal timing.
     """
     return "RETRY_NOW" if compute_expected_retry_value(true_recovery_prob, amount_paise) > 0 else "DO_NOT_RETRY"
 

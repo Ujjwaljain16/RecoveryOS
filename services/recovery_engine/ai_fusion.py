@@ -1,5 +1,5 @@
 """
-Phase 11 -- bounded AI-recommendation tie-break math. Pure, zero-I/O, same
+Bounded AI-recommendation tie-break math. Pure, zero-I/O, same
 purity discipline as services/recovery_engine/next_best_action.py and
 services/policy_engine/rules.py: a rule must be a deterministic function of
 its inputs, hand-testable with plain tuples, no DB/network/clock reads.

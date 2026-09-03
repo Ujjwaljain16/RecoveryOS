@@ -337,7 +337,7 @@ async def persist_investigation(
 ) -> None:
     """
     Writes diagnosis_hypotheses + investigation_steps (migration 0015) +
-    ONE recovery_recommendations row (migration 0021, Phase 11). app_role
+    ONE recovery_recommendations row (migration 0021). app_role
     only, same reason as persist_diagnosis. Best-effort: if this
     diagnosis_id already has hypotheses/steps rows (a redelivery of an
     already-persisted diagnosis, per persist_diagnosis's own ON CONFLICT

@@ -98,7 +98,7 @@ def build_simulator(
         BankDegradationScenario(
             target_bank=sc_conf.get("degradation_bank", "HDFC"),
             spike_rate=sc_conf.get("degradation_rate", 0.18),
-            # Phase 4: offset the window start so a run can cover real trailing
+            # Offset the window start so a run can cover real trailing
             # history before the spike (the TRD §3.2 baseline is 7-day trailing
             # same-hour — with window_start always == sim start, as this was
             # before, there is *never* any prior history to baseline against).

@@ -1,32 +1,34 @@
 """
-Decision orchestrator — the ONLY place in Phase 5 that does I/O across all
-of propensity, EVI, next-best-action, and policy_engine. Every function in
-those modules is pure/testable in isolation; this module wires them
-together against real data:
+Decision orchestrator — the ONLY place in the recovery decision pipeline
+that does I/O across all of propensity, EVI, next-best-action, and
+policy_engine. Every function in those modules is pure/testable in
+isolation; this module wires them together against real data:
 
     live payment
         -> inference_role read (propensity features)
-        -> Phase 2 certified logistic regression (P(recover) — see
-           propensity.py's docstring for why LR, not LightGBM, is correct)
+        -> the certified recovery-propensity logistic regression
+           (P(recover) — see propensity.py's docstring for why LR, not
+           LightGBM, is correct)
         -> app_role read (anomaly context, retry history, policy config)
         -> EVI-scored candidate actions (6)
         -> next-best-action selection (pure argmax, always AI-blind)
         -> policy_engine.evaluate() (pure, on the chosen candidate)
-        -> Phase 11: bounded AI-recommendation fusion (_apply_ai_fusion),
-           gated behind Settings.ai_recommendation_fusion_enabled -- can
-           change chosen_action ONLY via an economic near-tie already
+        -> bounded AI-recommendation fusion (_apply_ai_fusion), gated
+           behind Settings.ai_recommendation_fusion_enabled -- can change
+           chosen_action ONLY via an economic near-tie already
            independently policy-ALLOWED, or via a closed-set risk_flags
            signal a real PolicyRule (AIRiskSignalEscalationRule) interprets
            into ESCALATE. See _apply_ai_fusion's docstring for the full
-           boundary; off (the default) reproduces pre-Phase-11 behavior
-           exactly.
+           boundary; off (the default) reproduces the pre-AI-fusion
+           behavior exactly.
         -> persist ALL 6 candidate_actions rows + ONE policy_decision row
            with full rule_trace + ONE decision_fusion_trace row when fusion
            ran
 
 Model lineage: every persisted CandidateAction row carries model_version +
 feature_schema_version from the propensity prediction, so any decision_id
-is traceable back to the exact certified Phase 2 artifact that produced it.
+is traceable back to the exact certified propensity-model artifact that
+produced it.
 """
 
 from __future__ import annotations
@@ -240,7 +242,7 @@ async def _fetch_retry_history(
 class _RecommendationContext:
     """Pure-data view of the latest recovery_recommendations row for one
     diagnosis_id -- same hydrate-once-then-pass-a-dataclass discipline as
-    PaymentContext/CandidateContext. Phase 11."""
+    PaymentContext/CandidateContext."""
 
     recommendation_id: str
     recommended_action: str
@@ -289,9 +291,8 @@ def _apply_ai_fusion(
     min_confidence: float,
 ) -> tuple[NextBestActionResult, PolicyDecisionResult, dict]:
     """
-    Phase 11 -- the ONLY function allowed to change chosen_action based on an
-    AI recommendation, and only in the two ways the design's invariants
-    allow:
+    The ONLY function allowed to change chosen_action based on an AI
+    recommendation, and only in the two ways the design's invariants allow:
 
       (a) risk-flag escalation: already happened, if at all, INSIDE the
           `decision` this function receives -- ai_risk_flags was already
@@ -430,7 +431,7 @@ async def build_decision(
     where `context` carries everything persist_decision() needs (payment
     row fields, prediction metadata, policy_config row).
 
-    diagnosis_id (Phase 11, optional, defaults to None): when given AND
+    diagnosis_id (optional, defaults to None): when given AND
     recoveryos.config.Settings.ai_recommendation_fusion_enabled is True, the
     latest recovery_recommendations row for that diagnosis is fetched and
     passed through the bounded fusion step (_apply_ai_fusion) -- see that
@@ -534,11 +535,11 @@ async def build_decision(
         method=payment_row["method"],
         is_high_severity_anomaly=is_high_severity_anomaly,
     )
-    # Phase 11: ai_risk_flags is empty whenever recommendation is None (flag
-    # off, no diagnosis_id, or no recommendation row found) -- AIRiskSignalEscalationRule
+    # ai_risk_flags is empty whenever recommendation is None (flag off, no
+    # diagnosis_id, or no recommendation row found) -- AIRiskSignalEscalationRule
     # (services/policy_engine/rules.py) then passes trivially, so this
-    # evaluate() call is decision-identical to pre-Phase-11 behavior in that
-    # case, module one additional always-passing rule_trace entry.
+    # evaluate() call is decision-identical to the pre-AI-fusion behavior in
+    # that case, modulo one additional always-passing rule_trace entry.
     ai_risk_flags = recommendation.risk_flags if recommendation is not None else frozenset()
     candidate_ctx = CandidateContext(
         action_type=nba_result.chosen_action,
@@ -681,8 +682,8 @@ async def persist_decision(
                     )
                 )
             ).scalar_one()
-        # Phase 11: one decision_fusion_trace row per policy_decision, only
-        # when fusion actually ran (context["fusion_provenance"] is None
+        # One decision_fusion_trace row per policy_decision, only when
+        # fusion actually ran (context["fusion_provenance"] is None
         # whenever ai_recommendation_fusion_enabled was off for this
         # decision -- see build_decision). Guarded on was_inserted, same
         # dedup discipline as policy_blocks_total below: a redelivered
@@ -734,8 +735,8 @@ async def decide_and_persist(
         the FULL decision from scratch once that time arrives.
       - ALLOW + any other executing action (not DO_NOTHING): if
         `redis_client` is given, enqueues a job onto stream:recovery_jobs
-        for workers/execution_worker.py -- Phase 5's decision, Phase 6's
-        execution, one continuous path. Omit `redis_client` to decide
+        for workers/execution_worker.py -- decision and execution, one
+        continuous path. Omit `redis_client` to decide
         without enqueueing (e.g. tests that only care about the decision).
       - Anything else (BLOCK/ESCALATE, or ALLOW + DO_NOTHING): nothing is
         enqueued or scheduled; the caller (services/pipeline/consumer.py)
@@ -745,7 +746,7 @@ async def decide_and_persist(
     dict (already carrying decision_id/chosen_action/attempt_number) right
     before the job actually becomes visible on stream:recovery_jobs -- and
     ONLY in the branch that's about to enqueue one. This closes a real race
-    (found live-testing the Phase 12/13 demo endpoints against a genuinely
+    (found live-testing the demo scenario endpoints against a genuinely
     separate, always-running execution_worker container, which the
     in-process test suite never exercises): workers/execution_worker.py's
     own mission_trackable check reads the mission's state as soon as it
@@ -782,7 +783,7 @@ async def decide_and_persist(
         "candidate_ids": [c.candidate_id for c in candidate_rows],
     }
 
-    # Phase 11: AI fusion metrics, same was_inserted-guarded discipline as
+    # AI fusion metrics, same was_inserted-guarded discipline as
     # policy_blocks_total below -- a redelivered triggering event must not
     # double-count against an outcome that was already recorded.
     fusion_provenance = context.get("fusion_provenance")
@@ -872,8 +873,8 @@ async def decide_and_persist(
         # uses the latter). Awaiting only when awaitable lets this one
         # publisher function serve both callers without silently dropping
         # the enqueue (a coroutine that's never awaited never actually
-        # runs — this was caught by a real end-to-end test in Phase 7, not
-        # a hypothetical).
+        # runs — this was caught by a real end-to-end test, not a
+        # hypothetical).
         if inspect.isawaitable(maybe_stream_id):
             stream_id = await maybe_stream_id
         else:

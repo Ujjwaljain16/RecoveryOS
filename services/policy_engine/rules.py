@@ -1,9 +1,9 @@
 """
 Policy Engine rule DSL — TRD §3.4, gaps.md §B.3.
 
-ALL rules (11, as of Phase 11 — 7 original + 3 real regulatory compliance
-rules (Task COMPLIANCE1) + 1 AI-risk-signal escalation rule (Phase 11)) are
-pure functions of already-hydrated dataclasses. Zero I/O:
+ALL rules (11: 7 original + 3 real regulatory compliance rules (Task
+COMPLIANCE1) + 1 AI-risk-signal escalation rule) are pure functions of
+already-hydrated dataclasses. Zero I/O:
 no db, no sqlalchemy, no redis, no requests, no httpx import anywhere in
 this file — enforced both by convention here AND by
 test_policy_engine_module_has_zero_forbidden_imports (AST-parses this exact
@@ -42,7 +42,7 @@ class PaymentContext:
     # regulations) can scope themselves to UPI, instead of applying a
     # UPI-specific regulatory ceiling to every payment method.
     method: str
-    # Pre-fetched anomaly state for this payment's bank/method (Phase 4's
+    # Pre-fetched anomaly state for this payment's bank/method (the
     # anomaly detector) — packed in here rather than fetched by
     # SystemicSuppressionRule itself.
     is_high_severity_anomaly: bool
@@ -52,7 +52,7 @@ class PaymentContext:
 class CandidateContext:
     action_type: str  # RETRY_NOW|RETRY_LATER|ALT_ROUTE|REMINDER|ESCALATE|DO_NOTHING
     expected_value_paise: int
-    # Phase 11 -- a closed-set signal from services/diagnosis_engine/schemas.py's
+    # A closed-set signal from services/diagnosis_engine/schemas.py's
     # RiskFlag enum (or empty), pre-fetched by the caller exactly like every
     # other field on this dataclass. AIRiskSignalEscalationRule below is the
     # ONLY rule that reads this -- the AI supplies a bounded signal, never a
@@ -96,7 +96,7 @@ class EligibilityRule(PolicyRule):
     """
     payment.status == 'failed' and not expired.
 
-    Task E1 (Phase 8 Scenario 4 fix): this is also what makes "the payment
+    Task E1 (an evaluation-harness Scenario 4 fix): this is also what makes "the payment
     was already successfully recovered" unconditionally BLOCK, independent
     of cooldown/attempt-count -- services/pipeline/ledger.py sets
     payment.status='recovered' on a real SUCCESS outcome, and this rule
@@ -130,7 +130,7 @@ class OptOutRule(PolicyRule):
 
 class AIRiskSignalEscalationRule(PolicyRule):
     """
-    Phase 11 -- a closed-set AI risk_flags signal
+    A closed-set AI risk_flags signal
     (services/diagnosis_engine/schemas.py's RiskFlag enum) forces ESCALATE,
     same semantics as RetryLimitRule's own escalate-without-EVI-check below:
     a safety intervention doesn't need positive expected value to be the
@@ -265,7 +265,7 @@ class EMandateRetryComplianceRule(PolicyRule):
     mandate retry corresponds to, AND only to method='upi' -- these are
     UPI Autopay/NACH-specific regulatory ceilings, not a general retry
     limit, so a card/netbanking/wallet RETRY_NOW must never be blocked by
-    them (found live-testing Phase 10: a method='card' payment was
+    them (found live-testing the demo: a method='card' payment was
     incorrectly blocked by this rule's sibling, AutopayExecutionWindowRule,
     before this fix). escalates_on_fail=True: exceeding a REGULATORY
     ceiling (not an internal risk preference) should stop and route to a
@@ -409,7 +409,7 @@ class MinExpectedValueRule(PolicyRule):
 
 
 # Ordered, short-circuit on first BLOCK/ESCALATE — TRD §3.4's exact list,
-# plus AIRiskSignalEscalationRule (Phase 11) inserted after OptOutRule.
+# plus AIRiskSignalEscalationRule inserted after OptOutRule.
 RULES: tuple[PolicyRule, ...] = (
     EligibilityRule(),
     OptOutRule(),

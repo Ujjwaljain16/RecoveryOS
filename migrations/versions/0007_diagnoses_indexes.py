@@ -1,7 +1,7 @@
 """
 Migration 0007 — indexes on diagnoses
 
-diagnoses had zero indexes beyond its primary key. Phase 4's diagnosis
+diagnoses had zero indexes beyond its primary key. The diagnosis
 engine and the audit explorer both need "latest diagnosis for payment X"
 and "all diagnoses for cohort Y" — without an index those are sequential
 scans over every diagnosis ever written.

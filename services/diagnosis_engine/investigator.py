@@ -130,7 +130,7 @@ _FINALIZE_SCHEMA = {
                 "required": ["fact", "source"],
             },
         },
-        # Phase 11 -- a bounded RecoveryRecommendation, advisory only. See
+        # A bounded RecoveryRecommendation, advisory only. See
         # services/diagnosis_engine/schemas.py's RecoveryRecommendation
         # docstring: this can only ever be considered by the deterministic
         # fusion step (services/recovery_engine/orchestrator.py) when it
@@ -226,7 +226,7 @@ class InvestigationResult:
     confidence_band: str
     confidence: float  # CONFIDENCE_BAND_TO_FLOAT[confidence_band] -- disclosed mapping
     evidence: list[Evidence]
-    # Phase 11 -- always present when the investigation itself succeeded
+    # Always present when the investigation itself succeeded
     # (required in _FINALIZE_SCHEMA, same fail-closed discipline as
     # selected_cause/confidence_band/evidence: a malformed recommendation
     # fails the whole investigation, not just this field).
@@ -462,7 +462,7 @@ async def _run_investigation(
         diagnosis_input, root_cause, confidence, evidence
     )
 
-    # Phase 11 -- ValidationError here (bad enum value, extra field, out-of-
+    # ValidationError here (bad enum value, extra field, out-of-
     # range number) propagates up through investigate()'s existing
     # try/except boundary exactly like a malformed selected_cause/evidence
     # would -- the whole investigation fails closed to None, never a

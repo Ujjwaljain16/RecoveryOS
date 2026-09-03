@@ -1,8 +1,9 @@
 """
-Generates the final Phase 2 Certificate ensuring all gates are passed.
-Reads from models/recovery/artifacts/ and data/manifest.json.
+Generates the final certified recovery-propensity model certificate,
+ensuring all gates are passed. Reads from models/recovery/artifacts/ and
+data/manifest.json.
 
-Task MD2 (pre-Phase-8 audit): every field in the emitted certificate is
+Task MD2 (an earlier audit): every field in the emitted certificate is
 DERIVED from the values loaded here, never asserted as a literal. The
 previous version hardcoded status="PASS", reproducibility=True,
 test_set_frozen=True, latent_state_isolation=True regardless of what the
@@ -214,7 +215,7 @@ def generate_certificate():
     with open("phase_2_certificate.json", "w") as f:
         json.dump(cert, f, indent=2)
 
-    print(f"[Phase 2] Certificate generated: phase_2_certificate.json (status={overall_status})")
+    print(f"Certificate generated: phase_2_certificate.json (status={overall_status})")
     print(f"  Model Net Value: ₹{cert['economics']['model_net_value_rupees']:,.2f}")
     print(f"  Baseline Net Value: ₹{cert['economics']['baseline_net_value_rupees']:,.2f}")
     print(f"  Incremental Value: ₹{cert['economics']['incremental_value_rupees']:,.2f}")

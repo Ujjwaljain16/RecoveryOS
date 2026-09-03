@@ -32,8 +32,8 @@ from recoveryos.metrics import (
 
 BPS_SCALE = 10_000
 
-# Task E1 (Phase 8 Scenario 4 fix): a payment that reaches a real SUCCESS
-# outcome is no longer 'failed' -- distinct from 'success' (which means the
+# Task E1 (an evaluation-harness Scenario 4 fix): a payment that reaches
+# a real SUCCESS outcome is no longer 'failed' -- distinct from 'success' (which means the
 # ORIGINAL authorization succeeded on the first attempt, never failed at
 # all; see recoveryos/models.py's Payment.status comment). EligibilityRule
 # already blocks anything whose status != 'failed', ordered before
@@ -156,9 +156,10 @@ def build_audit_summary(
     return f"Payment {payment_id}: action={chosen_action}, policy={verdict}, no execution attempted"
 
 
-# Task AGENT1, agent-design review point 4 -- the SAME mapping Phase 8's
-# AI-eval used (docs/phase8_ai_evaluation.md) between the simulator's
-# hidden ground-truth failure type and the diagnoser's RootCause vocabulary.
+# Task AGENT1, agent-design review point 4 -- the SAME mapping the
+# evaluation harness's AI-eval used (docs/phase8_ai_evaluation.md)
+# between the simulator's hidden ground-truth failure type and the
+# diagnoser's RootCause vocabulary.
 # Duplicated here (not imported from a shared module) deliberately kept as
 # a single small literal so this file's only dependency stays app_role SQL
 # text() -- no import of services.diagnosis_engine from services.pipeline.
