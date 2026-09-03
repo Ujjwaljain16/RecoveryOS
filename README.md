@@ -976,6 +976,30 @@ from "already progressed via another route" before ever reprocessing.
 idempotency key derived from `(payment_id, action_type, attempt_number)` — proven directly against
 a provider that returns success on a call whose result was already recorded.
 
+**7. A demo scenario that silently deadlocked — found only by actually running it.** The
+`recover_via_replan`/`world_changed` demo triggers were written assuming the payment provider
+would report an intermediate `PENDING` state to poll for and later reconcile — true for the real
+Razorpay test-mode adapter, but not for `SimulatorAdapter` (the default), which resolves an
+attempt straight to `SUCCESS`/`FAILED` via a real dice roll once ground truth exists. Every unit
+and integration test used a stub that *did* return `PENDING`, so nothing caught it — a live
+rehearsal of the actual demo did, immediately. Fixed two different ways for two different reasons:
+`recover_via_replan` now seeds a genuinely forced `FAILED` outcome (probability 0, through the
+same real resolver every payment uses) and lets the real Phase 13 closed loop
+(`execution_worker` + the always-running `retry_scheduler`) replan it organically, no scripting at
+all; `world_changed` needed an actual `PENDING` window to demonstrate late webhook reconciliation,
+so it gets one via a narrow, opt-in `simulator_latent_state.force_pending_until_reconciled` flag
+(migration 0026) that only this one scenario ever sets. Neither fix touches the shared dice-roll
+logic the benchmark itself depends on.
+
+**8. A live dashboard page quietly showing the wrong benchmark.** Capturing real screenshots for
+this README (rather than describing the dashboard secondhand) surfaced that `/experiments`'s
+live per-seed table was still reading the original Phase 8 study
+(`multi_seed_results.json`) — the one [§10](#10-does-recoveryos-actually-recover-more-revenue)
+explicitly says is *not* the headline comparison — instead of the newer compliance-aware artifact
+this README's own +₹73,181.78 number comes from. A judge clicking into the live page would have
+seen a different number than the one at the top of this document. Fixed to read the same artifact
+the README cites, verified live against the running stack until the two matched exactly.
+
 ---
 
 ## 24. Why RecoveryOS Is Different
