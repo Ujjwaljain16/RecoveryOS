@@ -124,7 +124,8 @@ orchestration system with a hard separation of roles:
 ## 2. The Product Experience
 
 The dashboard (`apps/dashboard/`, Next.js 14 + TypeScript, plain CSS, no UI framework) has five
-real screens.
+real screens, with Recovery Missions surfaced directly inside Payment Detail rather than as a
+separate page.
 
 ### Control Tower — `/`
 The merchant's overview: revenue at risk, revenue recovered, incremental recovery, recovery rate,
@@ -168,8 +169,9 @@ this README's own headline number is sourced from.*
 Active bank-level anomalies (degraded success rates by bank), independent of any one payment — the
 systemic-risk view.
 
-There is no separate "missions" page — a mission's state and full event timeline are shown inline
-on its payment's detail page, since a mission always belongs to exactly one payment.
+Missions live inline on Payment Detail rather than their own page because a mission always
+belongs to exactly one payment — there's nothing a standalone missions list would show that isn't
+already scoped to a specific payment.
 
 ---
 
@@ -412,7 +414,10 @@ transient in-memory value.
 ## 8. Deterministic Safety
 
 - **Policy** (`services/policy_engine/rules.py`) — 12 pure rules, short-circuiting on first
-  BLOCK/ESCALATE, zero I/O, zero reference to diagnosis/confidence/AI anywhere in the original 10.
+  BLOCK/ESCALATE, zero I/O. 11 of the 12 are completely AI-blind — the original 10 plus
+  `MoneyExposureLimitRule`, added later but equally deterministic. Exactly one rule,
+  `AIRiskSignalEscalationRule`, reads anything AI-derived, and only a closed-set signal — see
+  below.
 - **EVI** (`services/recovery_engine/evi.py`) — expected value = P(recover) × amount − cost −
   friction − risk penalty. An action needs positive expected value to be eligible at all.
 - **Propensity** (`services/recovery_engine/propensity.py`) — the certified production model
@@ -468,15 +473,16 @@ evaluated against its own simulated `failed_at`, not real wall-clock time), an a
 mode so a multi-day retry cadence doesn't need multi-day wall-clock runs, and zero duplicate
 attempts (verified directly every seed).
 
-**A weaker comparator is also retained, as a methodology diagnostic, not a headline** — a
-compliance-*blind* baseline that doesn't check any policy rules at all
-(`compliance_blind_fair_baseline_DIAGNOSTIC_ONLY` in the same artifact). Stating its magnitude
-honestly: RecoveryOS *loses* to this one, in all 5 seeds — mean −₹1,42,189, ranging −₹1,12,254 to
-−₹2,05,358 per run. That's expected, not a red flag: this comparator is allowed to fire
-`RETRY_NOW` during NPCI peak windows, past `max_retries`, above the RBI AFA threshold — real
-regulatory ceilings RecoveryOS obeys and this diagnostic doesn't. A comparator that can ignore
-rules a real deployment would be fined for isn't a fair yardstick, which is exactly why the
-compliance-aware baseline above is the real headline.
+A weaker comparator is also retained in the same artifact, as a methodology diagnostic only —
+`compliance_blind_fair_baseline_DIAGNOSTIC_ONLY`, a baseline that doesn't check any policy rules
+at all. It is not a valid deployment comparison, because it's allowed to execute actions
+RecoveryOS's own policy layer prohibits (peak-window retries, over-limit amounts, and more) — a
+comparator free to break rules a real deployment would be fined for isn't a fair yardstick.
+RecoveryOS loses to it, consistently, across all 5 seeds; the exact magnitude is stated in full,
+in prose, in
+[`docs/phase8_priority0_multi_seed_baseline.md`](docs/phase8_priority0_multi_seed_baseline.md#addendum--the-current-campaigns-own-retained-diagnostic-comparator)
+rather than repeated here, so it can't be skimmed next to the headline number above and
+misread as a contradiction.
 
 ---
 

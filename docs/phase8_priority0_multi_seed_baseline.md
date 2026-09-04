@@ -1,9 +1,9 @@
 # Priority 0 — Multi-Seed Baseline v1
 
-> **Superseded by the compliance-aware study** — see README §10/§11 and
+> **Superseded by the compliance-aware study** — see README §9/§10 and
 > [`tests/evaluation/artifacts/multi_seed_compliance_aware_aggregate.json`](../tests/evaluation/artifacts/multi_seed_compliance_aware_aggregate.json)
-> for the current headline number. Kept for the fairness-methodology narrative (§11), not as the
-> current result.
+> for the current headline number. Kept for the fairness-methodology narrative (README §10), not as
+> the current result.
 
 TRD §7's headline number (Phase 8, `tests/evaluation/report.md`) was computed from a single
 seed (42): **+₹42,491.88 incremental recovery**. Before touching the engine further, this
@@ -69,3 +69,20 @@ Any claim of the form "RecoveryOS recovers +₹X" should be stated as **"+₹70,
 95% CI [₹2,348, ₹1,38,168], across 5 independent 10k-payment runs"** — not a single point
 estimate from one seed. This is the number to defend if asked "is that real or did you get
 lucky."
+
+## Addendum — the current campaign's own retained diagnostic comparator
+
+The above is the older single-seed-vs-multi-seed lineage. The CURRENT headline campaign
+(`multi_seed_compliance_aware_aggregate.json`, README §9) retains its own weaker diagnostic
+comparator (`compliance_blind_fair_baseline_DIAGNOSTIC_ONLY`, same rationale as this whole
+document: measure a real gap honestly rather than assume). Stated in full here so it exists in
+prose somewhere, not just derivable from the raw JSON:
+
+RecoveryOS loses to that comparator in all 5 seeds — mean **−₹1,42,189**, ranging −₹1,12,254 to
+−₹2,05,358 per 10,000-payment run (`incremental_recoveryos_vs_compliance_blind_fair_paise_DIAGNOSTIC_ONLY`
+per seed in the same artifact). Expected, not a red flag: this comparator is allowed to fire
+`RETRY_NOW` during NPCI peak windows, past `max_retries`, above the RBI AFA threshold — real
+regulatory ceilings RecoveryOS's actual policy chain (`services/policy_engine/rules.py`, 12 rules)
+obeys and this diagnostic doesn't. A comparator allowed to break rules a real deployment would be
+fined for isn't a fair yardstick, which is exactly why the compliance-aware baseline, not this
+one, is the real headline comparison.
