@@ -99,9 +99,23 @@ class RateLimiter:
         self,
         capacity: int = BUCKET_CAPACITY,
         refill_rate: int = REFILL_RATE,
+        scope: str = "events",
     ):
+        """
+        scope namespaces the Redis bucket key (rate_limit:{scope}:{merchant_id})
+        -- Re-Audit finding: this class was already designed to be reused per-
+        endpoint (capacity/refill_rate are constructor params), but the bucket
+        key itself was hardcoded to "events" regardless of which endpoint
+        constructed it, so a second Depends(RateLimiter(...)) anywhere else
+        would have silently SHARED /v1/events' own bucket rather than getting
+        an independent one -- fine for that one endpoint alone, a real bug the
+        moment a second one existed. Defaults to "events" so every existing
+        Depends(RateLimiter()) call site keeps its exact current bucket key,
+        unchanged.
+        """
         self.capacity = capacity
         self.refill_rate = refill_rate
+        self.scope = scope
 
     async def __call__(
         self,
@@ -116,7 +130,7 @@ class RateLimiter:
         "anonymous bucket" case to handle here anymore.
         """
         merchant_id = merchant.merchant_id
-        bucket_key = f"rate_limit:events:{merchant_id}"
+        bucket_key = f"rate_limit:{self.scope}:{merchant_id}"
         # time.time() (wall clock, UTC epoch), NOT time.monotonic() — the
         # bucket lives in Redis and is read/written by every worker process
         # sharing it. monotonic()'s zero point is arbitrary PER PROCESS (time

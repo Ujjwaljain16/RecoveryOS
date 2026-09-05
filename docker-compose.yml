@@ -100,7 +100,16 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: recoveryos_event_processor
+    # Re-Audit finding (Scalability): this was the one service left with a
+    # fixed container_name/host `ports:` publish after Production
+    # Architecture Domain Audit finding #3 fixed the other three (see
+    # pipeline_orchestrator's comment below) -- despite already using the
+    # exact same replica-safe mechanism (services/event_processor/consumer.py's
+    # own CONSUMER_NAME = f"{socket.gethostname()}-{os.getpid()}",
+    # XREADGROUP/XAUTOCLAIM) those three rely on. It's also, per this
+    # project's own stream_backlog_depth gauge, the stage most likely to
+    # backlog first (upstream of everything else) -- exactly the one that
+    # most needs to be `--scale`-able, not the one left unable to be.
     restart: always
     env_file: .env
     environment:
@@ -109,8 +118,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       ENV: demo
       PROMETHEUS_PORT: "9104"
-    ports:
-      - "9104:9104"
+    expose:
+      - "9104"
     command: ["python", "-m", "services.event_processor.consumer"]
     depends_on:
       postgres:

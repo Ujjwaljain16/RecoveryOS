@@ -41,10 +41,22 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from recoveryos.config import get_settings
+from recoveryos.metrics import (
+    razorpay_outage_fallback_total,
+    revenue_recovered_via_outage_fallback_paise_total,
+)
 
 logger = logging.getLogger(__name__)
 
 Outcome = Literal["SUCCESS", "FAILED", "PENDING"]
+
+
+class RazorpayPermanentError(RuntimeError):
+    """Raised for a permanent (non-outage) Razorpay error -- bad credentials
+    (401/403) or a malformed request (400). Deliberately NOT caught inside
+    RazorpayTestAdapter.retry() -- see its class docstring's OUTAGE FALLBACK
+    section for why this must surface loudly rather than fabricate a
+    SimulatorAdapter outcome."""
 
 
 @dataclass(frozen=True)
@@ -335,12 +347,31 @@ class RazorpayTestAdapter:
 
     OUTAGE FALLBACK (TRD §8 NFR table: "Provider Adapter degrades to
     Simulator on Razorpay test-API outage" — this is a named demo-day
-    availability requirement, not a nice-to-have): both failure branches
-    below (a raised httpx error, or a >=400 response) delegate to a real
-    SimulatorAdapter instance instead of returning a bare, permanent
-    PENDING. Logged distinctly (grep "RAZORPAY_OUTAGE_FALLBACK") so this
-    is a visible, callable-out demo beat ("watch the system survive a real
-    provider outage"), not a silently-swallowed failure.
+    availability requirement, not a nice-to-have): a raised httpx error
+    (timeout/connection failure) or a genuinely transient HTTP status
+    (429, 5xx) delegates to a real SimulatorAdapter instance instead of
+    returning a bare, permanent PENDING. Logged distinctly (grep
+    "RAZORPAY_OUTAGE_FALLBACK") AND counted via
+    recoveryos.metrics.razorpay_outage_fallback_total{error_class} so this
+    is a visible, alertable, callable-out demo beat ("watch the system
+    survive a real provider outage"), not a silently-swallowed failure.
+
+    Re-Audit finding (HIGH): this used to fall back for ANY error class,
+    including permanent ones (401/403 auth failure, 400 malformed
+    request) that are not an "outage" at all — a misconfigured deployment
+    or a real client-side bug would silently produce fabricated
+    SimulatorAdapter outcomes indistinguishable from a genuine Razorpay-
+    verified recovery anywhere downstream (revenue_recovered_paise_total
+    included), discoverable only by grepping logs after the fact. That
+    directly contradicts this module's OWN stated philosophy two
+    paragraphs up ("letting real failures demonstrate resilience rather
+    than faking success"). Permanent errors now raise instead — the
+    caller (workers/execution_worker.py's _process_message) already
+    catches any exception from action_fn and leaves the job pending for
+    Redis redelivery, the same at-least-once discipline every other real
+    infra failure in this system already goes through; a permanently
+    broken deployment now visibly piles up pending jobs instead of
+    quietly recording fake revenue.
 
     Reuses ONE httpx.Client (module-level, connection-pooled/keep-alive)
     across every call instead of a fresh TCP+TLS handshake per retry —
@@ -387,12 +418,34 @@ class RazorpayTestAdapter:
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
+            # Connection/timeout-level failures -- genuinely can't tell
+            # whether Razorpay itself is down or reachable at all, which is
+            # exactly what TRD §8's outage guarantee is about. Always
+            # transient.
             logger.warning("[RazorpayTestAdapter] request failed: %s: %s", type(exc).__name__, exc)
             return self._fallback_to_simulator(
                 conn, payment_id, amount_paise, attempt_number, reason=str(exc)
             )
 
         if response.status_code >= 400:
+            if response.status_code in (401, 403, 400):
+                # Permanent: bad/missing credentials or a malformed request
+                # -- our own config or code, not Razorpay being unavailable.
+                # Raising (not fabricating) makes a broken deployment fail
+                # loudly instead of quietly recording simulator revenue as
+                # if it were real.
+                razorpay_outage_fallback_total.labels(error_class="permanent").inc()
+                logger.error(
+                    "[RazorpayTestAdapter] permanent error, NOT falling back to simulator: "
+                    "status=%s body=%s",
+                    response.status_code,
+                    response.text[:500],
+                )
+                raise RazorpayPermanentError(
+                    f"Razorpay order creation failed with a permanent error "
+                    f"(status={response.status_code}) -- check RAZORPAY_KEY_ID/"
+                    f"RAZORPAY_KEY_SECRET/request payload, this is not a transient outage"
+                )
             logger.warning(
                 "[RazorpayTestAdapter] order creation failed: status=%s body=%s",
                 response.status_code,
@@ -426,6 +479,7 @@ class RazorpayTestAdapter:
         *,
         reason: str,
     ) -> ProviderResult:
+        razorpay_outage_fallback_total.labels(error_class="transient").inc()
         logger.warning(
             "RAZORPAY_OUTAGE_FALLBACK payment_id=%s attempt_number=%s reason=%s -- "
             "degrading to SimulatorAdapter per TRD §8's availability guarantee",
@@ -433,7 +487,15 @@ class RazorpayTestAdapter:
             attempt_number,
             reason,
         )
-        return self._fallback.retry(conn, payment_id, amount_paise, attempt_number)
+        result = self._fallback.retry(conn, payment_id, amount_paise, attempt_number)
+        # Recorded HERE, not inferred later from a `sim_` provider_ref prefix
+        # (see revenue_recovered_via_outage_fallback_paise_total's own
+        # docstring for why that prefix alone is ambiguous) -- this is the
+        # one place that unambiguously knows "this resolved outcome came
+        # from an outage fallback, not a genuine Razorpay capture."
+        if result.outcome == "SUCCESS" and result.recovered_amount_paise > 0:
+            revenue_recovered_via_outage_fallback_paise_total.inc(result.recovered_amount_paise)
+        return result
 
 
 _ADAPTERS = {

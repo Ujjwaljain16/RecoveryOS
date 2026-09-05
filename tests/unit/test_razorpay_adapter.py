@@ -1,8 +1,9 @@
 """
 Unit tests for integrations/razorpay/adapter.py — RazorpayTestAdapter's
-branching logic (success/400/HTTPError/fallback), the per-attempt receipt
-fix, shared-client reuse, and SimulatorAdapter's attempt-decay recomputation.
-No live network, no DB for most of these — httpx is mocked directly.
+branching logic (success/permanent-error/transient-error/HTTPError/fallback),
+the per-attempt receipt fix, shared-client reuse, and SimulatorAdapter's
+attempt-decay recomputation. No live network, no DB for most of these —
+httpx is mocked directly.
 """
 
 from __future__ import annotations
@@ -10,13 +11,19 @@ from __future__ import annotations
 import math
 
 import httpx
+import pytest
 
 import integrations.razorpay.adapter as adapter_module
 from integrations.razorpay.adapter import (
     ProviderResult,
+    RazorpayPermanentError,
     RazorpayTestAdapter,
     _get_shared_http_client,
     _recompute_attempt_aware_prob_bps,
+)
+from recoveryos.metrics import (
+    razorpay_outage_fallback_total,
+    revenue_recovered_via_outage_fallback_paise_total,
 )
 
 
@@ -105,10 +112,20 @@ def test_razorpay_success_branch_parses_order_id(monkeypatch):
     )
 
 
-def test_razorpay_4xx_branch_falls_back_to_simulator(monkeypatch):
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+def test_razorpay_permanent_error_raises_instead_of_falling_back(monkeypatch, status_code):
+    """
+    Re-Audit finding (HIGH): a permanent error (bad credentials, malformed
+    request) used to fall back to SimulatorAdapter exactly like a real
+    outage would -- fabricating a recovery outcome for what is actually a
+    config/code bug, not Razorpay being unavailable. It must now raise
+    RazorpayPermanentError instead, and the simulator fallback must never
+    even be constructed/called.
+    """
+
     class _RejectingClient:
         def post(self, url, **kwargs):
-            return _make_response(400, text="invalid receipt")
+            return _make_response(status_code, text="permanent error")
 
     monkeypatch.setattr(adapter_module, "_get_shared_http_client", lambda: _RejectingClient())
 
@@ -124,11 +141,106 @@ def test_razorpay_4xx_branch_falls_back_to_simulator(monkeypatch):
     adapter = RazorpayTestAdapter()
     adapter._fallback = _SpySimulator()
 
-    result = adapter.retry(_FakeConn(), "pay_2", 75_000, 2)
+    before = razorpay_outage_fallback_total.labels(error_class="permanent")._value.get()
 
-    assert fallback_calls == [("pay_2", 75_000, 2)]
+    with pytest.raises(RazorpayPermanentError):
+        adapter.retry(_FakeConn(), "pay_2", 75_000, 2)
+
+    assert fallback_calls == [], "a permanent error must never reach the simulator fallback"
+    after = razorpay_outage_fallback_total.labels(error_class="permanent")._value.get()
+    assert after == before + 1, "the permanent-error path must be observable via the metric"
+
+
+def test_razorpay_transient_5xx_falls_back_to_simulator(monkeypatch):
+    """A genuine transient error (Razorpay's own server error / rate limit)
+    is exactly TRD §8's outage-fallback case -- must still degrade to the
+    simulator, unlike the permanent-error case above."""
+
+    class _FlakyClient:
+        def post(self, url, **kwargs):
+            return _make_response(503, text="service unavailable")
+
+    monkeypatch.setattr(adapter_module, "_get_shared_http_client", lambda: _FlakyClient())
+
+    fallback_calls = []
+
+    class _SpySimulator:
+        def retry(self, conn, payment_id, amount_paise, attempt_number):
+            fallback_calls.append((payment_id, amount_paise, attempt_number))
+            return ProviderResult(
+                outcome="FAILED", provider_ref="sim_fallback", recovered_amount_paise=0
+            )
+
+    adapter = RazorpayTestAdapter()
+    adapter._fallback = _SpySimulator()
+
+    before = razorpay_outage_fallback_total.labels(error_class="transient")._value.get()
+    result = adapter.retry(_FakeConn(), "pay_2b", 75_000, 2)
+    after = razorpay_outage_fallback_total.labels(error_class="transient")._value.get()
+
+    assert fallback_calls == [("pay_2b", 75_000, 2)]
     assert result.provider_ref == "sim_fallback"
-    assert result.outcome != "PENDING", "a 4xx must not silently stay a bare permanent PENDING"
+    assert result.outcome != "PENDING", "a transient error must not silently stay a bare PENDING"
+    assert after == before + 1, "the transient-fallback path must be observable via the metric"
+
+
+def test_razorpay_fallback_success_records_revenue_segregation_metric(monkeypatch):
+    """
+    Re-Audit finding (HIGH, part 2): revenue_recovered_paise_total alone
+    can't distinguish a genuine Razorpay capture from a fabricated
+    SimulatorAdapter dice roll standing in for one during an outage. A
+    SUCCESSFUL fallback must record its paise into
+    revenue_recovered_via_outage_fallback_paise_total too, so the two can
+    be diffed later to get the genuinely-verified figure.
+    """
+
+    class _FlakyClient:
+        def post(self, url, **kwargs):
+            return _make_response(503, text="service unavailable")
+
+    monkeypatch.setattr(adapter_module, "_get_shared_http_client", lambda: _FlakyClient())
+
+    class _SpySimulator:
+        def retry(self, conn, payment_id, amount_paise, attempt_number):
+            return ProviderResult(
+                outcome="SUCCESS", provider_ref="sim_fallback", recovered_amount_paise=amount_paise
+            )
+
+    adapter = RazorpayTestAdapter()
+    adapter._fallback = _SpySimulator()
+
+    before = revenue_recovered_via_outage_fallback_paise_total._value.get()
+    result = adapter.retry(_FakeConn(), "pay_2c", 75_000, 2)
+    after = revenue_recovered_via_outage_fallback_paise_total._value.get()
+
+    assert result.outcome == "SUCCESS"
+    assert after == before + 75_000, "a successful fallback's paise must be recorded here too"
+
+
+def test_razorpay_fallback_failure_does_not_record_zero_revenue(monkeypatch):
+    """A FAILED fallback recovers nothing -- must not perturb the revenue
+    segregation metric at all, positive or zero-valued noise."""
+
+    class _FlakyClient:
+        def post(self, url, **kwargs):
+            return _make_response(503, text="service unavailable")
+
+    monkeypatch.setattr(adapter_module, "_get_shared_http_client", lambda: _FlakyClient())
+
+    class _SpySimulator:
+        def retry(self, conn, payment_id, amount_paise, attempt_number):
+            return ProviderResult(
+                outcome="FAILED", provider_ref="sim_fallback", recovered_amount_paise=0
+            )
+
+    adapter = RazorpayTestAdapter()
+    adapter._fallback = _SpySimulator()
+
+    before = revenue_recovered_via_outage_fallback_paise_total._value.get()
+    adapter.retry(_FakeConn(), "pay_2d", 75_000, 2)
+    after = revenue_recovered_via_outage_fallback_paise_total._value.get()
+
+    assert after == before, "a FAILED fallback must not increment the revenue segregation metric"
 
 
 def test_razorpay_http_error_branch_falls_back_to_simulator(monkeypatch):

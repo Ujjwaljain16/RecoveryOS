@@ -238,6 +238,47 @@ async def _fetch_retry_history(
     return row["executed_at"], row["attempt_number"] + 1
 
 
+async def _fetch_money_exposure_context(
+    session: AsyncSession, payment_id: str, amount_paise: int
+) -> tuple[int, int]:
+    """
+    (pending_exposure_paise, max_money_exposure_paise) for
+    MoneyExposureLimitRule (services/policy_engine/rules.py, Re-Audit
+    MEDIUM finding). pending_exposure_paise: amount_paise summed once per
+    currently-outstanding (outcome='PENDING') recovery attempt for this
+    payment -- each one, if it later resolves SUCCESS, would claim the
+    full payment amount. max_money_exposure_paise: the payment's active
+    recovery_missions row's own cap; UNBOUNDED_EXPOSURE_PAISE if no active
+    mission exists (e.g. a decision computed before a mission was ever
+    created -- the rule then trivially passes, matching pre-fix behavior).
+    """
+    from services.policy_engine.rules import UNBOUNDED_EXPOSURE_PAISE
+
+    pending_count_row = (
+        await session.execute(
+            text("SELECT count(*) FROM recoveries WHERE payment_id = :pid AND outcome = 'PENDING'"),
+            {"pid": payment_id},
+        )
+    ).first()
+    pending_count = pending_count_row[0] if pending_count_row else 0
+
+    mission_row = (
+        await session.execute(
+            text(
+                "SELECT max_money_exposure_paise FROM recovery_missions WHERE payment_id = :pid "
+                "AND state NOT IN ('RECOVERED','ESCALATED','TERMINATED') "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"pid": payment_id},
+        )
+    ).first()
+    max_money_exposure_paise = (
+        mission_row[0] if mission_row is not None else UNBOUNDED_EXPOSURE_PAISE
+    )
+
+    return pending_count * amount_paise, max_money_exposure_paise
+
+
 @dataclass(frozen=True)
 class _RecommendationContext:
     """Pure-data view of the latest recovery_recommendations row for one
@@ -488,6 +529,9 @@ async def build_decision(
         anomaly_context = await _fetch_anomaly_context(app_session, payment_row["bank"])
         last_attempt_at, attempt_number = await _fetch_retry_history(app_session, payment_id)
         policy_config_row = await _resolve_policy_config(app_session, payment_row["merchant_id"])
+        pending_exposure_paise, max_money_exposure_paise = await _fetch_money_exposure_context(
+            app_session, payment_id, payment_row["amount_paise"]
+        )
 
         recommendation = None
         if diagnosis_id is not None and settings.ai_recommendation_fusion_enabled:
@@ -534,6 +578,8 @@ async def build_decision(
         now=now,
         method=payment_row["method"],
         is_high_severity_anomaly=is_high_severity_anomaly,
+        pending_exposure_paise=pending_exposure_paise,
+        max_money_exposure_paise=max_money_exposure_paise,
     )
     # ai_risk_flags is empty whenever recommendation is None (flag off, no
     # diagnosis_id, or no recommendation row found) -- AIRiskSignalEscalationRule

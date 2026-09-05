@@ -126,3 +126,50 @@ async def test_rate_limiter_consistent_across_simulated_multiple_processes(redis
         f"from clock skew) — got {allowed} allowed, {denied} denied"
     )
     assert denied == total_calls - capacity
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_scope_isolates_buckets(redis_client):
+    """
+    Re-Audit finding (Scalability): RateLimiter's bucket key used to be
+    hardcoded to "events" regardless of which endpoint constructed it --
+    fine while /v1/events was the only caller, a real bug the moment
+    /v1/simulate/scenario started reusing this same class (real Gemini
+    cost per call, needed its own budget, not /v1/events' production
+    throughput budget). Two RateLimiter instances with different `scope`
+    for the SAME merchant must exhaust independently -- exhausting one
+    must not affect the other at all.
+    """
+    merchant = _in_memory_merchant()
+    events_limiter = RateLimiter(capacity=1, refill_rate=0, scope="events")
+    simulate_limiter = RateLimiter(capacity=1, refill_rate=0, scope="simulate")
+
+    await events_limiter(merchant=merchant, redis=redis_client)  # exhausts events' bucket
+    with pytest.raises(Exception) as exc_info:
+        await events_limiter(merchant=merchant, redis=redis_client)
+    assert getattr(exc_info.value, "status_code", None) == 429
+
+    # simulate's bucket, same merchant, must be completely untouched by the
+    # events bucket being exhausted above.
+    await simulate_limiter(merchant=merchant, redis=redis_client)  # must succeed, not raise
+
+    events_key = f"rate_limit:events:{merchant.merchant_id}"
+    simulate_key = f"rate_limit:simulate:{merchant.merchant_id}"
+    assert await redis_client.exists(events_key)
+    assert await redis_client.exists(simulate_key)
+    assert events_key != simulate_key
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_denies_after_capacity_with_zero_refill(redis_client):
+    """Direct proof the limiter actually denies once exhausted, isolated
+    from any FastAPI wiring -- the property /v1/simulate/scenario's own
+    new rate limit depends on."""
+    merchant = _in_memory_merchant()
+    limiter = RateLimiter(capacity=2, refill_rate=0, scope="denial_test")
+
+    await limiter(merchant=merchant, redis=redis_client)
+    await limiter(merchant=merchant, redis=redis_client)
+    with pytest.raises(Exception) as exc_info:
+        await limiter(merchant=merchant, redis=redis_client)
+    assert getattr(exc_info.value, "status_code", None) == 429

@@ -26,6 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies.auth import verify_api_key
+from apps.api.dependencies.rate_limit import RateLimiter
 from recoveryos.config import get_settings
 from recoveryos.database import get_app_session
 from recoveryos.models import Merchant
@@ -36,6 +37,19 @@ from services.risk_engine.anomaly import (
 )
 
 router = APIRouter()
+
+# Re-Audit finding (Scalability): unlike /v1/events (real production
+# ingestion, meant for real throughput), every /v1/simulate/scenario call
+# that reaches process_payment_failure can trigger a REAL Gemini API call
+# -- was completely unthrottled, so a scripted loop against this endpoint
+# could both blow through this project's own free-tier daily quota (see
+# recoveryos/config.py's ai_diagnoser_gemini_model comment on that limit)
+# and generate real cost on a paid key. A dedicated scope (not sharing
+# /v1/events' own bucket -- see RateLimiter.__init__'s scope param) sized
+# for "a presenter clicking a demo button repeatedly," not real traffic:
+# 20 calls burst, refilling at 1/sec (enough to demo every scenario back to
+# back without ever hitting it under normal use).
+_simulate_rate_limiter = RateLimiter(capacity=20, refill_rate=1, scope="simulate")
 
 # Real historical baseline needs >= 2 trailing-day buckets with data for
 # compute_anomaly_window to produce a z-score at all (see its own
@@ -257,6 +271,28 @@ async def simulate_degrade(
 # TEMPORARY_GATEWAY_TIMEOUT) -- likely but not guaranteed to succeed,
 # same honesty tradeoff every other seeded outcome in this system makes.
 #
+# "systemic_delay" demonstrates the deterministic engine choosing something
+# OTHER than RETRY_NOW for real -- the other three scenarios all run under
+# _ensure_retry_now_favored_action_costs' deliberate ~Rs 99,990 cost bias
+# (needed so THEIR outcome is reliable for a demo click), which would make
+# any anomaly-driven preference for RETRY_LATER invisible. This scenario
+# instead resets the merchant to the platform-default action-cost sentinel
+# and writes a real, freshly-detected high-severity bank anomaly (same
+# real detector /v1/simulate/degrade uses) for a dedicated bank, then seeds
+# the payment against THAT bank. tests/integration/
+# test_systemic_suppression_organic.py already proves NBA selection then
+# picks RETRY_LATER over RETRY_NOW unconditionally (EVI's fixed
+# SYSTEMIC_RISK_PENALTY_PAISE + timing.py's one-directional probability
+# haircut), for every amount and every real degradation severity -- this
+# endpoint just drives that same real proof from a live demo click instead
+# of a fixture. RETRY_LATER never enqueues an execution job (see
+# services/pipeline/consumer.py's own "RETRY_LATER never reaches the
+# enqueue branch" comment), so there's no provider call and nothing to
+# complete manually -- the mission settles into OBSERVING_OUTCOME with a
+# RETRY_LATER_SCHEDULED event and a real 30-minute reevaluation delay
+# (services/recovery_engine/timing.py's ANOMALY_REEVALUATION_MINUTES),
+# comfortably outliving a demo recording.
+#
 # Requires settings.ai_recommendation_fusion_enabled=True (off by default)
 # -- both "safety_escalation" and "recover_via_replan" (which
 # demonstrates a real AI-recommendation tie-break/rejection alongside the
@@ -269,7 +305,22 @@ async def simulate_degrade(
 
 
 class ScenarioRequest(BaseModel):
-    scenario: Literal["recover_via_replan", "safety_escalation", "world_changed"]
+    scenario: Literal["recover_via_replan", "safety_escalation", "world_changed", "systemic_delay"]
+    bank: str | None = Field(
+        default=None,
+        description=(
+            "systemic_delay only: reuse an already-degraded bank (e.g. one just "
+            "injected via POST /v1/simulate/degrade) instead of seeding a fresh "
+            "throwaway one -- lets a live demo causally connect 'this bank is "
+            "degraded' to 'and here's a real payment on it being delayed, not "
+            "retried' instead of showing two unrelated banks. Ignored by every "
+            "other scenario. Caller is responsible for the bank actually having "
+            "a fresh (<=30min, services/risk_engine/anomaly.py's "
+            "suppression_window_minutes) high-severity anomaly_windows row --"
+            "if it doesn't, NBA selection will legitimately pick RETRY_NOW, same "
+            "as any other real payment on a bank with no active anomaly.",
+        ),
+    )
 
 
 async def _ensure_demo_policy_config(session: AsyncSession, merchant_id: str) -> None:
@@ -347,12 +398,80 @@ async def _ensure_retry_now_favored_action_costs(session: AsyncSession, merchant
     await session.commit()
 
 
+async def _reset_action_costs_to_platform_default(session: AsyncSession, merchant_id: str) -> None:
+    """systemic_delay needs the REAL EVI dominance proven in
+    tests/integration/test_systemic_suppression_organic.py -- RETRY_LATER
+    structurally beating RETRY_NOW during a genuine high-severity anomaly,
+    via EVI's fixed SYSTEMIC_RISK_PENALTY_PAISE and timing.py's probability
+    haircut alone. _ensure_retry_now_favored_action_costs' artificial
+    ~Rs 99,990 cost gap (needed so recover_via_replan/world_changed
+    reliably pick RETRY_NOW regardless of any incidental anomaly state)
+    would swamp that real, much smaller (~Rs 5) EVI margin, so this
+    scenario needs it gone -- reverting this merchant to the platform-
+    default action_costs sentinel (merchant_id IS NULL) instead."""
+    await session.execute(
+        text("DELETE FROM action_costs WHERE merchant_id = :mid"),
+        {"mid": merchant_id},
+    )
+    await session.commit()
+
+
+async def _seed_systemic_anomaly_bank(session: AsyncSession, merchant_id: str) -> str:
+    """Real bank degradation, same recipe /v1/simulate/degrade uses (real
+    synthetic payments rows, real compute_anomaly_window/persist_anomaly_window
+    -- not a canned anomaly_windows row) -- for a fresh, dedicated bank code
+    so this scenario's own anomaly can't be diluted by any other demo
+    click's data landing on the same bank. Returns the bank code; the
+    caller seeds a failed payment against it next."""
+    settings = get_settings()
+    bucket_minutes = settings.anomaly_bucket_minutes
+    min_sample_size = settings.anomaly_min_sample_size
+    bank = f"DEMO_BANK_SYSTEMIC_{uuid.uuid4().hex[:8]}"
+    method = "card"
+
+    customer_id = await _ensure_synthetic_customer(session, merchant_id)
+    now = datetime.now(UTC)
+    current_bucket = floor_to_bucket(now, bucket_minutes)
+
+    for days_ago in range(1, BASELINE_TRAILING_DAYS + 1):
+        hist_bucket = current_bucket - timedelta(days=days_ago)
+        await _insert_synthetic_payments(
+            session,
+            merchant_id=merchant_id,
+            customer_id=customer_id,
+            bank=bank,
+            method=method,
+            bucket_start=hist_bucket,
+            count=min_sample_size,
+            failure_rate=NORMAL_FAILURE_RATE,
+        )
+
+    # A hard, obvious degradation (5% success) -- the point is to show a
+    # real high-severity anomaly firing, not to tune a borderline case.
+    await _insert_synthetic_payments(
+        session,
+        merchant_id=merchant_id,
+        customer_id=customer_id,
+        bank=bank,
+        method=method,
+        bucket_start=current_bucket,
+        count=min_sample_size,
+        failure_rate=0.95,
+    )
+    await session.commit()
+
+    result = await compute_anomaly_window(session, "bank", bank, current_bucket)
+    await persist_anomaly_window(session, result)
+    return bank
+
+
 async def _seed_scenario_payment(
     session: AsyncSession,
     merchant_id: str,
     amount_paise: int = 842_000,
     true_recovery_prob_bps: int = 9500,
     force_pending_until_reconciled: bool = False,
+    bank: str | None = None,
 ) -> tuple[str, str]:
     """
     Real bug, found via live rehearsal (not caught by any existing test):
@@ -384,9 +503,14 @@ async def _seed_scenario_payment(
     gets a genuine PENDING window to reconcile later through (see this
     module's own docstring above for why that scenario needs one and the
     other two don't).
+
+    bank defaults to a fresh random DEMO_BANK_* code (no other scenario
+    cares which bank it lands on); systemic_delay passes in the specific
+    bank it just wrote a real high-severity anomaly_windows row for, so
+    this payment's own investigation reads that same real anomaly back.
     """
     customer_id = await _ensure_synthetic_customer(session, merchant_id)
-    bank = f"DEMO_BANK_{uuid.uuid4().hex[:8]}"
+    bank = bank or f"DEMO_BANK_{uuid.uuid4().hex[:8]}"
     payment_id = str(uuid.uuid4())
     now = datetime.now(UTC)
     await session.execute(
@@ -458,6 +582,7 @@ async def simulate_scenario(
     background_tasks: BackgroundTasks,
     merchant: Merchant = Depends(verify_api_key),
     session: AsyncSession = Depends(get_app_session),
+    _rate_limit: None = Depends(_simulate_rate_limiter),
 ):
     settings = get_settings()
     if not settings.ai_recommendation_fusion_enabled:
@@ -471,23 +596,42 @@ async def simulate_scenario(
         )
 
     await _ensure_demo_policy_config(session, merchant.merchant_id)
-    await _ensure_retry_now_favored_action_costs(session, merchant.merchant_id)
-    payment_id, bank = await _seed_scenario_payment(
-        session,
-        merchant.merchant_id,
-        true_recovery_prob_bps=0 if payload.scenario == "recover_via_replan" else 9500,
-        force_pending_until_reconciled=payload.scenario == "world_changed",
-    )
+
+    if payload.scenario == "systemic_delay":
+        # The opposite bias from recover_via_replan/world_changed: this
+        # scenario's whole point is to show RETRY_NOW genuinely losing NBA
+        # selection, which needs the real (not RETRY_NOW-favored) cost
+        # economics -- see _reset_action_costs_to_platform_default's
+        # docstring.
+        await _reset_action_costs_to_platform_default(session, merchant.merchant_id)
+        degraded_bank = payload.bank or await _seed_systemic_anomaly_bank(
+            session, merchant.merchant_id
+        )
+        payment_id, bank = await _seed_scenario_payment(
+            session, merchant.merchant_id, bank=degraded_bank
+        )
+    else:
+        await _ensure_retry_now_favored_action_costs(session, merchant.merchant_id)
+        payment_id, bank = await _seed_scenario_payment(
+            session,
+            merchant.merchant_id,
+            true_recovery_prob_bps=0 if payload.scenario == "recover_via_replan" else 9500,
+            force_pending_until_reconciled=payload.scenario == "world_changed",
+        )
 
     if payload.scenario == "safety_escalation":
         mission_id = await _run_safety_escalation_scenario(payment_id)
         return {"payment_id": payment_id, "mission_id": mission_id, "scenario": payload.scenario}
 
-    # "recover_via_replan" and "world_changed" both start with one real,
-    # live pipeline pass (real diagnosis, real EVI/policy, real enqueue) --
-    # returns once the first job is enqueued, so the caller gets a
-    # mission_id fast and can start polling GET /v1/payments/{id}/mission
-    # to watch the rest unfold live.
+    # "recover_via_replan", "world_changed", and "systemic_delay" all start
+    # with one real, live pipeline pass (real diagnosis, real EVI/policy) --
+    # for the first two this returns once the first job is enqueued, so the
+    # caller gets a mission_id fast and can start polling
+    # GET /v1/payments/{id}/mission to watch the rest unfold live.
+    # systemic_delay's own real NBA selection picks RETRY_LATER (see
+    # _reset_action_costs_to_platform_default's docstring), which never
+    # enqueues an execution job at all -- process_payment_failure below
+    # still returns promptly either way.
     from services.pipeline.consumer import process_payment_failure
 
     redis_client = _new_redis_client(settings)

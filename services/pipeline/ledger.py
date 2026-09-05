@@ -395,9 +395,37 @@ async def correct_ledger_and_audit_async(
     the first (payment.failed) correctly resolves the recovery to FAILED;
     the second (payment.captured) must UPGRADE that same recovery to
     SUCCESS, not be silently dropped as "no PENDING recovery matched."
+
+    Re-Audit finding (HIGH): this function's read-decide-write sequence
+    (old_ledger_row SELECT -> _should_correct_ledger -> UPDATE) used to run
+    with NO lock of its own, relying entirely on whatever lock its caller
+    happened to already hold. services/pipeline/reconciliation.py's
+    reconcile_pending_recovery DOES hold a lock across its own call into
+    this function -- but keyed on `order_id`, and every retry attempt mints
+    a FRESH Razorpay order_id. Two different attempts' terminal webhooks
+    (e.g. attempt 2's order and attempt 3's order) acquire DIFFERENT
+    advisory locks and never serialize against each other, even though
+    both mutate the SAME recovery_ledger row (one per payment_id, not per
+    attempt) -- not a narrow edge case, the general multi-attempt case.
+    Same gap existed for workers/execution_worker.py's sync call path,
+    which held no payment-scoped lock at all going into this function.
+
+    Fixed by locking on the actual shared resource this function mutates
+    -- payment_id, not order_id or any caller-specific key -- so every
+    caller (async webhook reconciliation, sync execution-worker terminal
+    write, any future one) serializes against every other correction for
+    the same payment, regardless of which order/attempt/connection type
+    triggered it. See recoveryos/database.py's advisory_lock_async for why
+    this uses a separate connection rather than `session`'s own (an
+    AsyncSession.commit() mid-lock, which populate_ledger_and_audit_async's
+    caller does right before invoking this function, releases `session`'s
+    DBAPI connection back to the pool -- locking on session's own
+    connection would silently stop protecting anything at exactly that
+    point).
     """
     from sqlalchemy import text
 
+    from recoveryos.database import advisory_lock_async
     from services.pipeline.baseline import compute_and_persist_baseline_run
 
     payment_row = (
@@ -412,147 +440,150 @@ async def correct_ledger_and_audit_async(
     )
     amount_paise = payment_row["amount_paise"] if payment_row else 0
 
-    old_ledger_row = (
-        (
-            await session.execute(
-                text(
-                    "SELECT actual_recovery_paise, incremental_recovery_paise "
-                    "FROM recovery_ledger WHERE payment_id = :pid"
-                ),
-                {"pid": payment_id},
-            )
-        )
-        .mappings()
-        .first()
-    )
-    if old_ledger_row is None:
-        # Nothing to correct -- the original terminal write never
-        # happened (a caller invoking this before any populate_* call ever
-        # ran for this payment). Fail safe rather than raise.
-        return
-
-    should_correct, clamped_actual_recovery_paise = _should_correct_ledger(
-        existing_actual_recovery_paise=old_ledger_row["actual_recovery_paise"],
-        new_actual_recovery_paise=actual_recovery_paise,
-        amount_paise_cap=amount_paise,
-    )
-    if not should_correct:
-        return
-
-    baseline = await compute_and_persist_baseline_run(session, payment_id)
-    baseline_outcome = baseline["outcome"] if baseline else None
-    baseline_amount = baseline["recovered_amount_paise"] if baseline else None
-
-    entry = compute_ledger_entry(
-        amount_paise=amount_paise,
-        recovery_prob_bps=recovery_prob_bps,
-        actual_recovery_paise=clamped_actual_recovery_paise,
-        intervention_cost_paise=cost_paise,
-        baseline_recovered_amount_paise=baseline_amount,
-        baseline_outcome=baseline_outcome,
-    )
-
-    await session.execute(
-        text(
-            "UPDATE recovery_ledger SET actual_recovery_paise = :actual, "
-            "incremental_recovery_paise = :incremental, net_recovery_paise = :net, "
-            "baseline_outcome = :baseline_outcome WHERE payment_id = :pid"
-        ),
-        {
-            "actual": entry.actual_recovery_paise,
-            "incremental": entry.incremental_recovery_paise,
-            "net": entry.net_recovery_paise,
-            "baseline_outcome": entry.baseline_outcome,
-            "pid": payment_id,
-        },
-    )
-
-    # audit_log is append-only (gaps.md's own invariant) -- a correction is
-    # a NEW entry in the history, not an edit of the original one.
-    await session.execute(
-        text(
-            "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
-            "decision_id, recovery_id, summary) "
-            "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
-        ),
-        {
-            "aid": str(uuid.uuid4()),
-            "pid": payment_id,
-            "did": diagnosis_id,
-            "cid": candidate_id,
-            "decid": decision_id,
-            "rid": recovery_id,
-            "summary": (
-                f"Payment {payment_id}: CORRECTED action={chosen_action}, policy={verdict}, "
-                f"outcome={outcome} ({correction_reason})"
-            ),
-        },
-    )
-
-    if outcome == "SUCCESS":
-        await session.execute(
-            text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
-            {"status": RECOVERED_STATUS, "pid": payment_id},
-        )
-
-    if diagnosis_id is not None:
-        observed_outcome, action_effective = _derive_outcome_fields(
-            verdict=verdict, actual_recovery_paise=entry.actual_recovery_paise, outcome=outcome
-        )
-        diag_row = (
+    async with advisory_lock_async(session, key=f"ledger-correction:{payment_id}"):
+        old_ledger_row = (
             (
                 await session.execute(
                     text(
-                        "SELECT d.root_cause, l.true_failure_type FROM diagnoses d "
-                        "LEFT JOIN simulator_latent_state l ON l.payment_id = d.payment_id "
-                        "WHERE d.diagnosis_id = :did"
+                        "SELECT actual_recovery_paise, incremental_recovery_paise "
+                        "FROM recovery_ledger WHERE payment_id = :pid"
                     ),
-                    {"did": diagnosis_id},
+                    {"pid": payment_id},
                 )
             )
             .mappings()
             .first()
         )
-        diagnosis_correct = None
-        if diag_row is not None and diag_row["true_failure_type"] is not None:
-            expected = _TRUE_FAILURE_TYPE_TO_ROOT_CAUSE.get(diag_row["true_failure_type"])
-            diagnosis_correct = expected is not None and expected == diag_row["root_cause"]
+        if old_ledger_row is None:
+            # Nothing to correct -- the original terminal write never
+            # happened (a caller invoking this before any populate_* call ever
+            # ran for this payment). Fail safe rather than raise.
+            return
+
+        should_correct, clamped_actual_recovery_paise = _should_correct_ledger(
+            existing_actual_recovery_paise=old_ledger_row["actual_recovery_paise"],
+            new_actual_recovery_paise=actual_recovery_paise,
+            amount_paise_cap=amount_paise,
+        )
+        if not should_correct:
+            return
+
+        baseline = await compute_and_persist_baseline_run(session, payment_id)
+        baseline_outcome = baseline["outcome"] if baseline else None
+        baseline_amount = baseline["recovered_amount_paise"] if baseline else None
+
+        entry = compute_ledger_entry(
+            amount_paise=amount_paise,
+            recovery_prob_bps=recovery_prob_bps,
+            actual_recovery_paise=clamped_actual_recovery_paise,
+            intervention_cost_paise=cost_paise,
+            baseline_recovered_amount_paise=baseline_amount,
+            baseline_outcome=baseline_outcome,
+        )
 
         await session.execute(
             text(
-                "UPDATE diagnosis_outcomes SET observed_outcome = :observed, "
-                "diagnosis_correct = :correct, action_effective = :effective, "
-                "counterfactual_result = :counterfactual WHERE diagnosis_id = :did"
+                "UPDATE recovery_ledger SET actual_recovery_paise = :actual, "
+                "incremental_recovery_paise = :incremental, net_recovery_paise = :net, "
+                "baseline_outcome = :baseline_outcome WHERE payment_id = :pid"
             ),
             {
-                "observed": observed_outcome,
-                "correct": diagnosis_correct,
-                "effective": action_effective,
-                "counterfactual": json.dumps(
-                    {
-                        "actual_recovery_paise": entry.actual_recovery_paise,
-                        "baseline_recovery_paise": baseline_amount or 0,
-                        "incremental_recovery_paise": entry.incremental_recovery_paise,
-                    }
-                ),
-                "did": diagnosis_id,
+                "actual": entry.actual_recovery_paise,
+                "incremental": entry.incremental_recovery_paise,
+                "net": entry.net_recovery_paise,
+                "baseline_outcome": entry.baseline_outcome,
+                "pid": payment_id,
             },
         )
 
-    await session.commit()
+        # audit_log is append-only (gaps.md's own invariant) -- a correction is
+        # a NEW entry in the history, not an edit of the original one.
+        await session.execute(
+            text(
+                "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
+                "decision_id, recovery_id, summary) "
+                "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
+            ),
+            {
+                "aid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": diagnosis_id,
+                "cid": candidate_id,
+                "decid": decision_id,
+                "rid": recovery_id,
+                "summary": (
+                    f"Payment {payment_id}: CORRECTED action={chosen_action}, policy={verdict}, "
+                    f"outcome={outcome} ({correction_reason})"
+                ),
+            },
+        )
 
-    # Metric deltas -- revenue_recovered_paise_total is a monotonic
-    # Counter, so only a non-negative delta is ever recorded. Guaranteed
-    # >= 0 here by _should_correct_ledger's own invariant (this code path
-    # only runs when should_correct was True, which only happens on a
-    # "not recovered" -> "recovered" transition) -- guarded explicitly
-    # anyway rather than trust that silently.
-    recovered_delta = entry.actual_recovery_paise - old_ledger_row["actual_recovery_paise"]
-    if recovered_delta > 0:
-        revenue_recovered_paise_total.inc(recovered_delta)
-    incremental_revenue_paise_total.inc(
-        entry.incremental_recovery_paise - old_ledger_row["incremental_recovery_paise"]
-    )
+        if outcome == "SUCCESS":
+            await session.execute(
+                text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
+                {"status": RECOVERED_STATUS, "pid": payment_id},
+            )
+
+        if diagnosis_id is not None:
+            observed_outcome, action_effective = _derive_outcome_fields(
+                verdict=verdict, actual_recovery_paise=entry.actual_recovery_paise, outcome=outcome
+            )
+            diag_row = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT d.root_cause, l.true_failure_type FROM diagnoses d "
+                            "LEFT JOIN simulator_latent_state l ON l.payment_id = d.payment_id "
+                            "WHERE d.diagnosis_id = :did"
+                        ),
+                        {"did": diagnosis_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            diagnosis_correct = None
+            if diag_row is not None and diag_row["true_failure_type"] is not None:
+                expected = _TRUE_FAILURE_TYPE_TO_ROOT_CAUSE.get(diag_row["true_failure_type"])
+                diagnosis_correct = expected is not None and expected == diag_row["root_cause"]
+
+            await session.execute(
+                text(
+                    "UPDATE diagnosis_outcomes SET observed_outcome = :observed, "
+                    "diagnosis_correct = :correct, action_effective = :effective, "
+                    "counterfactual_result = :counterfactual WHERE diagnosis_id = :did"
+                ),
+                {
+                    "observed": observed_outcome,
+                    "correct": diagnosis_correct,
+                    "effective": action_effective,
+                    "counterfactual": json.dumps(
+                        {
+                            "actual_recovery_paise": entry.actual_recovery_paise,
+                            "baseline_recovery_paise": baseline_amount or 0,
+                            "incremental_recovery_paise": entry.incremental_recovery_paise,
+                        }
+                    ),
+                    "did": diagnosis_id,
+                },
+            )
+
+        await session.commit()
+
+        # Metric deltas -- revenue_recovered_paise_total is a monotonic
+        # Counter, so only a non-negative delta is ever recorded. Guaranteed
+        # >= 0 here by _should_correct_ledger's own invariant (this code path
+        # only runs when should_correct was True, which only happens on a
+        # "not recovered" -> "recovered" transition) -- guarded explicitly
+        # anyway rather than trust that silently. Computed from old_ledger_row
+        # read INSIDE this same lock, so a concurrent correction for the same
+        # payment_id can never observe/report a stale delta.
+        recovered_delta = entry.actual_recovery_paise - old_ledger_row["actual_recovery_paise"]
+        if recovered_delta > 0:
+            revenue_recovered_paise_total.inc(recovered_delta)
+        incremental_revenue_paise_total.inc(
+            entry.incremental_recovery_paise - old_ledger_row["incremental_recovery_paise"]
+        )
 
 
 async def _record_diagnosis_outcome_async(
@@ -796,152 +827,162 @@ def correct_ledger_and_audit_sync(
     correction_reason: str,
 ) -> None:
     """Sync mirror of correct_ledger_and_audit_async -- see its docstring
-    for the full invariant (Domain Audit finding #2). Self-enforces
-    _should_correct_ledger the same way; a call that doesn't qualify is a
-    silent, correct no-op."""
+    for the full invariant (Domain Audit finding #2) and for the Re-Audit
+    HIGH finding this now also closes: the read-decide-write sequence below
+    is locked on `payment_id` (recoveryos.database.advisory_lock, same conn
+    -- a Core Connection's .commit() does NOT release a session-scoped
+    pg_advisory_lock, unlike an ORM AsyncSession's), using the exact same
+    SHA-256 key derivation the async version uses, so a sync
+    execution_worker.py correction and an async webhook-reconciliation
+    correction for the SAME payment_id serialize against each other too,
+    not just against other sync callers. Self-enforces _should_correct_ledger
+    the same way; a call that doesn't qualify is a silent, correct no-op."""
     from sqlalchemy import text
+
+    from recoveryos.database import advisory_lock
 
     payment_row = conn.execute(
         text("SELECT amount_paise FROM payments WHERE payment_id = :pid"), {"pid": payment_id}
     ).first()
     amount_paise = payment_row[0] if payment_row else 0
 
-    old_ledger_row = (
-        conn.execute(
-            text(
-                "SELECT actual_recovery_paise, incremental_recovery_paise "
-                "FROM recovery_ledger WHERE payment_id = :pid"
-            ),
-            {"pid": payment_id},
-        )
-        .mappings()
-        .first()
-    )
-    if old_ledger_row is None:
-        return
-
-    should_correct, clamped_actual_recovery_paise = _should_correct_ledger(
-        existing_actual_recovery_paise=old_ledger_row["actual_recovery_paise"],
-        new_actual_recovery_paise=actual_recovery_paise,
-        amount_paise_cap=amount_paise,
-    )
-    if not should_correct:
-        return
-
-    baseline_row = (
-        conn.execute(
-            text(
-                "SELECT outcome, recovered_amount_paise FROM baseline_runs "
-                "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
-            ),
-            {"pid": payment_id},
-        )
-        .mappings()
-        .first()
-    )
-    baseline_outcome = baseline_row["outcome"] if baseline_row else None
-    baseline_amount = baseline_row["recovered_amount_paise"] if baseline_row else None
-
-    entry = compute_ledger_entry(
-        amount_paise=amount_paise,
-        recovery_prob_bps=recovery_prob_bps,
-        actual_recovery_paise=clamped_actual_recovery_paise,
-        intervention_cost_paise=cost_paise,
-        baseline_recovered_amount_paise=baseline_amount,
-        baseline_outcome=baseline_outcome,
-    )
-
-    conn.execute(
-        text(
-            "UPDATE recovery_ledger SET actual_recovery_paise = :actual, "
-            "incremental_recovery_paise = :incremental, net_recovery_paise = :net, "
-            "baseline_outcome = :baseline_outcome WHERE payment_id = :pid"
-        ),
-        {
-            "actual": entry.actual_recovery_paise,
-            "incremental": entry.incremental_recovery_paise,
-            "net": entry.net_recovery_paise,
-            "baseline_outcome": entry.baseline_outcome,
-            "pid": payment_id,
-        },
-    )
-
-    conn.execute(
-        text(
-            "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
-            "decision_id, recovery_id, summary) "
-            "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
-        ),
-        {
-            "aid": str(uuid.uuid4()),
-            "pid": payment_id,
-            "did": diagnosis_id,
-            "cid": candidate_id,
-            "decid": decision_id,
-            "rid": recovery_id,
-            "summary": (
-                f"Payment {payment_id}: CORRECTED action={chosen_action}, policy={verdict}, "
-                f"outcome={outcome} ({correction_reason})"
-            ),
-        },
-    )
-
-    if outcome == "SUCCESS":
-        conn.execute(
-            text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
-            {"status": RECOVERED_STATUS, "pid": payment_id},
-        )
-
-    if diagnosis_id is not None:
-        observed_outcome, action_effective = _derive_outcome_fields(
-            verdict=verdict, actual_recovery_paise=entry.actual_recovery_paise, outcome=outcome
-        )
-        diag_row = (
+    with advisory_lock(conn, key=f"ledger-correction:{payment_id}"):
+        old_ledger_row = (
             conn.execute(
                 text(
-                    "SELECT d.root_cause, l.true_failure_type FROM diagnoses d "
-                    "LEFT JOIN simulator_latent_state l ON l.payment_id = d.payment_id "
-                    "WHERE d.diagnosis_id = :did"
+                    "SELECT actual_recovery_paise, incremental_recovery_paise "
+                    "FROM recovery_ledger WHERE payment_id = :pid"
                 ),
-                {"did": diagnosis_id},
+                {"pid": payment_id},
             )
             .mappings()
             .first()
         )
-        diagnosis_correct = None
-        if diag_row is not None and diag_row["true_failure_type"] is not None:
-            expected = _TRUE_FAILURE_TYPE_TO_ROOT_CAUSE.get(diag_row["true_failure_type"])
-            diagnosis_correct = expected is not None and expected == diag_row["root_cause"]
+        if old_ledger_row is None:
+            return
+
+        should_correct, clamped_actual_recovery_paise = _should_correct_ledger(
+            existing_actual_recovery_paise=old_ledger_row["actual_recovery_paise"],
+            new_actual_recovery_paise=actual_recovery_paise,
+            amount_paise_cap=amount_paise,
+        )
+        if not should_correct:
+            return
+
+        baseline_row = (
+            conn.execute(
+                text(
+                    "SELECT outcome, recovered_amount_paise FROM baseline_runs "
+                    "WHERE payment_id = :pid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"pid": payment_id},
+            )
+            .mappings()
+            .first()
+        )
+        baseline_outcome = baseline_row["outcome"] if baseline_row else None
+        baseline_amount = baseline_row["recovered_amount_paise"] if baseline_row else None
+
+        entry = compute_ledger_entry(
+            amount_paise=amount_paise,
+            recovery_prob_bps=recovery_prob_bps,
+            actual_recovery_paise=clamped_actual_recovery_paise,
+            intervention_cost_paise=cost_paise,
+            baseline_recovered_amount_paise=baseline_amount,
+            baseline_outcome=baseline_outcome,
+        )
 
         conn.execute(
             text(
-                "UPDATE diagnosis_outcomes SET observed_outcome = :observed, "
-                "diagnosis_correct = :correct, action_effective = :effective, "
-                "counterfactual_result = :counterfactual WHERE diagnosis_id = :did"
+                "UPDATE recovery_ledger SET actual_recovery_paise = :actual, "
+                "incremental_recovery_paise = :incremental, net_recovery_paise = :net, "
+                "baseline_outcome = :baseline_outcome WHERE payment_id = :pid"
             ),
             {
-                "observed": observed_outcome,
-                "correct": diagnosis_correct,
-                "effective": action_effective,
-                "counterfactual": json.dumps(
-                    {
-                        "actual_recovery_paise": entry.actual_recovery_paise,
-                        "baseline_recovery_paise": baseline_amount or 0,
-                        "incremental_recovery_paise": entry.incremental_recovery_paise,
-                    }
-                ),
-                "did": diagnosis_id,
+                "actual": entry.actual_recovery_paise,
+                "incremental": entry.incremental_recovery_paise,
+                "net": entry.net_recovery_paise,
+                "baseline_outcome": entry.baseline_outcome,
+                "pid": payment_id,
             },
         )
 
-    conn.commit()
+        conn.execute(
+            text(
+                "INSERT INTO audit_log (audit_id, payment_id, diagnosis_id, candidate_id, "
+                "decision_id, recovery_id, summary) "
+                "VALUES (:aid, :pid, :did, :cid, :decid, :rid, :summary)"
+            ),
+            {
+                "aid": str(uuid.uuid4()),
+                "pid": payment_id,
+                "did": diagnosis_id,
+                "cid": candidate_id,
+                "decid": decision_id,
+                "rid": recovery_id,
+                "summary": (
+                    f"Payment {payment_id}: CORRECTED action={chosen_action}, policy={verdict}, "
+                    f"outcome={outcome} ({correction_reason})"
+                ),
+            },
+        )
 
-    recovered_delta = entry.actual_recovery_paise - old_ledger_row["actual_recovery_paise"]
-    if recovered_delta > 0:
-        revenue_recovered_paise_total.inc(recovered_delta)
-    incremental_revenue_paise_total.inc(
-        entry.incremental_recovery_paise - old_ledger_row["incremental_recovery_paise"]
-    )
+        if outcome == "SUCCESS":
+            conn.execute(
+                text("UPDATE payments SET status = :status WHERE payment_id = :pid"),
+                {"status": RECOVERED_STATUS, "pid": payment_id},
+            )
+
+        if diagnosis_id is not None:
+            observed_outcome, action_effective = _derive_outcome_fields(
+                verdict=verdict, actual_recovery_paise=entry.actual_recovery_paise, outcome=outcome
+            )
+            diag_row = (
+                conn.execute(
+                    text(
+                        "SELECT d.root_cause, l.true_failure_type FROM diagnoses d "
+                        "LEFT JOIN simulator_latent_state l ON l.payment_id = d.payment_id "
+                        "WHERE d.diagnosis_id = :did"
+                    ),
+                    {"did": diagnosis_id},
+                )
+                .mappings()
+                .first()
+            )
+            diagnosis_correct = None
+            if diag_row is not None and diag_row["true_failure_type"] is not None:
+                expected = _TRUE_FAILURE_TYPE_TO_ROOT_CAUSE.get(diag_row["true_failure_type"])
+                diagnosis_correct = expected is not None and expected == diag_row["root_cause"]
+
+            conn.execute(
+                text(
+                    "UPDATE diagnosis_outcomes SET observed_outcome = :observed, "
+                    "diagnosis_correct = :correct, action_effective = :effective, "
+                    "counterfactual_result = :counterfactual WHERE diagnosis_id = :did"
+                ),
+                {
+                    "observed": observed_outcome,
+                    "correct": diagnosis_correct,
+                    "effective": action_effective,
+                    "counterfactual": json.dumps(
+                        {
+                            "actual_recovery_paise": entry.actual_recovery_paise,
+                            "baseline_recovery_paise": baseline_amount or 0,
+                            "incremental_recovery_paise": entry.incremental_recovery_paise,
+                        }
+                    ),
+                    "did": diagnosis_id,
+                },
+            )
+
+        conn.commit()
+
+        recovered_delta = entry.actual_recovery_paise - old_ledger_row["actual_recovery_paise"]
+        if recovered_delta > 0:
+            revenue_recovered_paise_total.inc(recovered_delta)
+        incremental_revenue_paise_total.inc(
+            entry.incremental_recovery_paise - old_ledger_row["incremental_recovery_paise"]
+        )
 
 
 def _record_diagnosis_outcome_sync(

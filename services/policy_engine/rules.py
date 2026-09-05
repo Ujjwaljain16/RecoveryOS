@@ -1,9 +1,10 @@
 """
 Policy Engine rule DSL — TRD §3.4, gaps.md §B.3.
 
-ALL rules (11: 7 original + 3 real regulatory compliance rules (Task
-COMPLIANCE1) + 1 AI-risk-signal escalation rule) are pure functions of
-already-hydrated dataclasses. Zero I/O:
+ALL rules (12: 7 original + 3 real regulatory compliance rules (Task
+COMPLIANCE1) + 1 AI-risk-signal escalation rule + 1 money-exposure backstop
+(Re-Audit MEDIUM finding)) are pure functions of already-hydrated
+dataclasses. Zero I/O:
 no db, no sqlalchemy, no redis, no requests, no httpx import anywhere in
 this file — enforced both by convention here AND by
 test_policy_engine_module_has_zero_forbidden_imports (AST-parses this exact
@@ -18,6 +19,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+
+# Re-Audit finding (MEDIUM): recovery_missions.max_money_exposure_paise was
+# computed at mission creation, persisted, and displayed via the API/
+# dashboard as if it were an enforced spend cap -- nothing ever checked it
+# (see MoneyExposureLimitRule below). This sentinel is PaymentContext's
+# default for pre-existing call sites (tests, the baseline simulator) that
+# don't fetch a real mission row and don't care about this concern -- same
+# backward-compatible-default discipline CandidateContext.ai_risk_flags
+# already established. Effectively "no cap known/applicable", never an
+# actual money_paise value any real payment could reach.
+UNBOUNDED_EXPOSURE_PAISE = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -46,6 +58,18 @@ class PaymentContext:
     # anomaly detector) — packed in here rather than fetched by
     # SystemicSuppressionRule itself.
     is_high_severity_anomaly: bool
+    # Re-Audit finding (MEDIUM), read by MoneyExposureLimitRule only.
+    # pending_exposure_paise: this payment's own amount_paise, summed once
+    # per currently-outstanding (outcome='PENDING') recovery attempt for
+    # this SAME payment -- each one, if it later resolves SUCCESS, would
+    # claim the full payment amount, so N outstanding attempts represent a
+    # real N x amount_paise financial exposure even though only one can
+    # ever legitimately be recovered. max_money_exposure_paise: this
+    # payment's active recovery_missions row's own cap (always == amount_paise
+    # today, per get_or_create_mission_async), or UNBOUNDED_EXPOSURE_PAISE
+    # if no mission row was fetched (old call sites that don't care).
+    pending_exposure_paise: int = 0
+    max_money_exposure_paise: int = UNBOUNDED_EXPOSURE_PAISE
 
 
 @dataclass(frozen=True)
@@ -208,6 +232,48 @@ class AmountLimitRule(PolicyRule):
         return RuleResult(
             False,
             f"amount_paise={payment.amount_paise} > max_amount_paise={policy_config.max_amount_paise}",
+        )
+
+
+class MoneyExposureLimitRule(PolicyRule):
+    """A money-moving candidate (RETRY_NOW/ALT_ROUTE — the only two
+    action_types that create a real provider order) must not push this
+    mission's total outstanding exposure (already-PENDING attempts' worth +
+    this one) past its own recovery_missions.max_money_exposure_paise.
+
+    Re-Audit finding (MEDIUM): that field was computed at mission creation,
+    persisted, and displayed via the API/dashboard as if it were an
+    enforced spend cap -- nothing ever actually checked it. In practice,
+    services/recovery_engine/mission.py's ALLOWED_TRANSITIONS already
+    structurally prevents a mission from having two genuinely concurrent
+    EXECUTING phases, so this rule is the same kind of intentional
+    layered-defense backstop as SystemicSuppressionRule below (see that
+    rule's own docstring for the identical reasoning) -- not manufacturing
+    a fix for a fabricated scenario, but making a field that already
+    claims to be a guarantee (by its name, its API exposure, its very
+    existence) into one a future change to the state machine can't
+    silently break without this catching it."""
+
+    name = "MoneyExposureLimitRule"
+
+    def check(self, payment, candidate, policy_config) -> RuleResult:
+        if candidate.action_type not in ("RETRY_NOW", "ALT_ROUTE"):
+            return RuleResult(
+                True, f"{candidate.action_type} does not move money -- exposure limit inapplicable"
+            )
+        projected_exposure_paise = payment.pending_exposure_paise + payment.amount_paise
+        if projected_exposure_paise <= payment.max_money_exposure_paise:
+            return RuleResult(
+                True,
+                f"projected_exposure_paise={projected_exposure_paise} <= "
+                f"max_money_exposure_paise={payment.max_money_exposure_paise}",
+            )
+        return RuleResult(
+            False,
+            f"projected_exposure_paise={projected_exposure_paise} > "
+            f"max_money_exposure_paise={payment.max_money_exposure_paise} "
+            f"({payment.pending_exposure_paise} paise already outstanding across other "
+            f"PENDING attempts for this mission)",
         )
 
 
@@ -417,6 +483,7 @@ RULES: tuple[PolicyRule, ...] = (
     CooldownRule(),
     RetryLimitRule(),
     AmountLimitRule(),
+    MoneyExposureLimitRule(),
     EMandateRetryComplianceRule(),
     AutopayExecutionWindowRule(),
     QuietHoursComplianceRule(),

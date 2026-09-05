@@ -169,6 +169,40 @@ ai_outcome_delta_total = Counter(
     ["cause"],  # tie_break | risk_escalation
 )
 
+# ─── Razorpay provider adapter ──────────────────────────────────────────────
+# Re-Audit finding (HIGH): RazorpayTestAdapter's TRD §8 outage-fallback path
+# (integrations/razorpay/adapter.py) previously had zero Prometheus signal --
+# a fabricated-via-SimulatorAdapter recovery was indistinguishable from a
+# real Razorpay-verified one anywhere in observability, only discoverable by
+# grepping logs for RAZORPAY_OUTAGE_FALLBACK after the fact. error_class
+# distinguishes a genuine transient outage (timeout/429/5xx -- TRD §8's
+# actual intent, correctly degrades to the simulator) from a permanent
+# config/auth error (401/403/malformed request -- NOT an outage; the adapter
+# now raises instead of silently fabricating an outcome for these, so this
+# label should only ever see "permanent" if that raise path is ever bypassed).
+razorpay_outage_fallback_total = Counter(
+    "razorpay_outage_fallback_total",
+    "RazorpayTestAdapter degraded to SimulatorAdapter (TRD §8) or hit a non-outage error, by "
+    "error_class -- a non-zero 'transient' rate means real recovered-revenue numbers include "
+    "fabricated outcomes for that period, not verified Razorpay ones.",
+    ["error_class"],  # transient | permanent
+)
+# Re-Audit finding (HIGH, part 2): razorpay_outage_fallback_total above counts EVENTS but not
+# money -- doesn't answer "how much of revenue_recovered_paise_total is real Razorpay-verified
+# capture vs. a SimulatorAdapter dice roll standing in for one." Recorded at the exact point the
+# outage-fallback decision is made (integrations/razorpay/adapter.py's _fallback_to_simulator),
+# not inferred downstream from a `sim_` provider_ref prefix -- that prefix is ALSO produced by a
+# deployment deliberately configured with PAYMENT_PROVIDER_ADAPTER=simulator (the benchmark/
+# evaluation harness's own normal, non-fallback path), so it can't distinguish "outage happened"
+# from "simulator was the configured provider all along" after the fact. A non-zero value here
+# means: subtract it from revenue_recovered_paise_total to get the genuinely Razorpay-verified
+# figure, don't take the headline number as 100% real-capture without checking this first.
+revenue_recovered_via_outage_fallback_paise_total = Counter(
+    "revenue_recovered_via_outage_fallback_paise_total",
+    "Paise counted in revenue_recovered_paise_total that came from a RazorpayTestAdapter outage "
+    "fallback (a SimulatorAdapter dice roll), not a genuine Razorpay-verified capture.",
+)
+
 # ─── Pre-registration of known label values ────────────────────────────────
 # prometheus_client only emits a metric family's HELP/TYPE lines (and thus
 # the whole series) once at least one label combination has actually been
@@ -201,6 +235,7 @@ _KNOWN_POLICY_RULES = (
     "CooldownRule",
     "RetryLimitRule",
     "AmountLimitRule",
+    "MoneyExposureLimitRule",
     "EMandateRetryComplianceRule",
     "AutopayExecutionWindowRule",
     "QuietHoursComplianceRule",
@@ -225,3 +260,5 @@ for _tie_reason in _KNOWN_TIE_BREAK_REJECT_REASONS:
     ai_tie_break_rejected_total.labels(reason=_tie_reason)
 for _cause in _KNOWN_AI_OUTCOME_DELTA_CAUSES:
     ai_outcome_delta_total.labels(cause=_cause)
+for _error_class in ("transient", "permanent"):
+    razorpay_outage_fallback_total.labels(error_class=_error_class)

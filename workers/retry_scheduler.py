@@ -106,28 +106,126 @@ async def _process_one(row: dict, redis_client) -> None:
         # first -- not an error.
         return
 
-    if not await _mission_still_observing_outcome(row.get("mission_id")):
-        logger.info(
-            "[RetryScheduler] reevaluation_id=%s reclaimed but its mission has already moved "
-            "past OBSERVING_OUTCOME -- marking CANCELLED instead of reprocessing (stale, not "
-            "an error)",
-            reevaluation_id,
-        )
-        async with get_app_session_factory()() as session:
+    # Re-Audit finding (MEDIUM): the "still OBSERVING_OUTCOME?" check below
+    # and the process_payment_failure re-investigation after it used to run
+    # unlocked -- a webhook landing on services/pipeline/reconciliation.py
+    # in between (closing this same mission out to RECOVERED/TERMINATED)
+    # would leave this scheduler acting on a stale read, spawning a
+    # duplicate investigation and burning a real LLM call for a mission
+    # that's already resolved. Backstopped elsewhere from actually double-
+    # charging, but wasteful and noisy -- see services/pipeline/
+    # reconciliation.py's own matching lock (same key format, `mission:
+    # {payment_id}`) for the other side of this race.
+    from recoveryos.database import advisory_lock_async
+
+    async with (
+        get_app_session_factory()() as session,
+        advisory_lock_async(session, key=f"mission:{payment_id}"),
+    ):
+        if not await _mission_still_observing_outcome(row.get("mission_id")):
+            logger.info(
+                "[RetryScheduler] reevaluation_id=%s reclaimed but its mission has already "
+                "moved past OBSERVING_OUTCOME -- marking CANCELLED instead of reprocessing "
+                "(stale, not an error)",
+                reevaluation_id,
+            )
             await cancel_stale_reevaluation(session, reevaluation_id)
-        return
+            return
 
-    bank = await _fetch_bank(payment_id)
-    await process_payment_failure(
-        payment_id, bank, redis_client, source_event_id=fired_source_event_id
-    )
-
-    async with get_app_session_factory()() as session:
+        bank = await _fetch_bank(payment_id)
+        await process_payment_failure(
+            payment_id, bank, redis_client, source_event_id=fired_source_event_id
+        )
         await complete_reevaluation(session, reevaluation_id)
 
 
+async def _sweep_expired_missions() -> int:
+    """
+    Re-Audit finding (HIGH): recovery_missions.expires_at (and the
+    max_mission_duration_seconds it's computed from) is set at mission
+    creation, persisted, and displayed via the API/dashboard -- but nothing
+    EVER enforced it proactively. services/recovery_engine/mission.py's
+    check_budget() DOES check it, but only reactively, as a gate before
+    scheduling the NEXT round -- a mission sitting in OBSERVING_OUTCOME on a
+    real PENDING recovery whose webhook never arrives (a dead ngrok tunnel,
+    a customer who never completes checkout, a lost Razorpay delivery) never
+    reaches ANY code path that calls check_budget() at all, so it sits past
+    its own expires_at forever, contradicting mission.py's own docstring
+    claim that the budget fields are enforced.
+
+    Runs once per poll cycle (same cadence as the reevaluation poll above,
+    reusing this already-running worker rather than standing up a new one)
+    -- finds every eligible non-terminal mission whose expires_at has passed
+    and terminates it for real, with its own distinct event type so a
+    dashboard/audit reader can tell "ran out of budget while waiting" apart
+    from every other TERMINATED reason. Two states are deliberately excluded
+    -- not swept, left for their own existing mechanism instead of forcing
+    an ALLOWED_TRANSITIONS path open just for this:
+      - EXECUTING: mid-execution, covered by execution_worker.py's own
+        crash-recovery/redelivery path, a different, already-tested
+        mechanism, not a duration budget concern.
+      - OBSERVED: mission.py's own ALLOWED_TRANSITIONS only permits
+        OBSERVED -> INVESTIGATING, never OBSERVED -> TERMINATED directly (a
+        real constraint, found live via this function's own test suite, not
+        an oversight to work around) -- and in practice this state is held
+        for a single synchronous step immediately after mission creation
+        (get_or_create_mission_async's own caller transitions it to
+        INVESTIGATING in the same call), so a mission genuinely stuck here
+        for a FULL mission-duration budget would mean the process crashed
+        between two statements of one function -- an already-covered crash-
+        recovery scenario (a payment with no active mission at all gets a
+        fresh one created on its next real ingestion), not a distinct gap
+        worth bending the state machine's own discipline for.
+    """
+    from services.recovery_engine.mission import (
+        InvalidMissionTransitionError,
+        transition_mission_async,
+    )
+
+    now = clock.utcnow()
+    async with get_app_session_factory()() as session:
+        expired = (
+            await session.execute(
+                text(
+                    "SELECT mission_id FROM recovery_missions "
+                    "WHERE state NOT IN "
+                    "('RECOVERED','ESCALATED','TERMINATED','EXECUTING','OBSERVED') "
+                    "AND expires_at < :now"
+                ),
+                {"now": now},
+            )
+        ).all()
+
+        swept = 0
+        for (mission_id,) in expired:
+            try:
+                await transition_mission_async(
+                    session,
+                    mission_id=mission_id,
+                    to_state="TERMINATED",
+                    event_type="MISSION_BUDGET_EXHAUSTED",
+                    actor="system",
+                    payload={"reason": "MISSION_DURATION_EXCEEDED", "source": "expiry_sweep"},
+                    now=now,
+                )
+                swept += 1
+            except InvalidMissionTransitionError:
+                # Benign race: some other path (a webhook, a reevaluation)
+                # already moved this mission on between the SELECT above and
+                # this transition attempt -- not a sweep failure.
+                logger.info(
+                    "[RetryScheduler] mission_id=%s no longer eligible for expiry sweep by the "
+                    "time this transition ran -- already advanced elsewhere",
+                    mission_id,
+                )
+    return swept
+
+
 async def run_once(redis_client) -> int:
-    """One poll cycle. Returns how many due rows were processed (test hook)."""
+    """One poll cycle. Returns how many due REEVALUATION rows were processed
+    (test hook, pre-existing contract -- unchanged). The expired-mission
+    sweep below runs every cycle too but reports its own count only via
+    logging, not this return value, to avoid disturbing that contract."""
     async with get_app_session_factory()() as session:
         due = await fetch_due_reevaluations(session, clock.utcnow())
 
@@ -141,6 +239,14 @@ async def run_once(redis_client) -> int:
                 "and retried automatically on a future poll cycle -- adversarial sweep finding #50)",
                 row["reevaluation_id"],
             )
+
+    try:
+        swept = await _sweep_expired_missions()
+        if swept:
+            logger.info("[RetryScheduler] expiry sweep terminated %s mission(s)", swept)
+    except Exception:
+        logger.exception("[RetryScheduler] expiry sweep failed (non-fatal, retried next cycle)")
+
     return len(due)
 
 

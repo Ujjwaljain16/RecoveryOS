@@ -50,6 +50,7 @@ type PaymentDetail = {
     action_type: string;
     outcome: string | null;
     recovered_amount_paise: number;
+    provider_ref: string | null;
     executed_at: string | null;
   }[];
   ai_fusion: {
@@ -165,6 +166,37 @@ export default function PaymentDetailPage({ params }: { params: { id: string } }
   const [error, setError] = useState<string | null>(null);
   const [mission, setMission] = useState<MissionResponse | null>(null);
   const [missionChecked, setMissionChecked] = useState(false);
+  const [copiedRef, setCopiedRef] = useState<string | null>(null);
+
+  async function copyProviderRef(ref: string) {
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(ref);
+      copied = true;
+    } catch {
+      // Async Clipboard API denied (some sandboxed/embedded browser contexts
+      // block it outright, independent of HTTPS/localhost) -- fall back to
+      // the older execCommand path, which several such contexts still allow.
+      const textarea = document.createElement("textarea");
+      textarea.value = ref;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+      document.body.removeChild(textarea);
+    }
+    if (copied) {
+      setCopiedRef(ref);
+      setTimeout(() => setCopiedRef((current) => (current === ref ? null : current)), 1500);
+    }
+    // If both paths failed, the ref is still visible in the table as plain
+    // text for manual selection -- no error state needed.
+  }
 
   // Payment detail (status, recovery_history, diagnosis, policy, ai_fusion)
   // and the Recovery Mission timeline are fetched together, in lockstep,
@@ -502,6 +534,7 @@ export default function PaymentDetailPage({ params }: { params: { id: string } }
               <th>Action</th>
               <th>Outcome</th>
               <th>Recovered</th>
+              <th>Provider Ref</th>
               <th>Executed At</th>
             </tr>
           </thead>
@@ -512,6 +545,28 @@ export default function PaymentDetailPage({ params }: { params: { id: string } }
                 <td>{r.action_type}</td>
                 <td>{r.outcome ?? "PENDING"}</td>
                 <td>{formatPaise(r.recovered_amount_paise)}</td>
+                <td style={{ fontFamily: "monospace", fontSize: "0.85em" }}>
+                  {r.provider_ref ? (
+                    <button
+                      onClick={() => copyProviderRef(r.provider_ref as string)}
+                      title="Copy order id"
+                      style={{
+                        fontFamily: "monospace",
+                        fontSize: "0.85em",
+                        background: "none",
+                        border: "1px solid var(--panel-border)",
+                        borderRadius: "4px",
+                        padding: "0.1rem 0.4rem",
+                        cursor: "pointer",
+                        color: "inherit",
+                      }}
+                    >
+                      {copiedRef === r.provider_ref ? "Copied!" : `${r.provider_ref} ⧉`}
+                    </button>
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td>{r.executed_at ? new Date(r.executed_at).toLocaleString() : "—"}</td>
               </tr>
             ))}

@@ -1,5 +1,14 @@
 # RecoveryOS — Phase 8 Evaluation Report
 
+> **Superseded — not the current headline number.** This report's own +₹42,491.88 (+4.5%)
+> figure below is from a single seed against the single-attempt baseline. The CURRENT headline
+> number is +₹73,181.78 mean incremental recovery (positive in all 5 seeds), computed against a
+> compliance-aware baseline (the real policy rule chain, not a weaker strawman) — see README §9
+> and [`tests/evaluation/artifacts/multi_seed_compliance_aware_aggregate.json`](artifacts/multi_seed_compliance_aware_aggregate.json).
+> Re-Audit finding: a reader who finds this file directly (not via README's own links, which
+> don't reference it) would otherwise cite the older, weaker number. Kept for its detailed
+> methodology/reproduction record below, not as the current result.
+
 This is the single, self-contained record of Phase 8 (TRD §7's evaluation harness): the
 headline incremental-revenue number, how it was produced, every secondary metric, the AI
 evaluation, the adversarial test results, and — most importantly — exactly which of this

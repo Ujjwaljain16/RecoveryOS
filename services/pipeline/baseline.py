@@ -42,6 +42,7 @@ from integrations.razorpay.adapter import (
     resolve_simulated_outcome,
 )
 from recoveryos import clock
+from recoveryos.config import get_settings
 
 # Evaluation-only import, deliberately breaking this module's usual
 # no-cross-service-import discipline (see PLATFORM_DEFAULT_POLICY_CONFIG_ID's
@@ -242,10 +243,14 @@ async def compute_and_persist_fair_baseline_run(
     Domain Audit finding #6: "how much of the incremental-revenue number
     reflects 'we tried more times' rather than 'we chose better actions'?"
     -- compute_and_persist_baseline_run() above models exactly ONE naive
-    retry, while RecoveryOS's own path can execute up to policy_configs.
-    max_retries real attempts. This gives the naive baseline the SAME
-    attempt budget RecoveryOS itself is allowed for THIS payment's
-    merchant, so the comparison controls for opportunity/attempt count.
+    retry, while RecoveryOS's own path can execute up to
+    min(policy_configs.max_retries, Settings.mission_max_attempts) real
+    attempts -- the tighter of RetryLimitRule's and check_budget()'s two
+    independently-configured ceilings, whichever actually binds first (see
+    this function's own effective_max_attempts comment). This gives the
+    naive baseline the SAME attempt budget RecoveryOS itself is allowed
+    for THIS payment's merchant, so the comparison controls for
+    opportunity/attempt count.
 
     Deliberately NOT a smarter baseline: the decision policy stays exactly
     as naive as the single-attempt version (retry everything except a
@@ -337,6 +342,20 @@ async def compute_and_persist_fair_baseline_run(
     # at all (shouldn't happen in practice; orchestrator.py's own
     # _resolve_policy_config lazily creates the platform-default row).
     max_retries = policy_config_row[0] if policy_config_row else 2
+    # Re-Audit finding: RecoveryOS's REAL attempt ceiling isn't max_retries
+    # alone -- services/policy_engine/rules.py's RetryLimitRule enforces
+    # max_retries BEFORE authorizing an attempt (escalates once exceeded),
+    # but services/recovery_engine/mission.py's check_budget() separately
+    # enforces recovery_missions.max_attempts (from
+    # Settings.mission_max_attempts, a DIFFERENT config value -- 3 by
+    # default vs max_retries' 2) as its own hard ceiling. Whichever is
+    # TIGHTER is what actually stops a real mission; today that's
+    # max_retries (2 < 3), so this fix doesn't change today's numbers, but
+    # a baseline computed against only one of the two would silently
+    # misrepresent RecoveryOS's real attempt budget the moment either
+    # value changes independently -- not a hypothetical, they're already
+    # two genuinely different numbers with no code keeping them in sync.
+    effective_max_attempts = min(max_retries, get_settings().mission_max_attempts)
 
     would_retry = _would_baseline_retry(payment_row["failure_class"], payment_row["failure_code"])
 
@@ -344,7 +363,7 @@ async def compute_and_persist_fair_baseline_run(
         outcome, recovered_amount_paise, attempts_used = OUTCOME_NOT_ATTEMPTED, 0, 0
     else:
         outcome, recovered_amount_paise, attempts_used = OUTCOME_NOT_RECOVERED, 0, 0
-        for attempt_number in range(1, max_retries + 1):
+        for attempt_number in range(1, effective_max_attempts + 1):
             if attempt_number == 1:
                 # attempt 1 has no decay to apply yet -- use the stored
                 # value directly, same shortcut SimulatorAdapter.retry()
@@ -557,6 +576,12 @@ async def compute_and_persist_compliance_aware_baseline_run(
         if policy_config_row
         else _DEFAULT_POLICY_CONFIG_CTX
     )
+    # Re-Audit finding -- see compute_and_persist_fair_baseline_run's own
+    # comment on this exact same real divergence (max_retries vs
+    # Settings.mission_max_attempts). RetryLimitRule (policy engine) and
+    # check_budget() (mission.py) enforce two independently-configured
+    # values; the tighter one is what actually governs a real mission.
+    effective_max_attempts = min(policy_config_ctx.max_retries, get_settings().mission_max_attempts)
 
     # Same signal SystemicSuppressionRule's real caller
     # (orchestrator._fetch_anomaly_context) reads -- is_cohort_suppressed()
@@ -585,7 +610,7 @@ async def compute_and_persist_compliance_aware_baseline_run(
             None,
         )
         last_attempt_at = None
-        for attempt_number in range(1, policy_config_ctx.max_retries + 1):
+        for attempt_number in range(1, effective_max_attempts + 1):
             now = resolve_decision_now(
                 is_synthetic=True,
                 failed_at=payment_row["failed_at"],

@@ -24,6 +24,7 @@ from services.policy_engine.rules import (
     EligibilityRule,
     EMandateRetryComplianceRule,
     MinExpectedValueRule,
+    MoneyExposureLimitRule,
     OptOutRule,
     PaymentContext,
     PolicyConfigContext,
@@ -273,6 +274,88 @@ def test_amount_limit_one_paise_over_fails():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# MoneyExposureLimitRule — pending_exposure_paise + amount_paise <=
+# max_money_exposure_paise, for money-moving candidates only (Re-Audit
+# MEDIUM finding: recovery_missions.max_money_exposure_paise was computed/
+# persisted/displayed but never enforced anywhere until this rule).
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_money_exposure_pass_case_no_pending_attempts():
+    """The common case: no other attempt outstanding, plenty of room under
+    the cap (which orchestrator.py sets to exactly amount_paise in
+    practice, but the rule itself is general)."""
+    result = MoneyExposureLimitRule().check(
+        _payment(amount_paise=100_000, pending_exposure_paise=0, max_money_exposure_paise=100_000),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+def test_money_exposure_exactly_at_cap_passes():
+    result = MoneyExposureLimitRule().check(
+        _payment(amount_paise=100_000, pending_exposure_paise=0, max_money_exposure_paise=100_000),
+        _candidate(action_type="ALT_ROUTE"),
+        _policy_config(),
+    )
+    assert result.passed is True
+
+
+def test_money_exposure_blocks_when_a_pending_attempt_already_claims_the_cap():
+    """The real scenario this rule exists for: one attempt's real order is
+    already outstanding (PENDING) for this payment's mission -- a SECOND
+    money-moving attempt would push total exposure to 2x the mission's own
+    cap (which is always == amount_paise today), so it must be blocked."""
+    result = MoneyExposureLimitRule().check(
+        _payment(
+            amount_paise=100_000, pending_exposure_paise=100_000, max_money_exposure_paise=100_000
+        ),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is False
+    assert "100000 paise already outstanding" in result.reason
+
+
+def test_money_exposure_one_paise_over_cap_fails():
+    result = MoneyExposureLimitRule().check(
+        _payment(amount_paise=100_001, pending_exposure_paise=0, max_money_exposure_paise=100_000),
+        _candidate(action_type="RETRY_NOW"),
+        _policy_config(),
+    )
+    assert result.passed is False
+
+
+def test_money_exposure_does_not_apply_to_non_money_moving_actions():
+    """RETRY_LATER/REMINDER/ESCALATE/DO_NOTHING never create a provider
+    order -- exposure can never be affected by them, regardless of how far
+    over the cap the payment already is."""
+    for action_type in ("RETRY_LATER", "REMINDER", "ESCALATE", "DO_NOTHING"):
+        result = MoneyExposureLimitRule().check(
+            _payment(
+                amount_paise=100_000,
+                pending_exposure_paise=999_999_999,
+                max_money_exposure_paise=1,
+            ),
+            _candidate(action_type=action_type),
+            _policy_config(),
+        )
+        assert result.passed is True, f"{action_type} must never be blocked by exposure limits"
+
+
+def test_money_exposure_defaults_to_unbounded_when_caller_does_not_care():
+    """Old call sites (tests, the baseline simulator) that construct
+    PaymentContext without pending_exposure_paise/max_money_exposure_paise
+    must be unaffected -- the dataclass defaults (0, UNBOUNDED_EXPOSURE_PAISE)
+    make this rule trivially pass, matching pre-fix behavior exactly."""
+    result = MoneyExposureLimitRule().check(
+        _payment(amount_paise=50_000_000_00), _candidate(action_type="RETRY_NOW"), _policy_config()
+    )
+    assert result.passed is True
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 6. SystemicSuppressionRule
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -440,17 +523,23 @@ def test_retry_limit_failure_produces_escalate_verdict_not_block():
 
 
 def test_trace_stops_exactly_at_the_failing_rule_middle_of_the_chain():
-    """SystemicSuppressionRule is rule #10 in the current 11-rule chain
-    (Task COMPLIANCE1 added 3 rules before it, Phase 11 added
-    AIRiskSignalEscalationRule after OptOutRule) — the trace must contain
-    exactly 10 entries (the 9 that passed plus the failing one), not all 11."""
+    """SystemicSuppressionRule's position in RULES is computed from RULES
+    itself, not hardcoded -- a hardcoded position/count here has already
+    gone stale once (Re-Audit's MoneyExposureLimitRule addition shifted it
+    from #10 to #11 of what's now a 12-rule chain), the exact kind of drift
+    this test shouldn't itself be a source of. The real assertion is
+    behavioral: the trace must contain exactly the rules up to and
+    including the failing one, not the full chain."""
+    expected_stop_index = next(
+        i for i, rule in enumerate(RULES) if rule.name == "SystemicSuppressionRule"
+    )
     result = evaluate(
         _payment(is_high_severity_anomaly=True),
         _candidate(action_type="RETRY_NOW", expected_value_paise=1_000),
         _policy_config(),
     )
     assert result.verdict == "BLOCK"
-    assert len(result.rule_trace) == 10
+    assert len(result.rule_trace) == expected_stop_index + 1
     assert result.rule_trace[-1]["rule"] == "SystemicSuppressionRule"
 
 

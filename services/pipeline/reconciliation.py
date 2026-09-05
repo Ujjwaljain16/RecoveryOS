@@ -356,12 +356,28 @@ async def reconcile_pending_recovery(
         # _advance_mission_on_external_resolution's own docstring for why
         # this webhook path is the ONLY place a real (non-simulator)
         # provider's PENDING attempt ever reports its true terminal outcome.
-        await _advance_mission_on_external_resolution(
-            app_session,
-            payment_id=recovery_row["payment_id"],
-            decision_id=recovery_row["decision_id"],
-            attempt_number=recovery_row["attempt_number"],
-            outcome=outcome,
-        )
+        #
+        # Re-Audit finding (MEDIUM, same root cause as the ledger HIGH
+        # finding above): workers/retry_scheduler.py's _process_one reads a
+        # mission's state ("still OBSERVING_OUTCOME?"), and only if that
+        # passes does it later call process_payment_failure, which re-
+        # investigates and burns a real LLM call. Nothing serialized that
+        # read against THIS function closing the same mission out from
+        # OBSERVING_OUTCOME between the scheduler's check and its own later
+        # write -- the order_id lock above doesn't help here, since the
+        # scheduler never touches an order_id at all. Locking on `mission:
+        # {payment_id}` around the transition below, and requiring
+        # retry_scheduler to acquire the SAME key before its own check,
+        # closes the gap: whichever side gets there first, the other
+        # observes its real, post-transition state, not a stale read.
+        # (advisory_lock_async already imported at module level above.)
+        async with advisory_lock_async(app_session, key=f"mission:{recovery_row['payment_id']}"):
+            await _advance_mission_on_external_resolution(
+                app_session,
+                payment_id=recovery_row["payment_id"],
+                decision_id=recovery_row["decision_id"],
+                attempt_number=recovery_row["attempt_number"],
+                outcome=outcome,
+            )
 
         return recovery_row["recovery_id"]

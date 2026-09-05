@@ -771,3 +771,166 @@ async def test_mission_reaches_terminal_state_despite_a_crash_during_replan(
         f"forever, got state={after[0]!r} current_round={after[2]!r} (was {round_before!r}) "
         f"reevaluation_rows_for_this_mission={reevaluation_rows_after}"
     )
+
+
+# ─── Re-Audit HIGH finding: expires_at was never enforced (no sweep) ───────
+
+
+async def _seed_mission_directly(
+    migrated_db: str, *, state: str, expires_at: datetime
+) -> tuple[str, str]:
+    """A minimal real payment + recovery_missions row, inserted directly --
+    the expiry sweep only needs a real mission row in a given state/expiry,
+    not a full pipeline run through it."""
+    merchant_id = str(uuid.uuid4())
+    customer_id = str(uuid.uuid4())
+    await seed_merchant_and_customer(migrated_db, merchant_id, customer_id)
+    payment_id = str(uuid.uuid4())
+    mission_id = str(uuid.uuid4())
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO payments (payment_id, merchant_id, customer_id, amount_paise, "
+                "method, bank, status, failure_code, is_synthetic, created_at, failed_at) "
+                "VALUES (:pid, :mid, :cid, 500000, 'upi', 'HDFC', 'failed', 'TIMEOUT', true, "
+                "now(), now())"
+            ),
+            {"pid": payment_id, "mid": merchant_id, "cid": customer_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO recovery_missions (mission_id, payment_id, state, "
+                "max_money_exposure_paise, started_at, expires_at) "
+                "VALUES (:mission_id, :pid, :state, 500000, now(), :expires_at)"
+            ),
+            {
+                "mission_id": mission_id,
+                "pid": payment_id,
+                "state": state,
+                "expires_at": expires_at,
+            },
+        )
+    await engine.dispose()
+    return payment_id, mission_id
+
+
+@pytest.mark.parametrize(
+    "state", ["INVESTIGATING", "PLANNING", "AWAITING_AUTHORIZATION", "OBSERVING_OUTCOME"]
+)
+async def test_expiry_sweep_terminates_a_mission_whose_budget_ran_out_with_no_other_event(
+    migrated_db, redis_client, state
+):
+    """
+    The exact scenario the Re-Audit flagged: a mission sitting in a non-
+    terminal state with no webhook/reevaluation ever arriving to trigger
+    check_budget() reactively. Directly inserts a mission whose expires_at
+    is already in the past (no clock mocking needed -- the row itself is
+    already expired) and confirms run_once()'s sweep finds and terminates
+    it for real, with a distinct, greppable event type.
+    """
+    from workers.retry_scheduler import run_once
+
+    # Relative to the PINNED test clock (tests/conftest.py's session-wide
+    # _pinned_clock_for_determinism), not real wall-clock time -- the sweep
+    # itself reads clock.utcnow(), which tests never see as real "now".
+    already_expired = clock_module.utcnow() - timedelta(seconds=1)
+    payment_id, mission_id = await _seed_mission_directly(
+        migrated_db, state=state, expires_at=already_expired
+    )
+
+    await run_once(redis_client)
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.connect() as conn:
+        after = (
+            await conn.execute(
+                text("SELECT state, ended_at FROM recovery_missions WHERE mission_id = :mid"),
+                {"mid": mission_id},
+            )
+        ).first()
+        event = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT event_type, payload FROM mission_events "
+                        "WHERE mission_id = :mid ORDER BY sequence_number DESC LIMIT 1"
+                    ),
+                    {"mid": mission_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    await engine.dispose()
+
+    assert after is not None
+    assert after[0] == "TERMINATED", (
+        f"a mission whose expires_at already passed, with no other event ever arriving, must be "
+        f"terminated by the sweep -- got state={after[0]!r} (this is the exact 'stuck forever' "
+        f"gap the Re-Audit flagged: expires_at computed/stored/displayed but never enforced)"
+    )
+    assert after[1] is not None, "a TERMINATED mission must have ended_at set"
+    assert event is not None and event["event_type"] == "MISSION_BUDGET_EXHAUSTED"
+    assert event["payload"].get("reason") == "MISSION_DURATION_EXCEEDED"
+
+
+async def test_expiry_sweep_leaves_a_mission_within_budget_untouched(migrated_db, redis_client):
+    """Negative control -- a mission with a real future expires_at must
+    survive a sweep pass untouched, proving the sweep isn't just terminating
+    everything non-terminal."""
+    from workers.retry_scheduler import run_once
+
+    not_yet_expired = clock_module.utcnow() + timedelta(days=1)
+    payment_id, mission_id = await _seed_mission_directly(
+        migrated_db, state="OBSERVING_OUTCOME", expires_at=not_yet_expired
+    )
+
+    await run_once(redis_client)
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.connect() as conn:
+        after = (
+            await conn.execute(
+                text("SELECT state FROM recovery_missions WHERE mission_id = :mid"),
+                {"mid": mission_id},
+            )
+        ).first()
+    await engine.dispose()
+
+    assert after[0] == "OBSERVING_OUTCOME", "a mission still within its budget must be left alone"
+
+
+@pytest.mark.parametrize("state", ["OBSERVED", "EXECUTING"])
+async def test_expiry_sweep_leaves_observed_and_executing_untouched(
+    migrated_db, redis_client, state
+):
+    """
+    OBSERVED and EXECUTING are deliberately excluded from the sweep (see
+    _sweep_expired_missions' own docstring): OBSERVED has no direct
+    ALLOWED_TRANSITIONS path to TERMINATED at all (only -> INVESTIGATING),
+    and EXECUTING is covered by execution_worker.py's own crash-recovery
+    mechanism instead. An expired mission in either state must survive a
+    sweep pass unchanged, not silently disappear or error out.
+    """
+    from workers.retry_scheduler import run_once
+
+    already_expired = clock_module.utcnow() - timedelta(seconds=1)
+    payment_id, mission_id = await _seed_mission_directly(
+        migrated_db, state=state, expires_at=already_expired
+    )
+
+    await run_once(redis_client)  # must not raise
+
+    engine = create_async_engine(to_async_url(migrated_db))
+    async with engine.connect() as conn:
+        after = (
+            await conn.execute(
+                text("SELECT state FROM recovery_missions WHERE mission_id = :mid"),
+                {"mid": mission_id},
+            )
+        ).first()
+    await engine.dispose()
+
+    assert after[0] == state, f"{state} must be left alone by the sweep even when expired"

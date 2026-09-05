@@ -50,6 +50,7 @@ const SCENARIOS: { key: string; label: string; title: string }[] = [
   { key: "recover_via_replan", label: "RECOVER VIA REPLAN", title: "Fails once, replans, succeeds" },
   { key: "safety_escalation", label: "SAFETY ESCALATION", title: "Risk flag halts execution, zero money moved" },
   { key: "world_changed", label: "WORLD CHANGED", title: "External webhook resolves mid-mission" },
+  { key: "systemic_delay", label: "SYSTEMIC DELAY", title: "Real bank anomaly makes the engine choose RETRY_LATER over RETRY_NOW" },
 ];
 
 export default function ControlTowerPage() {
@@ -59,6 +60,7 @@ export default function ControlTowerPage() {
   const [isDemo, setIsDemo] = useState(false);
   const [degrading, setDegrading] = useState(false);
   const [degradeResult, setDegradeResult] = useState<string | null>(null);
+  const [lastDegradedBank, setLastDegradedBank] = useState<string | null>(null);
   const [triggeringScenario, setTriggeringScenario] = useState<string | null>(null);
   const [scenarioError, setScenarioError] = useState<string | null>(null);
 
@@ -95,9 +97,14 @@ export default function ControlTowerPage() {
     setTriggeringScenario(scenarioKey);
     setScenarioError(null);
     try {
-      const { data } = await apiPost<{ payment_id: string }>("v1/simulate/scenario", {
-        scenario: scenarioKey,
-      });
+      const body: { scenario: string; bank?: string } = { scenario: scenarioKey };
+      // Reuse whichever bank SIMULATE DEGRADATION last hit, so systemic_delay's
+      // payment lands on the same real degraded bank the demo already showed
+      // instead of a fresh unrelated one -- see ScenarioRequest.bank's docstring.
+      if (scenarioKey === "systemic_delay" && lastDegradedBank) {
+        body.bank = lastDegradedBank;
+      }
+      const { data } = await apiPost<{ payment_id: string }>("v1/simulate/scenario", body);
       window.location.href = `/payments/${data.payment_id}`;
     } catch (err) {
       setScenarioError(err instanceof ApiError ? err.message : "Failed to reach the backend.");
@@ -123,6 +130,7 @@ export default function ControlTowerPage() {
         `Injected real degradation for ${bank}. Detector result: severity=${r.severity}, ` +
           `z=${r.z_score?.toFixed(2) ?? "n/a"}, is_anomaly=${r.is_anomaly}.`
       );
+      setLastDegradedBank(bank);
       await load();
     } catch (err) {
       setDegradeResult(
