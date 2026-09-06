@@ -86,13 +86,19 @@ def test_select_next_best_action_source_never_references_ai_or_diagnosis():
 
 
 def test_policy_engine_original_rules_never_reference_diagnosis_or_confidence():
-    """Same structural proof as before, scoped to the ORIGINAL 10
-    PolicyRule classes -- AIRiskSignalEscalationRule (Phase 11) is
-    deliberately excluded, named explicitly here rather than silently
-    carved out, and covered by its own assertion below instead."""
+    """Same structural proof as before, scoped to every PolicyRule class
+    EXCEPT AIRiskSignalEscalationRule -- the one rule that's deliberately
+    AI-aware, excluded here by name and covered by its own assertion
+    below instead. This isn't only the original 10 anymore:
+    MoneyExposureLimitRule (Re-Audit finding, added later) is just as
+    AI-blind as the originals -- it reads only payment amount/exposure
+    fields, never anything diagnosis- or AI-derived -- so it belongs in
+    this same scan, not a carve-out. The count below is deliberately
+    exact (not >=) so this test keeps failing loudly, by design, the next
+    time the rule set changes at all -- see the assertion message."""
     import services.policy_engine.rules as rules_module
 
-    original_rule_classes = [
+    non_ai_rule_classes = [
         cls
         for cls in vars(rules_module).values()
         if isinstance(cls, type)
@@ -100,14 +106,15 @@ def test_policy_engine_original_rules_never_reference_diagnosis_or_confidence():
         and cls is not rules_module.PolicyRule
         and cls is not rules_module.AIRiskSignalEscalationRule
     ]
-    assert len(original_rule_classes) == 10, (
-        f"expected exactly the 10 original PolicyRule classes (excluding "
-        f"AIRiskSignalEscalationRule), found {len(original_rule_classes)} -- update this test "
-        "deliberately if the original rule set itself changed"
+    assert len(non_ai_rule_classes) == 11, (
+        f"expected exactly 11 AI-blind PolicyRule classes (the original 10 plus "
+        f"MoneyExposureLimitRule, excluding AIRiskSignalEscalationRule), found "
+        f"{len(non_ai_rule_classes)} -- update this test deliberately if the rule set itself "
+        "changed, after confirming any new rule is genuinely AI-blind"
     )
 
     forbidden = {"diagnosis", "diagnoses", "diagnosis_id", "confidence", "root_cause", "recommend"}
-    for cls in original_rule_classes:
+    for cls in non_ai_rule_classes:
         tree = ast.parse(inspect.getsource(cls))
         identifiers: set[str] = set()
         for node in ast.walk(tree):
