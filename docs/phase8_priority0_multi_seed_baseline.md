@@ -5,7 +5,7 @@
 > for the current headline number. Kept for the fairness-methodology narrative (README §10), not as
 > the current result.
 
-TRD §7's headline number (Phase 8, `tests/evaluation/report.md`) was computed from a single
+TRD §7's headline number (the evaluation harness, `tests/evaluation/report.md`) was computed from a single
 seed (42): **+₹42,491.88 incremental recovery**. Before touching the engine further, this
 records whether that number is representative or a lucky/unlucky draw — run across 5
 independent seeds, each a full, fresh 10,000-payment canonical dataset processed through the
@@ -15,7 +15,7 @@ Raw per-seed results: [`tests/evaluation/artifacts/multi_seed_results.json`](../
 Generation script: [`tests/evaluation/multi_seed_runner.py`](../tests/evaluation/multi_seed_runner.py).
 
 **Methodology note:** each seed's run pins the diagnoser to a guaranteed-invalid key
-(`docker-compose.override.baseline.yml`), matching the original Phase 8 methodology exactly —
+(`docker-compose.override.baseline.yml`), matching the original evaluation-harness methodology exactly —
 LLM availability must not be a confound in a study whose whole point is measuring seed-to-seed
 variance in the same configuration already reported against.
 
@@ -44,7 +44,7 @@ variance in the same configuration already reported against.
 handed only that seed would have concluded RecoveryOS makes things worse. But across 5
 independent draws the interval is entirely positive — the incremental-recovery effect is
 genuinely there, not an artifact of seed 42's particular randomness. It is, however, a **noisy**
-effect: coefficient of variation ≈ 78%, and the original Phase 8 headline (+₹42,491.88) sits
+effect: coefficient of variation ≈ 78%, and the original single-seed headline (+₹42,491.88) sits
 comfortably inside this range rather than being either best-case or worst-case cherry-picking.
 
 **Every other metric replicated far more tightly than the headline number did** — these are

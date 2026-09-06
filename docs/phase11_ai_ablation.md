@@ -1,10 +1,10 @@
-# Phase 11 AI Ablation — What Was Measured, and What Wasn't
+# AI Fusion Ablation — What Was Measured, and What Wasn't
 
 This doc is referenced from `recoveryos/config.py`'s `ai_tie_break_tolerance_bps`
-and `ai_tie_break_min_confidence` docstrings and didn't exist yet — written as
-part of closing the AI Architecture Gap Audit's findings. It states plainly
-what real-model evidence exists for the Phase 11 bounded AI-recommendation
-fusion (`services/recovery_engine/orchestrator.py`'s `_apply_ai_fusion`, see
+and `ai_tie_break_min_confidence` docstrings — written as part of closing the
+AI Architecture Gap Audit's findings. It states plainly what real-model
+evidence exists for the bounded AI-recommendation fusion mechanism
+(`services/recovery_engine/orchestrator.py`'s `_apply_ai_fusion`, see
 `docs/TRD.md` §3.5), and — just as importantly — what does not, so nothing
 here gets overclaimed in front of a skeptical evaluator.
 

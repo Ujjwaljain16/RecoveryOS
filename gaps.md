@@ -34,7 +34,7 @@ POST /v1/customers/{customer_id}/opt-out
 - `OptOutRule` in the policy engine reads `customer.opted_out_at IS NULL` — already spec'd in
   TRD §3.4, no change needed there either.
 
-**Simulator generation (Phase 1):**
+**Simulator generation:**
 - Add `opt_out_probability` param to `CustomerGenerator` (default 4%, configurable per scenario
   run) — a customer who has 2+ failed recovery attempts gets opted out with elevated probability
   (models real annoyance-driven opt-out), everyone else at baseline rate.
@@ -42,7 +42,7 @@ POST /v1/customers/{customer_id}/opt-out
   during simulation, not a raw DB write — this guarantees the endpoint is exercised by the 10k
   eval run and isn't a demo-only code path that's untested at scale.
 
-**Test to add to Phase 1 / Phase 11:**
+**Test to add to the simulator and the AI recommendation/fusion layer:**
 ```
 test_opt_out_endpoint_is_idempotent()
 test_opted_out_customer_never_receives_further_intervention() — end-to-end: opt a customer out
@@ -64,7 +64,7 @@ EVI is the single most judge-scrutinized formula in the system — if costs are 
 the first "what if a merchant wants different SMS pricing" question exposes an unfinished
 design. Making it a table costs ~20 minutes now and closes that gap permanently.
 
-**Schema (add to Phase 0 migration set):**
+**Schema (add to the seed dataset's migration set):**
 ```sql
 CREATE TABLE action_costs (
     action_cost_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -94,15 +94,16 @@ RETRY_NOW    cost=0,    friction_base=10
 RETRY_LATER  cost=0,    friction_base=20 (updated by migration 0009 — see §C.1: a zero
                                           friction made RETRY_LATER strictly cheaper than
                                           RETRY_NOW with equal probability outside an anomaly,
-                                          so it won every payment in the Phase 5 sanity check
-                                          regardless of whether waiting genuinely helped)
+                                          so it won every payment in the recovery decision
+                                          orchestrator's sanity check regardless of whether
+                                          waiting genuinely helped)
 ALT_ROUTE    cost=200   (₹2, gateway fee estimate), friction_base=50
 REMINDER     cost=20    (₹0.20 SMS), friction_base=30
 ESCALATE     cost=15000 (₹150 labor-equivalent), friction_base=100
 DO_NOTHING   cost=0,    friction_base=0
 ```
 
-**Test to add to Phase 5:**
+**Test to add to the recovery decision orchestrator:**
 ```
 test_evi_uses_db_action_cost_not_hardcoded_constant() — change a cost row in the DB, assert
   EVI output for a fixed payment changes correspondingly, proving no hardcoded fallback exists
@@ -159,7 +160,7 @@ FALLBACK_MAP = {
 }
 ```
 
-**Test to add to Phase 4:**
+**Test to add to the diagnosis engine:**
 ```
 test_fallback_output_matches_exact_schema() — Pydantic validates against the SAME model class
   used for real AI output
@@ -178,8 +179,8 @@ and **the exact test that proves it isn't happening** — add these to the phase
 
 ### B.1 Metric Contamination (ground_truth_recoverable leakage)
 
-**Why catastrophic:** this single leak invalidates every number in Phase 8. Not "weakens" —
-invalidates. A model that can see the answer will show a suspiciously perfect incremental
+**Why catastrophic:** this single leak invalidates every number in the evaluation harness. Not
+"weakens" — invalidates. A model that can see the answer will show a suspiciously perfect incremental
 revenue number, and any technical reviewer who asks "how is your feature pipeline separated
 from ground truth" and gets a vague answer will (correctly) stop trusting the whole project.
 
@@ -194,7 +195,8 @@ def get_payment_features(payment_id):
     return build_features(payment)
 ```
 
-**Hardening (add to Phase 0 + re-verify in Phase 5 and Phase 8):**
+**Hardening (add to the seed dataset pipeline + re-verify in the recovery decision
+orchestrator and the evaluation harness):**
 1. `SELECT *` is BANNED in any code path reachable from the inference/training pipeline —
    enforce with a `ruff`/custom lint rule or a code-review checklist grep:
    `grep -rn "SELECT \*" services/recovery_engine models/ services/diagnosis_engine` must
@@ -206,14 +208,15 @@ def get_payment_features(payment_id):
    grant on `ground_truth_recoverable` and the entire `simulator_latent_state` table, enforced
    at the Postgres GRANT level (belt-and-suspenders on top of the Python-level allow-list).
 
-**Test (Phase 0, re-run in Phase 5 & Phase 8 CI):**
+**Test (add at the seed dataset stage, re-run in the recovery decision orchestrator and
+evaluation harness CI):**
 ```
 test_no_select_star_in_inference_reachable_code() — static grep-based CI check
-test_inference_role_select_ground_truth_raises() — already exists from Phase 1, re-assert here
+test_inference_role_select_ground_truth_raises() — already exists from the simulator, re-assert here
 test_feature_vector_only_contains_allowed_columns() — for 100 random payments, build feature
   vectors, assert every key is in ALLOWED_FEATURE_COLUMNS, nothing extra sneaks in
 test_model_auc_does_not_suspiciously_spike_after_feature_changes() — regression guard: keep a
-  recorded "expected AUC range" from the honest Phase 5 run; if a future change pushes AUC
+  recorded "expected AUC range" from the honest orchestrator run; if a future change pushes AUC
   above a suspiciously high ceiling (e.g. >0.97), CI fails and demands manual review before merge
 ```
 
@@ -240,7 +243,7 @@ This is exactly why TRD §4.3 specifies the advisory lock WRAPS the check — if
 literally around both the check and the act as one critical section, the guarantee is fake
 even though the code "has" idempotency logic.
 
-**Hardening (Phase 6, non-negotiable code review checklist item):**
+**Hardening (execution/provider integration, non-negotiable code review checklist item):**
 1. The advisory lock acquisition MUST happen before the existence check, not after:
 ```python
 def execute(job):
@@ -259,7 +262,7 @@ def execute(job):
 3. Provider Adapter calls must themselves be wrapped so a network-level retry (e.g. HTTP
    client auto-retry on timeout) doesn't cause the SAME logical job to call `provider.retry()`
    twice even within one lock-held execution.
-   **Corrected during the pre-Phase-8 audit**: this originally said "pass a client-side
+   **Corrected during the pre-evaluation-harness audit**: this originally said "pass a client-side
    idempotency HEADER to Razorpay's API too (their test-mode API supports this)" — checked
    directly against Razorpay's real docs and that's wrong for the Orders endpoint this adapter
    calls: Razorpay's dedicated idempotency headers (`X-Payout-Idempotency`,
@@ -271,7 +274,7 @@ def execute(job):
    legitimate distinct retry attempts, rejected as a false duplicate; fixed alongside this
    correction).
 
-**Test (Phase 6, must be genuinely concurrent, not sequential-pretending-to-be-concurrent):**
+**Test (execution/provider integration, must be genuinely concurrent, not sequential-pretending-to-be-concurrent):**
 ```
 test_two_real_threads_racing_same_idempotency_key_execute_provider_call_exactly_once() —
   use threading.Barrier to force both threads to hit the lock acquisition at the same
@@ -304,7 +307,7 @@ class CooldownRule(PolicyRule):
 This is an easy trap because the natural instinct when writing a new rule is "I need X piece
 of data, let me just fetch it" — the fix has to be structural, not just discipline.
 
-**Hardening (Phase 5, structural not just convention):**
+**Hardening (recovery decision orchestrator, structural not just convention):**
 1. `PolicyRule.check(self, payment, candidate, policy_config)` signature takes ONLY these
    three already-hydrated dataclasses/Pydantic models — no `db`, no `session`, no `redis`
    object is ever passed to a rule or importable inside `services/policy_engine/rules.py`.
@@ -315,7 +318,7 @@ of data, let me just fetch it" — the fix has to be structural, not just discip
 3. Enforce with a static check: `services/policy_engine/rules.py` must have zero imports of
    `db`, `sqlalchemy`, `redis`, `requests`, `httpx` — a CI grep/AST check, not just a docstring.
 
-**Test (Phase 5):**
+**Test (recovery decision orchestrator):**
 ```
 test_policy_engine_module_has_zero_forbidden_imports() — AST-parse rules.py, assert no
   import of db/sqlalchemy/redis/requests/httpx modules
@@ -346,7 +349,7 @@ accumulate representation error — small per-payment, but visible once you sum 
 the headline "incremental recovered revenue" number, which is exactly the number you're most
 scrutinized on.
 
-**Hardening (Phase 5 + Phase 8):**
+**Hardening (recovery decision orchestrator + evaluation harness):**
 1. Use `decimal.Decimal` for the probability × amount step, or — simpler and faster — do the
    entire EVI calculation in **integer paise with a fixed-point probability** (e.g. probability
    scaled to an integer out of 10,000: `prob_bps = 8200` for 82.00%), avoiding floats entirely:
@@ -360,13 +363,13 @@ def compute_evi_paise(recovery_prob_bps: int, amount_paise: int, cost_paise: int
 2. `recovery_prob_bps` (basis points, 0–10000) becomes the canonical representation the
    propensity model outputs and the DB stores — `candidate_actions.recovery_prob` in TRD §2
    should be reinterpreted/stored as this integer type, not `NUMERIC(5,4)` float-adjacent type
-   (update the Phase 0 migration if not already applied).
-3. Every SUM() in the evaluation harness (Phase 8) operates on BIGINT paise columns exclusively
+   (update the seed dataset's migration if not already applied).
+3. Every SUM() in the evaluation harness operates on BIGINT paise columns exclusively
    — the ONLY place a float/decimal is allowed to appear is in the final dashboard display
    layer, formatting paise-as-rupees for human eyes (`amount_paise / 100` for display only,
    never for storage or further computation).
 
-**Test (Phase 5 + Phase 8):**
+**Test (recovery decision orchestrator + evaluation harness):**
 ```
 test_evi_calculation_uses_only_integer_arithmetic() — AST-check or type-check that no float
   literal or float() cast appears in evi.py
@@ -380,20 +383,20 @@ test_ledger_sum_matches_sum_of_individual_rows_exactly() — SUM(actual_recovery
 
 ---
 
-### C.1 Timing-Adjusted Recovery Probability — Coverage Limits (found in Phase 5)
+### C.1 Timing-Adjusted Recovery Probability — Coverage Limits (found while building the recovery decision orchestrator)
 
 **What was discovered:** building `services/recovery_engine/timing.py` (the mechanism behind
-`RETRY_LATER`/`ALT_ROUTE` beating `RETRY_NOW` on probability, not just cost), Phase 1/2's episode
-simulator turned out to have no data at the timescale that mechanism needs. Its retry-chain delay
-is `MIN_RETRY_DELAY_SEC=60` to `MAX_RETRY_DELAY_SEC=300` (1-5 minutes,
+`RETRY_LATER`/`ALT_ROUTE` beating `RETRY_NOW` on probability, not just cost), the simulator's
+episode generator turned out to have no data at the timescale that mechanism needs. Its
+retry-chain delay is `MIN_RETRY_DELAY_SEC=60` to `MAX_RETRY_DELAY_SEC=300` (1-5 minutes,
 `simulator/episodes/generator.py`) — nowhere near production's `retry_cooldown_hours=12` default.
 The one time-decay curve that DOES exist in the simulator (`LatentRecoverabilityFunction`'s
 customer-patience exponential decay, keyed on `attempt_number`) is explicitly latent ground truth —
-using it in production inference would be the exact non-circularity leak Phase 1/2 exists to
-prevent.
+using it in production inference would be the exact non-circularity leak the simulator/model
+separation exists to prevent.
 
 **What was built instead:** the only genuinely real, non-latent, already-measured "is right now
-worse than normal" signal in the codebase is Phase 4's anomaly detector (`observed_rate` vs
+worse than normal" signal in the codebase is the anomaly detector (`observed_rate` vs
 `baseline_rate` per bank, `services/risk_engine/anomaly.py`). `timing.py` penalizes `RETRY_NOW`'s
 base propensity by the ACTUAL measured success-rate ratio only during an active, sufficiently-
 sampled, HIGH-severity systemic anomaly (matching TRD §3.2's own threshold) — clamped to `[0,
@@ -406,17 +409,19 @@ example — "bank degradation, wait 12h, 73% recovery" — is inherently this ca
 D (an individual customer's non-systemic temporary timeout recovering after a wait) is still
 functionally unmodeled: outside a systemic anomaly, `RETRY_LATER` can only win the
 next-best-action selection on cost/friction, never on a calibrated probability improvement,
-because no such calibration data exists in Phase 1/2. If asked directly about the individual
-timeout case, the honest answer is "not modeled yet — would need retry-chain simulation at an
-hours scale, which Phase 1/2 doesn't generate," not an implied "yes, we know waiting helps in
+because no such calibration data exists in the simulator's dataset. If asked directly about the
+individual timeout case, the honest answer is "not modeled yet — would need retry-chain
+simulation at an hours scale, which the simulator doesn't generate," not an implied "yes, we know
+waiting helps in
 general."
 
 ---
 
-### C.2 Phase 2's Certified LightGBM Was Actually Selected on a Contaminated Split
+### C.2 The Certified Recovery-Propensity Model's LightGBM Pick Was Actually Selected on a Contaminated Split
 
-**What was discovered:** re-auditing Phase 2 before building Phase 5's production adapter
-(prompted by an explicit request to be thorough rather than trust the certificate), the
+**What was discovered:** re-auditing the certified recovery-propensity model before building the
+recovery decision orchestrator's production adapter (prompted by an explicit request to be
+thorough rather than trust the certificate), the
 train/val/test splits were checked directly by set-comparing `episode_id` across the actual
 parquet files — not by reading `phase_2_certificate.json`'s summary.
 
@@ -451,29 +456,32 @@ number — statistically indistinguishable, and LightGBM does not clear the >0.0
 real held-out data. Per TRD §3.3's own rule, **the gate fails and Logistic Regression is the
 correct certified default**, not LightGBM.
 
-**Fix applied:** `services/recovery_engine/propensity.py` (Phase 5) loads `model_lr.pkl` +
-`feature_transformer_v1.pkl`, not `model_lightgbm.txt`. No retraining — both artifacts already
-existed from Phase 2; this only changes which one production actually uses.
+**Fix applied:** `services/recovery_engine/propensity.py` (the recovery decision orchestrator)
+loads `model_lr.pkl` + `feature_transformer_v1.pkl`, not `model_lightgbm.txt`. No retraining —
+both artifacts already existed from the model-certification step; this only changes which one
+production actually uses.
 `test_lgbm_does_not_beat_baseline_on_the_real_holdout_so_lr_stays_default` (tests/unit/test_propensity.py)
 locks this in: it fails loudly if the artifacts are ever regenerated in a way that reverses it.
 
-**Not yet fixed — and NOT a Phase 8 schedule blocker (resolved ambiguity, see below):** the root
-cause in `simulator/dataset/builder.py`/`run_episode_mode` (re-seeding the same seed across
-independent `generate_episodes()` calls) is still there.
+**Not yet fixed — and NOT an evaluation-harness schedule blocker (resolved ambiguity, see below):**
+the root cause in `simulator/dataset/builder.py`/`run_episode_mode` (re-seeding the same seed
+across independent `generate_episodes()` calls) is still there.
 
-**Why it doesn't block Phase 8:** TRD §7's evaluation harness computes its headline number
-(`incremental_recovery`) via a raw SQL join over `recovery_ledger` and `baseline_runs` — tables
-populated by running the LIVE pipeline against a canonical synthetic payment set, not by reading
-`data/val_random`/`data/test_scenario` parquet files at all. Phase 8 never touches the
-contaminated splits. The propensity model's own certification already correctly uses
-`test_temporal` (verified zero overlap with train) as its reporting split, per gaps.md §C.2's fix.
+**Why it doesn't block the evaluation harness:** TRD §7's evaluation harness computes its
+headline number (`incremental_recovery`) via a raw SQL join over `recovery_ledger` and
+`baseline_runs` — tables populated by running the LIVE pipeline against a canonical synthetic
+payment set, not by reading `data/val_random`/`data/test_scenario` parquet files at all. The
+evaluation harness never touches the contaminated splits. The propensity model's own
+certification already correctly uses `test_temporal` (verified zero overlap with train) as its
+reporting split, per gaps.md §C.2's fix.
 
-**When it WOULD matter:** only if Phase 2's propensity model is ever retrained/re-certified again
-in the future (a Phase 2 rerun, not a Phase 8 one) — that regeneration would reintroduce the same
+**When it WOULD matter:** only if the certified propensity model is ever retrained/re-certified
+again in the future (a model-recertification rerun, not an evaluation-harness one) — that
+regeneration would reintroduce the same
 `val_random`/`test_scenario` duplication and could silently re-flip the LR-vs-LightGBM gate
 decision. Fix `simulator/dataset/builder.py` to draw an actual held-out subset from a single
 larger generation run (instead of an independently re-seeded call) before anyone next runs
-`models/recovery/train.py`, not before Phase 8.
+`models/recovery/train.py`, not before the evaluation harness runs.
 
 ---
 
@@ -482,7 +490,7 @@ larger generation run (instead of an independently re-seeded call) before anyone
 **What was discovered:** `simulator/calibration/parameters.yaml` documents itself as the single
 source of truth for the simulator's distribution constants — each parameter carries an explicit
 `applies_to:` field naming the exact code location it's meant to replace. Checking every binding
-against the actual code (pre-Phase-8 audit, `simulator/` pass):
+against the actual code (pre-evaluation-harness audit, `simulator/` pass):
 
 - Method-mix weights (`upi/card/netbanking/wallet_transaction_share`) — genuinely wired via
   `simulator/payments/distributions.py::PaymentDistributionSampler`. Correct.
@@ -507,8 +515,8 @@ against the actual code (pre-Phase-8 audit, `simulator/` pass):
 the hardcoded values and the calibration file agree today. But touching any of these call sites
 to actually wire them up would change the numbers the canonical dataset generates (0.03 → 0.028
 alone shifts the aggregate failure rate), which means regenerating and re-validating the entire
-Phase 8 eval dataset right when it should be getting locked down instead. Not worth that risk for
-a hygiene fix with zero current behavioral impact.
+evaluation harness's eval dataset right when it should be getting locked down instead. Not worth
+that risk for a hygiene fix with zero current behavioral impact.
 
 **When it WOULD matter:** the moment anyone updates `parameters.yaml` expecting the change to
 propagate — it won't, silently, for `baseline_failure_rate` and the three retry-economics
@@ -516,8 +524,8 @@ constants. Also matters if `models/recovery/evaluate.py`'s copy and `episodes/mo
 are ever edited independently and drift apart from each other, since nothing enforces they stay
 equal.
 
-**Fix, when it's safe to touch (after Phase 8's canonical run is finalized and locked in, not
-before):** make `NormalFailureScenario`'s default and `episodes/models.py`'s three constants
+**Fix, when it's safe to touch (after the evaluation harness's canonical run is finalized and
+locked in, not before):** make `NormalFailureScenario`'s default and `episodes/models.py`'s three constants
 actual reads of `load_calibration()` instead of hardcoded literals; either delete
 `amount_lognormal_sigma`/`upi_amount_median_paise` from the YAML (if the per-method formula in
 `distributions.py::sample_amount_paise` is the real intended design) or wire them in properly (if
@@ -540,7 +548,7 @@ True}`, nothing anywhere ever called it (`.delay()`/`.apply_async()`: zero call 
 `docker-compose.yml`'s `worker` service ran it as a real, health-checked, `restart: always`
 container in every deployment — a fully running container that did nothing.
 
-**Fix applied (Task W1, pre-Phase-8 audit):** deleted `workers/celery_app.py` and
+**Fix applied (Task W1, pre-evaluation-harness audit):** deleted `workers/celery_app.py` and
 `workers/tasks.py`; removed the `worker` service from `docker-compose.yml` and the now-dead
 `CELERY_BROKER_URL`/`CELERY_RESULT_BACKEND` env vars from every service that had them (`api` had
 them too, unused); removed the matching settings from `recoveryos/config.py`,
@@ -553,17 +561,17 @@ system — this was pure removal of dead-but-deployed infrastructure.
 
 ### C.5 PRD §31 Says "5 Payment Methods," Code Has Always Had 4
 
-**What was discovered:** verifying the canonical Phase 8 dataset's actual distribution
+**What was discovered:** verifying the canonical evaluation-harness dataset's actual distribution
 (`docs/phase8_canonical_run.md`) surfaced that `payments` only ever has 4 distinct `method`
 values (`upi`, `card`, `netbanking`, `wallet` — `simulator/payments/distributions.py::
 PAYMENT_METHODS`), while PRD §31's entity list literally states *"5 payment methods."* This is a
-pre-existing Phase 1 PRD-vs-code mismatch, the same class as the TRD-vs-code drifts found and
+pre-existing simulator-era PRD-vs-code mismatch, the same class as the TRD-vs-code drifts found and
 corrected in the `apps/` audit — except there, the doc was updated to match a deliberate
 engineering decision; here, there's no evidence a 5th method was ever cut on purpose, it's simply
 never been implemented.
 
-**Not fixed:** adding a 5th payment method mid-Phase-8 would touch calibration weights, the
-propensity model's trained feature space (`method` is a categorical feature — a new unseen
+**Not fixed:** adding a 5th payment method mid-evaluation-harness-run would touch calibration
+weights, the propensity model's trained feature space (`method` is a categorical feature — a new unseen
 category has no calibrated weight and no training signal), and every downstream file that hardcodes
 `["upi", "card", "netbanking", "wallet"]`. Exactly the kind of change that should happen in its own
 deliberate pass, not as a side effect of generating an eval dataset. Left exactly as found — this
@@ -573,15 +581,15 @@ entry exists so the next person who notices the same mismatch doesn't have to re
 
 ## Summary — what changed in the build plan
 
-| Item | Phase to update | New tables/files |
+| Item | Component to update | New tables/files |
 |---|---|---|
-| Opt-out webhook | Phase 1, Phase 3, Phase 11 | `POST /v1/customers/{id}/opt-out` route |
-| Action costs table | Phase 0 (schema), Phase 5 (EVI) | `action_costs` table |
-| Fallback schema | Phase 4 | `fallback_rules.py`, shared Pydantic Diagnosis model |
-| Ground-truth leak guard | Phase 0, Phase 5, Phase 8 (CI gate) | grep-based CI check + `inference_role` |
-| Idempotency lock-order fix | Phase 6 | lock-before-check pattern, UNIQUE constraint |
-| Policy engine purity gate | Phase 5 | AST-based CI check on `rules.py` imports |
-| Integer-paise EVI | Phase 5, Phase 8 | `recovery_prob_bps` column type change |
+| Opt-out webhook | Simulator, opt-out API endpoint, AI recommendation/fusion layer | `POST /v1/customers/{id}/opt-out` route |
+| Action costs table | Seed dataset (schema), recovery decision orchestrator (EVI) | `action_costs` table |
+| Fallback schema | Diagnosis engine | `fallback_rules.py`, shared Pydantic Diagnosis model |
+| Ground-truth leak guard | Seed dataset, recovery decision orchestrator, evaluation harness (CI gate) | grep-based CI check + `inference_role` |
+| Idempotency lock-order fix | Execution / provider integration | lock-before-check pattern, UNIQUE constraint |
+| Policy engine purity gate | Recovery decision orchestrator | AST-based CI check on `rules.py` imports |
+| Integer-paise EVI | Recovery decision orchestrator, evaluation harness | `recovery_prob_bps` column type change |
 
 All of the above should be applied to the existing phase prompts before you run them —
 paste this addendum alongside PRD.md/TRD.md/BuildPrompts.md when handing phases to your agent.

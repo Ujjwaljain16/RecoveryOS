@@ -219,7 +219,7 @@ because it maximizes expected value within the allowed policy.
 
 # 7. Second Differentiator
 
-# System-Level Failure Intelligence
+## System-Level Failure Intelligence
 
 RecoveryOS does not treat every payment failure independently.
 
@@ -272,7 +272,7 @@ direction.
 
 # 8. Third Differentiator
 
-# Bounded Autonomy
+## Bounded Autonomy
 
 The AI never directly executes unrestricted payment actions.
 
@@ -304,7 +304,7 @@ But the policy engine determines whether that action is allowed.
 
 # 9. Fourth Differentiator
 
-# Deliberate Non-Intervention
+## Deliberate Non-Intervention
 
 RecoveryOS is explicitly allowed to say:
 
@@ -339,7 +339,7 @@ This prevents the system from optimizing for activity instead of business value.
 
 # 10. Fifth Differentiator
 
-# Counterfactual Revenue Measurement
+## Counterfactual Revenue Measurement
 
 For every simulated payment, the environment maintains:
 
@@ -1766,7 +1766,7 @@ recoveryos/
 
 # 51. Development Priorities
 
-## Phase 1 — Simulation
+## Simulation
 
 Build:
 
@@ -1780,7 +1780,7 @@ Build:
 
 ---
 
-## Phase 2 — Baseline
+## Baseline
 
 Build:
 
@@ -1794,7 +1794,7 @@ Measure baseline recovery.
 
 ---
 
-## Phase 3 — Detection
+## Detection
 
 Build:
 
@@ -1804,7 +1804,7 @@ Build:
 
 ---
 
-## Phase 4 — Diagnosis
+## Diagnosis
 
 Build:
 
@@ -1813,7 +1813,7 @@ Build:
 
 ---
 
-## Phase 5 — Recovery Intelligence
+## Recovery Intelligence
 
 Build:
 
@@ -1823,7 +1823,7 @@ Build:
 
 ---
 
-## Phase 6 — Policy
+## Policy
 
 Build:
 
@@ -1835,7 +1835,7 @@ Build:
 
 ---
 
-## Phase 7 — Execution
+## Execution
 
 Build:
 
@@ -1846,7 +1846,7 @@ Build:
 
 ---
 
-## Phase 8 — Evaluation
+## Evaluation
 
 Build:
 
@@ -1857,13 +1857,13 @@ Build:
 
 ---
 
-## Phase 9 — Dashboard
+## Dashboard
 
 Build the control tower.
 
 ---
 
-## Phase 10 — Demo Hardening
+## Demo Hardening
 
 Test:
 

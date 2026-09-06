@@ -1,4 +1,4 @@
-# Phase 8 — Canonical 10k Dataset Run Record
+# Canonical 10k Dataset Run Record
 
 This is the durable record TRD §7 requires: enough for a third party to reproduce this exact
 run from a fresh checkout and confirm the same data. Written immediately after generation, before
@@ -39,7 +39,7 @@ any tuning — nothing below has been adjusted after the fact.
 | Events | 20,000 |
 | Latent state records | 10,000 |
 | Distinct banks | 6 |
-| Distinct payment methods | 4 (PRD §31 says "5 payment methods" — a pre-existing PRD/code mismatch from Phase 1, not something introduced or fixed by this run; `PAYMENT_METHODS` has always been `["upi", "card", "netbanking", "wallet"]`) |
+| Distinct payment methods | 4 (PRD §31 says "5 payment methods" — a pre-existing PRD/code mismatch from the simulator's own original build, not something introduced or fixed by this run; `PAYMENT_METHODS` has always been `["upi", "card", "netbanking", "wallet"]`) |
 
 ## Scenario mix — verified against the actual persisted data, not assumed from config
 
@@ -119,6 +119,6 @@ regenerated copy — the bridge test's decisioning side effects did not survive 
 
 **This exact dataset (`simulation_id=b5345e16-0670-5c0f-bc83-c449e1f4a576`, content
 byte-identical to the original `2026-08-26T06:42:07Z` generation, physically regenerated at
-`2026-08-26T06:54:xx Z` per the addendum above) is what every subsequent Phase 8 step runs
-against. No further swapping mid-phase — if this database needs to be regenerated again for any
-reason, this file must be updated alongside it, not edited in place without a record.**
+`2026-08-26T06:54:xx Z` per the addendum above) is what every subsequent evaluation-harness step
+runs against. No further swapping mid-evaluation — if this database needs to be regenerated again
+for any reason, this file must be updated alongside it, not edited in place without a record.**

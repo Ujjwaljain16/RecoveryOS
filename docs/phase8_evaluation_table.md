@@ -1,4 +1,4 @@
-# Phase 8 — PRD §35 Evaluation Table, Real Numbers
+# Evaluation Harness — PRD §35 Evaluation Table, Real Numbers
 
 Replaces PRD §35's illustrative table with actual measured results from the canonical run
 (see [phase8_canonical_run.md](phase8_canonical_run.md), [phase8_headline_number.md](phase8_headline_number.md)).
@@ -80,7 +80,7 @@ than a fabricated number.
 **Stopping rule compliance rate is N/A for both columns in this run.** `recoveries.attempt_number`
 is `1` for all 913 rows (100%), `stopping_rule_triggered` is `NULL` for all 913 rows, and every
 chosen `action_type` in this dataset is `RETRY_NOW` — zero `RETRY_LATER` decisions were ever
-made. This is architectural, not a bug: Phase 8's evaluation is a single-pass batch publish of
+made. This is architectural, not a bug: this evaluation is a single-pass batch publish of
 the entire canonical dataset's failed payments, executed within minutes — `RetryLimitRule`
 (`services/policy_engine/rules.py:120-138`, `attempt_number <= max_retries` else `ESCALATE`)
 only fires on a *subsequent* attempt of an already-attempted payment, and no payment in this run

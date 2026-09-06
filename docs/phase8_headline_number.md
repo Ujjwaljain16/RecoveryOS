@@ -1,4 +1,4 @@
-# Phase 8 — Headline Incremental-Revenue Number
+# Headline Incremental-Revenue Number (Original Single-Seed Reading)
 
 TRD §7's core deliverable: computed once, honestly, before any tuning. Recorded here
 immediately after computation — nothing below has been adjusted after the fact.
@@ -174,7 +174,7 @@ re-run, actually reproducible; it was not run again to "improve" the number.
 
 ## Standing instruction
 
-**This is the first, honest reading of Phase 8's headline number, recorded before any
-model/policy tuning.** Any subsequent iteration on model parameters, policy thresholds, or
+**This is the first, honest reading of the evaluation harness's headline number, recorded before
+any model/policy tuning.** Any subsequent iteration on model parameters, policy thresholds, or
 calibration must be evaluated against this baseline reading, not by re-deriving a fresh "first"
 number after changes have already been made.

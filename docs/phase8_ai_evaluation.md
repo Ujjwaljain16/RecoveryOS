@@ -1,4 +1,4 @@
-# Phase 8 — PRD §36 AI Evaluation & §37 Adversarial Testing, Real Results
+# Evaluation Harness — PRD §36 AI Evaluation & §37 Adversarial Testing, Real Results
 
 Computed against the canonical dataset ([phase8_canonical_run.md](phase8_canonical_run.md)),
 using **app_role** — the only role permitted to see ground truth
