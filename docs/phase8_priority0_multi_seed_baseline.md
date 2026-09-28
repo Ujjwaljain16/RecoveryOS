@@ -12,6 +12,15 @@ independent seeds, each a full, fresh 10,000-payment canonical dataset processed
 complete live pipeline (identical code, identical config, only the seed differs).
 
 Raw per-seed results: [`tests/evaluation/artifacts/multi_seed_results.json`](../tests/evaluation/artifacts/multi_seed_results.json).
+
+> **Reproducibility caveat (found in a later review).** The tables below record the *original*
+> 2026-08-26 campaign. `multi_seed_runner.py` writes to that same
+> `multi_seed_results.json` path, and the later compliance-aware campaign (commit `8d19486`)
+> overwrote it: the committed file now holds that later campaign's per-seed values (for example
+> seed 1: 43.86% recovery, 233 policy blocks), which do **not** match the tables in this document
+> (seed 1: 43.55%, 52 blocks). The numbers below are therefore preserved as historical narrative
+> and are **not** re-derivable from the committed artifact. The current headline is re-derivable
+> from `multi_seed_compliance_aware_aggregate.json`.
 Generation script: [`tests/evaluation/multi_seed_runner.py`](../tests/evaluation/multi_seed_runner.py).
 
 **Methodology note:** each seed's run pins the diagnoser to a guaranteed-invalid key

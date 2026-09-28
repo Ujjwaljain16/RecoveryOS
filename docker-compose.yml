@@ -24,7 +24,7 @@ services:
       POSTGRES_PASSWORD: ${RECOVERYOS_APP_ROLE_PASSWORD:?RECOVERYOS_APP_ROLE_PASSWORD must be set in .env — see .env.example}
       POSTGRES_DB: recoveryos
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -39,7 +39,7 @@ services:
     container_name: recoveryos_redis
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     command: redis-server --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
@@ -235,7 +235,7 @@ services:
     container_name: recoveryos_prometheus
     restart: always
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -254,7 +254,7 @@ services:
     restart: always
     env_file: .env
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     environment:
       # Task 6: was a hardcoded literal ('recoveryos') — a second credential
       # this same grep sweep found, beyond the two Postgres role passwords

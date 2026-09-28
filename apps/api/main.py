@@ -14,14 +14,17 @@ No LLM calls happen inside this module.
 
 from __future__ import annotations
 
+import re
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from recoveryos.config import get_settings
+from recoveryos.config import INSECURE_DEFAULT_API_KEY_PEPPER, get_settings
 from recoveryos.database import get_app_engine
+
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 @asynccontextmanager
@@ -60,6 +63,16 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
 
+    # Fail closed: the default pepper is public (it is in this repo), so API-key
+    # hashes computed with it protect nothing. Only tolerated in demo/test.
+    if not (settings.is_demo or settings.is_test) and (
+        settings.api_key_pepper == INSECURE_DEFAULT_API_KEY_PEPPER
+    ):
+        raise RuntimeError(
+            "API_KEY_PEPPER is unset (still the insecure built-in default) while "
+            f"ENV={settings.env.value}. Set API_KEY_PEPPER in the environment -- see .env.example."
+        )
+
     app = FastAPI(
         title=settings.api_title,
         version=settings.api_version,
@@ -90,7 +103,12 @@ def create_app() -> FastAPI:
     async def inject_request_id(request: Request, call_next):
         from apps.api.versioning import get_current_model_version, get_current_policy_version
 
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        # Client-supplied X-Request-ID is echoed back and logged: accept it only
+        # if it is a short, benign token, otherwise generate our own (log/header
+        # injection hardening).
+        request_id = request.headers.get("X-Request-ID", "")
+        if not _REQUEST_ID_RE.fullmatch(request_id):
+            request_id = str(uuid.uuid4())
         response: Response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         # Real values, not hardcoded literals — TRD §5's stated purpose is

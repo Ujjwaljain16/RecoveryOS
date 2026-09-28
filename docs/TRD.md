@@ -39,7 +39,7 @@ RE-CORRECTED (Re-Audit, commit `3bf04ea`, already merged before that audit ran �
 1. **Tie-break**: only among candidates already EVI-cleared and independently re-checked policy-`ALLOW` a second time, above a pre-committed confidence floor, within a small disclosed EVI tolerance of the deterministic winner.
 2. **Risk escalation**: a real `PolicyRule` (`AIRiskSignalEscalationRule`) forces `ESCALATE` when the LLM emits a closed-set risk flag — never a money-moving action, never a direct grant of authority to the LLM.
 
-So: `services/policy_engine/rules.py`'s 10 rules genuinely still never read diagnosis output directly (that specific claim holds), but "zero data flow from diagnosis to policy" as a description of the SYSTEM overall is no longer accurate — a real, bounded, fully-audited (`decision_fusion_trace`) data flow exists through the fusion step. This is a *stronger* guarantee than an unconstrained "propose then check" would be, not a weaker one — every path is closed-set, re-validated, and logged — but claiming zero causality at all is now false, not merely imprecise, and would mislead a reader who never reaches §3.5.
+So: `services/policy_engine/rules.py`'s 12 rules: 11 never read diagnosis/AI-derived input at all, and the 12th (`AIRiskSignalEscalationRule`) reads only a closed-set `risk_flags` signal, never free text or a confidence, but "zero data flow from diagnosis to policy" as a description of the SYSTEM overall is no longer accurate — a real, bounded, fully-audited (`decision_fusion_trace`) data flow exists through the fusion step. This is a *stronger* guarantee than an unconstrained "propose then check" would be, not a weaker one — every path is closed-set, re-validated, and logged — but claiming zero causality at all is now false, not merely imprecise, and would mislead a reader who never reaches §3.5.
 
 ### 1.2 Component Diagram (concrete, deployable)
 
@@ -393,7 +393,7 @@ def evaluate(payment, candidate, policy_config) -> PolicyDecision:
     return PolicyDecision("ALLOW", trace)
 ```
 
-Every rule is a pure function with 100% branch coverage in unit tests — this table of rules × test cases is itself a strong artifact to show in an interview ("here's my policy engine test matrix, 12 rules with edge-case coverage per rule, 78 deterministic tests in `tests/unit/test_policy_engine.py`, all green").
+Every rule is a pure function. `tests/unit/test_policy_engine.py` holds 78 deterministic tests over the 12 rules; measured with `pytest --cov=services.policy_engine --cov-branch` at the time of this review, that is 99% statement / 100% branch coverage (the one uncovered statement is the abstract base class's `NotImplementedError`). Coverage is not enforced in CI.
 
 ### 3.5 Bounded AI Recovery Recommendation (AI Recommendation/Fusion Layer)
 
@@ -567,7 +567,7 @@ JOIN baseline_result b USING (payment_id);
 
 Secondary metrics (§34 PRD) all follow the same "raw SQL over immutable tables" pattern — this is a deliberate credibility choice: judges distrust dashboards that could be lying; they trust a query they can rerun.
 
-Adversarial test suite (§37 PRD) ships as `tests/adversarial/`, run in CI on every commit, asserting behavioral properties (not just outputs): e.g. `test_missing_bank_metadata_lowers_confidence()`, `test_conflicting_signals_triggers_investigation_flag()`, `test_already_recovered_payment_never_reintervened()`.
+Adversarial tests (§37 PRD) live alongside the other suites (e.g. `tests/unit/test_diagnosis_adversarial.py`, `tests/unit/test_ai_recommendation_adversarial.py`, `tests/unit/test_evi_adversarial.py`, `tests/integration/test_repeated_decision_adversarial.py`; there is no separate `tests/adversarial/` directory) and run in CI, asserting behavioral properties (not just outputs): e.g. `test_missing_bank_metadata_lowers_confidence()`, `test_conflicting_signals_triggers_investigation_flag()`, `test_already_recovered_payment_never_reintervened()`.
 
 ---
 
@@ -576,11 +576,11 @@ Adversarial test suite (§37 PRD) ships as `tests/adversarial/`, run in CI on ev
 | Dimension | Target (MVP) | How achieved |
 |---|---|---|
 | Event ingest throughput | 500 events/sec sustained | Async write + Redis stream buffer, decoupled consumers |
-| Diagnosis latency (p95) | < 3s | AI Diagnoser timeout at 2.5s → deterministic fallback |
+| Diagnosis latency (p95) | < 3s | AI Diagnoser timeout → deterministic fallback (spec: 2.5s; the configured Gemini default is 4.0s, `ai_diagnoser_gemini_timeout_seconds`, so the worst-case LLM path exceeds this target). Targets in this table are design goals, not measured results |
 | Policy check latency (p99) | < 10ms | Pure in-memory function, no I/O |
 | Worker recovery time after crash | < 30s | Persisted job state in Redis/Postgres, requeue on restart |
-| Duplicate action rate | 0% | Idempotency key + advisory lock (§4.3) |
-| Audit trail completeness | 100% of decisions | Every state transition writes to `events`; CI test asserts no orphaned `policy_decisions` without `audit_log` row |
+| Duplicate action rate | 0% (design target; enforced by idempotency key + advisory lock, tested under concurrency, not measured in production) | Idempotency key + advisory lock (§4.3) |
+| Audit trail completeness | 100% of decisions (design target) | Every state transition writes to `events`. There is no CI test asserting the absence of orphaned `policy_decisions` rows; that check is not implemented |
 | Availability (demo day) | No single point of failure in critical path | Provider Adapter degrades to Simulator on Razorpay test-API outage; AI Diagnoser degrades to rule-based fallback |
 
 **Scalability story beyond MVP** (for the "how would this scale to production" question): Postgres → read replicas for dashboard queries, partition `events`/`payments` by `merchant_id` + time; Action Queue → horizontally scale workers behind Redis Streams consumer groups; propensity model → move from synchronous scoring to a feature-store + batch-scored cache refreshed every N minutes for high-volume merchants, with online fallback for cold-start payments.
@@ -683,4 +683,4 @@ Because the core value proposition is auditability and financial correctness —
 
 ## Appendix: One-sentence system summary for a resume/interview bullet
 
-> *Designed and built RecoveryOS, an AI-assisted revenue recovery control plane with a strict cognition/control separation — LLM-based root-cause diagnosis feeding a deterministic, unit-tested policy engine — validated against a synthetic 10k-payment environment with leakage-safe ground truth, demonstrating measurable incremental recovered revenue over a baseline retry strategy with 100% idempotent, auditable execution.*
+> *Designed and built RecoveryOS, an AI-assisted revenue recovery control plane with a strict cognition/control separation — LLM-based root-cause diagnosis feeding a deterministic, unit-tested policy engine — validated against a synthetic 10k-payment environment with leakage-safe ground truth, demonstrating measurable incremental recovered revenue over a baseline retry strategy with idempotent (advisory-lock + idempotency-key), auditable execution.*

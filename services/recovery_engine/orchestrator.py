@@ -511,13 +511,24 @@ async def build_decision(
             .mappings()
             .first()
         )
+        if customer_row is None:
+            # Fail closed: payments.customer_id is a NOT NULL FK, so a missing
+            # row means the customer is not visible to this role or the data is
+            # inconsistent. Defaulting to "not opted out" here would silently
+            # bypass OptOutRule -- refuse to decide instead (the stream message
+            # stays pending and the failure is visible).
+            raise ValueError(
+                f"customer_id={payment_row['customer_id']} for payment_id={payment_id} "
+                "not found (or not visible under inference_role) -- refusing to decide "
+                "without opt-out state"
+            )
 
     propensity_context = build_propensity_context(
         amount_paise=payment_row["amount_paise"],
         method=payment_row["method"],
         bank=payment_row["bank"],
-        is_returning_customer=bool(customer_row["is_returning"]) if customer_row else False,
-        lifetime_value_paise=customer_row["lifetime_value_paise"] if customer_row else 0,
+        is_returning_customer=bool(customer_row["is_returning"]),
+        lifetime_value_paise=customer_row["lifetime_value_paise"],
         initial_failure_code=payment_row["failure_code"],
         initial_failure_class=payment_row["failure_class"],
         created_at=payment_row["created_at"],
@@ -541,7 +552,7 @@ async def build_decision(
             app_session,
             merchant_id=payment_row["merchant_id"],
             amount_paise=payment_row["amount_paise"],
-            customer_is_returning=bool(customer_row["is_returning"]) if customer_row else False,
+            customer_is_returning=bool(customer_row["is_returning"]),
             base_propensity_prob_bps=prediction.probability_bps,
             anomaly_context=anomaly_context,
         )
@@ -571,7 +582,7 @@ async def build_decision(
         payment_id=payment_id,
         status=payment_row["status"],
         is_expired=is_expired,
-        opted_out_at=customer_row["opted_out_at"] if customer_row else None,
+        opted_out_at=customer_row["opted_out_at"],
         last_attempt_at=last_attempt_at,
         attempt_number=attempt_number,
         amount_paise=payment_row["amount_paise"],

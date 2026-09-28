@@ -161,3 +161,26 @@ def test_extract_resolution_payment_failed_has_zero_amount():
 def test_extract_resolution_none_for_unrecognized_event():
     payload = {"payload": {"subscription": {"entity": {"id": "sub_1"}}}}
     assert extract_resolution("subscription.activated", payload) is None
+
+
+def test_verify_signature_rejects_non_ascii_signature_without_raising():
+    """hmac.compare_digest raises TypeError on a non-ASCII str; an
+    attacker-controlled header must produce a clean False (-> 401), not a 500."""
+    body = b'{"event": "payment.failed"}'
+    assert verify_signature(body, "é" * 64, SECRET) is False
+
+
+def test_extractors_tolerate_malformed_payload_shapes():
+    """Post-signature bodies are still untrusted JSON: a wrong-typed level
+    must yield 'no match', never an AttributeError/TypeError."""
+    for bad in (
+        {"payload": []},
+        {"payload": {"order": None}},
+        {"payload": {"order": {"entity": "x"}, "payment": []}},
+        {"payload": {"payment": {"entity": {"order_id": 123}}}},
+    ):
+        assert extract_order_id(bad) is None
+    assert extract_resolution("payment.captured", {"payload": {"order": None}}) == ("SUCCESS", 0)
+    assert extract_resolution(
+        "payment.captured", {"payload": {"payment": {"entity": {"amount": "abc"}}}}
+    ) == ("SUCCESS", 0)

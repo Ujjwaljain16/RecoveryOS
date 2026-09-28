@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from integrations.razorpay.webhooks import (
@@ -105,7 +106,19 @@ async def razorpay_webhook(
             idempotency_key=idempotency_key,
         )
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Two concurrent deliveries of the same event both passed the SELECT
+        # above; the UNIQUE(idempotency_key) constraint is the real guard.
+        # The loser is a duplicate, not a server error -- ack it so Razorpay
+        # does not retry.
+        await session.rollback()
+        logger.info(
+            "[RazorpayWebhook] concurrent duplicate delivery, idempotency_key=%s -- ack, no-op",
+            idempotency_key,
+        )
+        return {"status": "already_processed"}
 
     if not isinstance(payload, dict):
         return {"status": "stored", "reconciled": False, "reason": "unparseable_body"}

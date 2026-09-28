@@ -36,6 +36,11 @@ class AppEnvironment(StrEnum):
     TEST = "test"
 
 
+# Public in this repo, therefore never a secret. apps/api/main.py refuses to
+# start outside demo/test while api_key_pepper still equals this.
+INSECURE_DEFAULT_API_KEY_PEPPER = "dev-insecure-pepper-change-in-production"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -92,7 +97,7 @@ class Settings(BaseSettings):
     # Auth (Task 4 — API key per merchant)
     # ─────────────────────────────────────────────────────────────────────────
     api_key_pepper: str = Field(
-        default="dev-insecure-pepper-change-in-production",
+        default=INSECURE_DEFAULT_API_KEY_PEPPER,
         description=(
             "Server-side secret mixed into merchants.api_key_hash (HMAC-SHA256). "
             "MUST be overridden via env var in any non-dev deployment — the "

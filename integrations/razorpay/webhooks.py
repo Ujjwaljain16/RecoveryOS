@@ -32,7 +32,10 @@ def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
     if not secret:
         return False
     expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    # Compare as bytes: hmac.compare_digest raises TypeError on a str containing
+    # non-ASCII characters, which an attacker-controlled header can carry --
+    # that would surface as a 500 instead of a clean rejection.
+    return hmac.compare_digest(expected.encode("utf-8"), signature.encode("utf-8", "replace"))
 
 
 def compute_idempotency_key(raw_body: bytes, event_id: str | None = None) -> str:
@@ -61,6 +64,20 @@ def compute_idempotency_key(raw_body: bytes, event_id: str | None = None) -> str
     return f"sha256:{hashlib.sha256(raw_body).hexdigest()}"
 
 
+def _entity(payload: dict, name: str) -> dict:
+    """payload["payload"][name]["entity"], or {} if any level is missing or
+    not a JSON object. The body is attacker-influenced JSON (post-signature,
+    but still untrusted shape); a malformed level must never raise."""
+    inner = payload.get("payload")
+    if not isinstance(inner, dict):
+        return {}
+    wrapper = inner.get(name)
+    if not isinstance(wrapper, dict):
+        return {}
+    entity = wrapper.get("entity")
+    return entity if isinstance(entity, dict) else {}
+
+
 def extract_order_id(payload: dict) -> str | None:
     """
     Pulls the Razorpay order id out of whichever entity the event actually
@@ -70,12 +87,11 @@ def extract_order_id(payload: dict) -> str | None:
     function's whole job is finding that same id inside the webhook body,
     regardless of which entity type carried it.
     """
-    inner = payload.get("payload", {})
-    order_entity = inner.get("order", {}).get("entity", {})
-    if order_entity.get("id"):
+    order_entity = _entity(payload, "order")
+    if isinstance(order_entity.get("id"), str) and order_entity["id"]:
         return order_entity["id"]
-    payment_entity = inner.get("payment", {}).get("entity", {})
-    if payment_entity.get("order_id"):
+    payment_entity = _entity(payload, "payment")
+    if isinstance(payment_entity.get("order_id"), str) and payment_entity["order_id"]:
         return payment_entity["order_id"]
     return None
 
@@ -104,10 +120,15 @@ def extract_resolution(event_type: str, payload: dict) -> tuple[str, int] | None
     if outcome is None:
         return None
 
-    inner = payload.get("payload", {})
     amount = 0
     if outcome == "SUCCESS":
-        order_entity = inner.get("order", {}).get("entity", {})
-        payment_entity = inner.get("payment", {}).get("entity", {})
-        amount = order_entity.get("amount_paid") or payment_entity.get("amount") or 0
-    return outcome, int(amount)
+        order_entity = _entity(payload, "order")
+        payment_entity = _entity(payload, "payment")
+        raw_amount = order_entity.get("amount_paid") or payment_entity.get("amount") or 0
+        try:
+            amount = int(raw_amount)
+        except (TypeError, ValueError):
+            amount = 0
+        if amount < 0:
+            amount = 0
+    return outcome, amount

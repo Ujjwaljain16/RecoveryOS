@@ -80,17 +80,21 @@ class EventPayload(BaseModel):
     model_config = {"extra": "forbid"}  # Reject unexpected fields → 422
 
     payment_id: str = Field(
+        min_length=1,
+        max_length=64,
         description="Payment identifier. Must be a valid UUID from the payments table.",
         examples=["a1b2c3d4-e5f6-7890-abcd-ef1234567890"],
     )
     merchant_id: str = Field(
+        min_length=1,
+        max_length=64,
         description=(
             "Merchant identifier. Must match the merchant resolved from the "
             "X-API-Key header — a mismatch is rejected with 403, regardless "
             "of whether payment_id/customer_id would otherwise be valid."
         ),
     )
-    customer_id: str = Field(description="Customer identifier.")
+    customer_id: str = Field(min_length=1, max_length=64, description="Customer identifier.")
     amount_paise: int = Field(
         gt=0,
         description="Payment amount in paise (integer only, never float). ₹100 = 10000.",
@@ -101,9 +105,11 @@ class EventPayload(BaseModel):
     )
     bank: str | None = Field(
         default=None,
+        max_length=64,
         description="Issuing bank identifier. Optional for wallet payments.",
     )
     event_type: str = Field(
+        pattern=r"^[A-Z][A-Z0-9_]{0,63}$",
         description="Event type: PAYMENT_FAILED | PAYMENT_CREATED | RETRY_EXECUTED | ...",
     )
     failure_code: str | None = Field(
@@ -117,6 +123,8 @@ class EventPayload(BaseModel):
     )
     idempotency_key: str | None = Field(
         default=None,
+        min_length=1,
+        max_length=128,
         description=(
             "Client-supplied idempotency key. If provided, duplicate events with the "
             "same key are silently accepted (202) but not double-processed. "

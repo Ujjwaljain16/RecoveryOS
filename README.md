@@ -553,7 +553,7 @@ that actually govern a live mission, not just one of them.
 | Prompt-injection-style content inside tool-returned evidence | Even if the model complies with injected text, the deterministic fusion boundary still rejects an unauthorized recommendation |
 | Malformed/unparseable Gemini response | Fails the investigation closed, never partially trusted |
 | LLM prompt injection via failure metadata | `failure_code` sanitized at both the API ingest boundary and the diagnoser boundary |
-| Unauthorized merchant accessing another merchant's data | Row-level scoping by `merchant_id` on every merchant-scoped table |
+| Unauthorized merchant accessing another merchant's data | Merchant identity comes only from the verified `X-API-Key`; every merchant-scoped route filters by it and returns 404 for other merchants' rows (application-level scoping — there is no Postgres row-level security) |
 | Tampering with audit history | `audit_log`/`events` have `UPDATE`/`DELETE` revoked from the application DB role at the grant level |
 | Unthrottled demo endpoints burning real LLM cost | `/v1/simulate/scenario` is rate-limited per merchant, its own bucket, separate from production ingestion |
 
@@ -574,9 +574,13 @@ against the exact model/policy version that produced it.
 Current full-suite result:
 
 ```text
-tests/unit + tests/integration:  538+ passed, 5 xfailed, 0 failed
-tests/integration/test_dashboard_e2e.py (Playwright, real browser):  4 passed
+tests/unit + tests/integration:  ~580 tests collected (incl. 4 Playwright E2E); 5 marked xfail
 ```
+
+The last full run this README was checked against reported 538+ passed, 5 xfailed, 0 failed
+(unit + integration); the suite has grown since. The integration tests need Docker
+(testcontainers) and were not re-run when this section was last reconciled — the CI badge above
+is the current source of truth. The unit suite (no Docker) runs with `pytest tests/unit`.
 
 Notable coverage, by category:
 
@@ -595,7 +599,9 @@ Notable coverage, by category:
   effect, proven with real concurrent Postgres sessions, not mocks.
 - **Benchmark integrity** — every baseline comparator is proven to never write to RecoveryOS's own
   decision tables.
-- **AI safety invariant across every real-model arm run so far** — `ai_unsafe_deltas: 0`.
+- **AI safety invariant across every real-model arm run so far** — `ai_unsafe_deltas: 0` (in the
+  committed ablation artifact, two of the three arms processed zero payments, so this is
+  evidence from one small arm, not a broad result).
 
 CI (`.github/workflows/ci.yml`, 4 jobs — lint & format, security gates, unit tests, integration
 tests) runs on every push and is green on `main`.
@@ -695,6 +701,10 @@ docker compose down -v && ./demo.sh
 The full pipeline: dataset generation → propensity training/certification → baseline computation
 → multi-seed campaign.
 
+The runners in `tests/evaluation/` connect from the host to the compose Postgres and read the
+database password from your environment (`RECOVERYOS_APP_ROLE_PASSWORD`, or a full `PG_DSN`) — no
+credential is stored in the repo. Export it from your `.env` first (see `.env.example`).
+
 ```bash
 # 1. Generate a dataset
 python -m simulator.run --n=10000 --seed=42 --customers=2000 --output=db
@@ -734,7 +744,7 @@ not just trusted from this document. Provenance for the exact canonical run:
 | Razorpay integration | `integrations/razorpay/adapter.py` | Provider adapters (real, simulator) |
 | Simulator | `simulator/` | Synthetic merchant environment, structurally-independent ground truth |
 | Evaluation | `tests/evaluation/` | Multi-seed runner, AI ablation runner, raw artifacts |
-| Tests | `tests/unit/`, `tests/integration/` | 538+ unit/integration, 4 Playwright E2E |
+| Tests | `tests/unit/`, `tests/integration/` | ~580 unit/integration tests (incl. 4 Playwright E2E) |
 | Migrations | `migrations/versions/` | Alembic migrations |
 | Docs | `docs/` | TRD, PRD, evaluation write-ups |
 
@@ -779,6 +789,14 @@ above) — it's too small a sample to say how *often* a real near-tie or risk si
 practice. A larger run needs either a paid Gemini tier or patience across many free-tier-quota days
 (20 requests/day/model); evaluated and deliberately not worked around. Full breakdown:
 [`docs/phase11_ai_ablation.md`](docs/phase11_ai_ablation.md).
+
+**AI assistance in building this repository.** Part of this codebase, its tests and its
+documentation was written with an AI coding assistant (Claude). 16 of the 139 commits at the time
+of writing carry a commit trailer naming Claude as a co-author; AI-assisted work is not limited to
+those commits, and the trailer is a floor, not a full accounting. All of it was reviewed, run and
+accepted by the repository owner, who is responsible for its correctness. The LLM that runs
+*inside* the product (Gemini, in the investigator) is a separate matter, described in
+[§5](#5-ai-that-recommends--never-authorizes).
 
 **No statistical AI-lift claim exists**, and none should be inferred from the headline benchmark
 number — that number is the whole system's, most of which is AI-blind by construction.

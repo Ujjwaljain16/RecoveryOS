@@ -47,8 +47,32 @@ import psycopg2
 import psycopg2.extras
 import redis
 
-REPO_ROOT = Path(r"D:\Projects\Hack\RecoveryOS")
-PG_DSN = "postgresql://recoveryos:H8c8oUdrDB397w_TkX-WLo1xQhJEZTwh@localhost:5433/recoveryos"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _build_pg_dsn() -> str:
+    """Build the host-side Postgres DSN from the environment (never hardcoded).
+
+    Uses PG_DSN if set, else composes one from RECOVERYOS_APP_ROLE_PASSWORD
+    (the same variable .env / migrations/versions/0002_db_roles.py use).
+    """
+    dsn = os.environ.get("PG_DSN")
+    if dsn:
+        return dsn
+    password = os.environ.get("RECOVERYOS_APP_ROLE_PASSWORD")
+    if not password:
+        raise SystemExit(
+            "Neither PG_DSN nor RECOVERYOS_APP_ROLE_PASSWORD is set. Export one "
+            "(matching your .env) before running this script -- see .env.example."
+        )
+    from urllib.parse import quote
+
+    host = os.environ.get("PG_HOST", "localhost")
+    port = os.environ.get("PG_PORT", "5433")
+    return f"postgresql://recoveryos:{quote(password, safe='')}@{host}:{port}/recoveryos"
+
+
+PG_DSN = _build_pg_dsn()
 REDIS_URL = "redis://localhost:6379/0"
 RESULTS_FILE = REPO_ROOT / "tests" / "evaluation" / "artifacts" / "ai_ablation_results.json"
 
